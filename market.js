@@ -96,3 +96,39 @@ export async function fetchQuote(symbol, apiKey, mic) {
   if (data.status === 'error' || !data.close) throw new Error(data.message || `No quote for ${symbol}`);
   return { name: data.name, currency: data.currency, price: Number(data.close) };
 }
+
+// Funds (named by ISIN) come from EODHD, through the database's fund_data function (schema.sql),
+// as EODHD can't be called from a web page. `call(args)` runs it: rpc('fund_data', args).
+export const FUND_MIC = 'EUFUND';
+export const isIsin = (text) => /^[A-Z]{2}[A-Z0-9]{9}[0-9]$/.test(String(text).trim().toUpperCase());
+
+// What the fund is, as a search result ({ symbol, name, exchange, mic, type, country, currency }), or null.
+export async function fundSearch(isin, call) {
+  const list = await call({ p_isin: isin, p_kind: 'search' });
+  const f = (Array.isArray(list) ? list : []).find((x) => x.Exchange === FUND_MIC) ?? (Array.isArray(list) ? list[0] : null);
+  if (!f) return null;
+  return { symbol: isin, name: f.Name, exchange: 'Funds (EODHD)', mic: FUND_MIC, type: f.Type || 'Fund', country: f.Country || isin.slice(0, 2), currency: f.Currency || 'EUR' };
+}
+
+// The latest price (NAV) from the last two weeks: { price }.
+export async function fundQuote(isin, call) {
+  const rows = await call({ p_isin: isin, p_kind: 'prices' });
+  const last = (Array.isArray(rows) ? rows : []).filter((r) => Number(r.close) > 0).at(-1);
+  if (!last) throw new Error(`EODHD has no recent price for ${isin}`);
+  return { price: Number(last.close) };
+}
+
+// Weekly prices (the last of each week), { 'YYYY-MM-DD': price }, as far back as EODHD goes.
+export async function fundHistory(isin, call) {
+  const rows = await call({ p_isin: isin, p_kind: 'prices', p_from: '2000-01-01' });
+  const byWeek = new Map();
+  for (const r of Array.isArray(rows) ? rows : []) {
+    if (!(Number(r.close) > 0)) continue;
+    const d = new Date(`${r.date}T00:00:00Z`);
+    const monday = new Date(d - ((d.getUTCDay() + 6) % 7) * 864e5).toISOString().slice(0, 10);
+    const had = byWeek.get(monday);
+    if (!had || r.date > had[0]) byWeek.set(monday, [r.date, Number(r.close)]);
+  }
+  if (!byWeek.size) throw new Error(`EODHD has no history for ${isin}`);
+  return Object.fromEntries(byWeek.values());
+}

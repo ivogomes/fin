@@ -153,6 +153,10 @@ alter table settings add column if not exists fx jsonb not null default '{}';
 -- Weekly closing prices per holding, { date: price }, loaded once and kept, for charts over time.
 alter table holdings add column if not exists price_history jsonb;
 -- Backups: when one was last downloaded, and how many days between reminders (0 = none).
+-- Credit cards: the credit limit (cents, in the account's currency), to show what's left.
+alter table accounts add column if not exists credit_limit bigint;
+-- Credit cards: the card network ('visa' or 'mastercard'), shown as a small mark by the name.
+alter table accounts add column if not exists card_network text;
 alter table settings add column if not exists last_backup_at timestamptz;
 alter table settings add column if not exists backup_every integer not null default 7;
 
@@ -381,14 +385,18 @@ $$;
 -- Net worth over time: each account's transactions added up in EUR (at their rate, else today's from
 -- p_rates) at each of p_dates (sorted), and the date of its last transaction. The app values
 -- investments from their holdings itself (model.js netWorthHistory, accountRuns for the same in JS).
--- p_skip_opening leaves opening balances out (what was put into an investment account).
+-- p_skip_opening leaves opening balances out (what was put into an investment account); p_native
+-- keeps each account's own currency (an account's balance chart) instead of EUR.
+drop function if exists balances_at(date[], jsonb, text[], boolean);
 create or replace function balances_at(
-  p_dates date[], p_rates jsonb default '{}'::jsonb, p_accounts text[] default null, p_skip_opening boolean default false
+  p_dates date[], p_rates jsonb default '{}'::jsonb, p_accounts text[] default null, p_skip_opening boolean default false,
+  p_native boolean default false
 ) returns jsonb
 language sql stable as $$
   with tx as (
     select tr.account_id, tr.date,
-      fin_round(tr.amount * coalesce(tr.rate, (p_rates ->> a.currency)::double precision, 1)) as eur
+      case when p_native then tr.amount
+        else fin_round(tr.amount * coalesce(tr.rate, (p_rates ->> a.currency)::double precision, 1)) end as eur
     from transactions tr
     join accounts a on a.user_id = tr.user_id and a.id = tr.account_id
     where tr.user_id = auth.uid() and (p_accounts is null or tr.account_id = any(p_accounts))
@@ -409,6 +417,38 @@ language sql stable as $$
     'last', (select max(last) from per where per.account_id = x.account_id), 'values', x.vals)), '{}'::jsonb)
   from (select account_id, jsonb_agg(v order by k) as vals from vals group by account_id) x
 $$;
+
+-- Fund prices from EODHD (funds named by ISIN, e.g. LU0109981661). EODHD's API can't be called from
+-- a web page (it doesn't allow other sites to read its answers), so the database calls it, with the
+-- signed-in user's own EODHD key from settings. p_kind 'search': what the fund is (name, currency);
+-- 'prices': its daily prices from p_from (default: the last two weeks). Needs the http extension.
+create extension if not exists http with schema extensions;
+alter table settings add column if not exists eodhd_api_key text;
+
+create or replace function fund_data(p_isin text, p_kind text, p_from date default null) returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare
+  k text;
+  url text;
+  r http_response;
+begin
+  if p_isin !~ '^[A-Z]{2}[A-Z0-9]{9}[0-9]$' then raise exception 'Not an ISIN: %', p_isin; end if;
+  select eodhd_api_key into k from settings where user_id = auth.uid();
+  if coalesce(k, '') = '' then raise exception 'Add an EODHD API key in Settings to price funds'; end if;
+  if p_kind = 'search' then
+    url := format('https://eodhd.com/api/search/%s?api_token=%s&fmt=json', p_isin, urlencode(k));
+  elsif p_kind = 'prices' then
+    url := format('https://eodhd.com/api/eod/%s.EUFUND?api_token=%s&fmt=json&from=%s',
+      p_isin, urlencode(k), coalesce(p_from, current_date - 14));
+  else
+    raise exception 'Unknown request: %', p_kind;
+  end if;
+  r := http_get(url);
+  if r.status <> 200 then raise exception 'EODHD answered % for %', r.status, p_isin; end if;
+  return r.content::jsonb;
+end $$;
+revoke execute on function fund_data(text, text, date) from public, anon;
+grant execute on function fund_data(text, text, date) to authenticated;
 
 -- Earlier descriptions for the suggestions when adding transactions: one entry per description
 -- (normalised), from its latest use, with how often it's used. Transfers are listed from the side

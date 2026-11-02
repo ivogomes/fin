@@ -1,15 +1,18 @@
 import {
   CURRENCIES, ACCOUNT_TYPES, ACCOUNT_TYPE_LABELS, toMinor, formatMoney, categorize, convert, rateFor, defaultState,
   normalize, categoryPath, categoriesOf, sortedCategories,
-  IOU_KINDS, IOU_TYPES, personBalances, personHistory, PERIODS, periodRange, insightsFrom, completeMonths, REFUNDS_UNMATCHED, netWorthHistory, investedHistory, historyPoints,
+  IOU_KINDS, IOU_TYPES, personBalances, personHistory, PERIODS, periodRange, insightsFrom, completeMonths, REFUNDS_UNMATCHED, netWorthHistory, investedHistory, historyPoints, holdingHistory,
   suggestDescriptions, filterTransactions, ruleSuggestion,
   plannedTransactions, holdingValue, investmentValue, investmentValueFrom, newId,
   crossConvert, batchRow, makeTransfer,
   parseCsv, toCsv, guessDateFormat, guessDecimal, guessMapping, importRows, IMPORT_FIELDS, findTransferPairs,
-  detectBuxferFile, buxferImport, isFtExport, ftImport, lotSummary,
+  detectBuxferFile, buxferImport, isFtExport, ftImport, isFundMovements, fundMovementsToFt, lotSummary,
   UNITS, frequencyLabel, addInterval, occurrences, forecast, scheduledEffect, scheduledTransactions, advanceSchedule,
 } from './model.js';
-import { fetchRate, fetchRateRange, fetchQuote, fetchQuoteAV, fetchHistory, alphaVantageCovers, searchSymbols, today } from './market.js';
+import {
+  fetchRate, fetchRateRange, fetchQuote, fetchQuoteAV, fetchHistory, alphaVantageCovers, searchSymbols, today,
+  FUND_MIC, isIsin, fundSearch, fundQuote, fundHistory,
+} from './market.js';
 import {
   load, persist, settle, onStatus, onSaved, hasPendingChanges, addTransactions, loadAllTransactions, transactionsComplete,
   refreshSummaries, accountTotals, editToken, isFromDatabase, legacyData, forgetLegacyData, missingTables, clearTables, needsSchemaUpdate,
@@ -123,11 +126,22 @@ const catOptions = () => sortedCategories(state.categories).map((c) => [c.id, ca
 let hideAmounts = readPref('finance:hide-amounts', false);
 const MASK_MINOR = 123456;
 const masked = (text) => text.replace(/\d/g, '•');
-const money = (minor, cur) => (hideAmounts ? masked(formatMoney(minor < 0 ? -MASK_MINOR : MASK_MINOR, cur)) : formatMoney(minor, cur));
+// How numbers look (Settings → Display): the browser's own way, or a chosen style. Per browser.
+const NUMBER_FORMATS = {
+  '': { label: 'Automatic (your browser’s language)', locale: undefined },
+  dot: { label: '1,000.00', locale: 'en-GB' },
+  comma: { label: '1.000,00', locale: 'de-DE' },
+  space: { label: '1 000,00', locale: 'fr-FR' },
+};
+let numberFormat = NUMBER_FORMATS[readPref('finance:number-format', '')] ? readPref('finance:number-format', '') : '';
+const numLocale = () => NUMBER_FORMATS[numberFormat].locale;
+// A plain number with `digits` decimals (percentages, rates), in the chosen style.
+const num = (x, digits = 1) => new Intl.NumberFormat(numLocale(), { minimumFractionDigits: digits, maximumFractionDigits: digits }).format(x);
+const money = (minor, cur) => (hideAmounts ? masked(formatMoney(minor < 0 ? -MASK_MINOR : MASK_MINOR, cur, numLocale())) : formatMoney(minor, cur, numLocale()));
 const signed = (minor, cur) =>
-  new Intl.NumberFormat(undefined, { style: 'currency', currency: cur, signDisplay: 'exceptZero' })
+  new Intl.NumberFormat(numLocale(), { style: 'currency', currency: cur, signDisplay: 'exceptZero' })
     .format((hideAmounts ? Math.sign(minor) * MASK_MINOR : minor) / 100).replace(/\d/g, (d) => (hideAmounts ? '•' : d));
-const shownQty = (n) => (hideAmounts ? '•••' : String(n));
+const shownQty = (n) => (hideAmounts ? '•••' : new Intl.NumberFormat(numLocale(), { maximumFractionDigits: 8 }).format(n));
 const tone = (minor) => (minor > 0 ? 'fin-pos' : minor < 0 ? 'fin-neg' : '');
 const latestRate = (cur) => (cur === 'EUR' ? 1 : state.rates[`${cur}:latest`]?.rate ?? null);
 
@@ -219,42 +233,44 @@ function icon(name) {
 const iconButton = (name, label, onclick, { danger = false, ...attrs } = {}) =>
   h('button', { type: 'button', class: `fin-icon-btn${danger ? ' fin-icon-btn--danger' : ''}`, 'aria-label': label, title: label, onclick, ...attrs }, icon(name));
 
-// Opening a page: a piggy bank swallowing coins in the middle of the screen, with a joke under the
-// message that changes every few seconds. The pig and the jokes are decoration (hidden from screen
-// readers, still when motion is reduced); the message is what's announced.
+// Loading animations: Fin's fin, on a rolling wave. They're decoration (hidden from screen readers,
+// still when motion is reduced); the message beside them is what's announced.
+const NS_SVG = 'http://www.w3.org/2000/svg';
+const svgEl = (tag, attrs, ...kids) => {
+  const n = document.createElementNS(NS_SVG, tag);
+  for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+  n.append(...kids);
+  return n;
+};
+// A wave from x0 to x1 with its top at `y`, crests `period` wide and `height` high, filled down to `bottom`.
+function wavePath(x0, x1, y, period, height, bottom) {
+  let d = `M${x0} ${y}`;
+  for (let x = x0, up = true; x < x1; x += period / 2, up = !up) d += `q${period / 4} ${up ? -height : height} ${period / 2} 0`;
+  return `${d}V${bottom}H${x0}Z`;
+}
+const FIN_SHAPE = 'M0 26Q7 5 24 0Q17 9 20 26Z'; // the logo's fin, 24 wide and 26 tall
+
+// Opening a page: a fin circling across the middle of the screen (gliding along, diving at the
+// edge, surfacing on the other side), with a joke under the message that changes every few seconds.
 const QUIPS = [
-  'Counting the cents…', 'Shaking the piggy bank…', 'Asking the database nicely…', 'Checking under the sofa cushions…',
-  'Converting dollars to euros…', 'Reconciling to the cent…', 'Adding up the coffees…', 'Finding where the money went…',
+  'Something’s circling your spending…', 'Testing the waters…', 'Swimming through your transactions…',
+  'Fin-ding your money…', 'Smelling a bargain…', 'Diving into the details…', 'Making a splash…', 'Circling the numbers…',
 ];
-function piggy() {
-  const NS = 'http://www.w3.org/2000/svg';
-  const el = (tag, attrs, ...kids) => {
-    const n = document.createElementNS(NS, tag);
-    for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
-    n.append(...kids);
-    return n;
-  };
-  return el('svg', { viewBox: '0 0 80 64', class: 'fin-piggy', 'aria-hidden': 'true' },
-    el('g', { class: 'fin-coin-fall' },
-      el('circle', { cx: 40, cy: 10, r: 7, class: 'fin-coin' }),
-      el('path', { d: 'M40 6.5v7', class: 'fin-coin-mark' })),
-    el('g', { class: 'fin-pig-bounce' },
-      el('path', { d: 'M17 37q-7-1-6-6q1-4 5-1', class: 'fin-pig-tail' }),
-      el('rect', { x: 26, y: 50, width: 7, height: 9, rx: 2, class: 'fin-pig' }),
-      el('rect', { x: 46, y: 50, width: 7, height: 9, rx: 2, class: 'fin-pig' }),
-      el('ellipse', { cx: 40, cy: 40, rx: 24, ry: 17, class: 'fin-pig' }),
-      el('path', { d: 'M28 27l3-10l7 8z', class: 'fin-pig' }),
-      el('ellipse', { cx: 64, cy: 41, rx: 5, ry: 6, class: 'fin-pig' }),
-      el('circle', { cx: 63, cy: 39, r: 1.1, class: 'fin-pig-dark' }),
-      el('circle', { cx: 66, cy: 42, r: 1.1, class: 'fin-pig-dark' }),
-      el('circle', { cx: 54, cy: 34, r: 2, class: 'fin-pig-dark' }),
-      el('rect', { x: 34, y: 22.5, width: 12, height: 3, rx: 1.5, class: 'fin-pig-dark' })));
+function circlingFin() {
+  const clipId = `fin-water-${newId().slice(0, 6)}`;
+  return svgEl('svg', { viewBox: '0 0 160 64', class: 'fin-circling', 'aria-hidden': 'true' },
+    svgEl('defs', {}, svgEl('clipPath', { id: clipId }, svgEl('rect', { x: 0, y: 0, width: 160, height: 46 }))),
+    svgEl('path', { d: wavePath(-40, 200, 44, 20, 3, 64), class: 'fin-wave fin-wave-back' }),
+    svgEl('g', { 'clip-path': `url(#${clipId})` },
+      svgEl('g', { transform: 'translate(0 20)' },
+        svgEl('g', { class: 'fin-swim' }, svgEl('path', { d: FIN_SHAPE, class: 'fin-shape' })))),
+    svgEl('path', { d: wavePath(-40, 200, 46, 20, 3, 64), class: 'fin-wave fin-wave-front' }));
 }
 function pageLoader(text) {
   let i = Math.floor(Math.random() * QUIPS.length);
   const quip = h('span', { class: 'fin-loader-quip', 'aria-hidden': 'true' }, QUIPS[i]);
   const box = h('div', { class: 'fin-page-loader', role: 'status' },
-    piggy(), h('p', { class: 'fin-loader-text' }, text), quip);
+    circlingFin(), h('p', { class: 'fin-loader-text' }, text), quip);
   const timer = setInterval(() => {
     if (!box.isConnected) { clearInterval(timer); return; }
     i = (i + 1) % QUIPS.length;
@@ -263,18 +279,11 @@ function pageLoader(text) {
   return box;
 }
 
-// Inside a page (a table, a chart): a small coin spinning beside the message.
+// Inside a page (a table, a chart): a small fin bobbing on a rolling wave beside the message.
 function loader(text) {
-  const NS = 'http://www.w3.org/2000/svg';
-  const svg = document.createElementNS(NS, 'svg');
-  svg.setAttribute('viewBox', '0 0 20 20');
-  svg.setAttribute('class', 'fin-spin-coin');
-  svg.setAttribute('aria-hidden', 'true');
-  const coin = document.createElementNS(NS, 'circle');
-  for (const [k, v] of Object.entries({ cx: 10, cy: 10, r: 7.5, class: 'fin-coin' })) coin.setAttribute(k, v);
-  const mark = document.createElementNS(NS, 'path');
-  for (const [k, v] of Object.entries({ d: 'M10 6.5v7', class: 'fin-coin-mark' })) mark.setAttribute(k, v);
-  svg.append(coin, mark);
+  const svg = svgEl('svg', { viewBox: '0 0 28 20', class: 'fin-bobbing', 'aria-hidden': 'true' },
+    svgEl('g', { transform: 'translate(8 2) scale(0.5)' }, svgEl('g', { class: 'fin-bob' }, svgEl('path', { d: FIN_SHAPE, class: 'fin-shape' }))),
+    svgEl('path', { d: wavePath(-8, 40, 14, 8, 1.6, 20), class: 'fin-wave fin-wave-front fin-wave-small' }));
   return h('div', { class: 'fin-loader', role: 'status' }, svg, h('span', {}, text));
 }
 
@@ -359,14 +368,16 @@ async function refreshPrices(only) {
   let failed = 0;
   for (const x of targets) {
     try {
-      // Non-US listings go to Alpha Vantage when a key is set; everything else to Twelve Data.
+      // Funds go to EODHD (through the database); non-US listings to Alpha Vantage when a key is
+      // set; everything else to Twelve Data.
       const viaAV = alphaVantageCovers(x.mic) && state.settings.avApiKey;
-      const q = viaAV
-        ? await fetchQuoteAV(x.symbol, x.mic, state.settings.avApiKey)
-        : await fetchQuote(x.symbol, state.settings.quoteApiKey, x.mic);
+      const fund = x.mic === FUND_MIC;
+      const q = fund ? await fundQuote(x.symbol, fundCall)
+        : viaAV ? await fetchQuoteAV(x.symbol, x.mic, state.settings.avApiKey)
+          : await fetchQuote(x.symbol, state.settings.quoteApiKey, x.mic);
       Object.assign(x, {
         price: q.price, name: x.name ?? q.name, currency: q.currency ?? x.currency,
-        source: viaAV ? 'Alpha Vantage' : 'Twelve Data', priceAt: new Date().toISOString(),
+        source: fund ? 'EODHD' : viaAV ? 'Alpha Vantage' : 'Twelve Data', priceAt: new Date().toISOString(),
       });
       delete x.priceError;
     } catch (err) {
@@ -393,7 +404,8 @@ async function loadHistory(list) {
   for (const x of list) {
     if (!x.symbol || !x.mic) { failed.push(`${x.symbol}: no exchange set (Edit the holding)`); continue; }
     try {
-      x.priceHistory = { ...(x.priceHistory ?? {}), ...(await fetchHistory(x.symbol, x.mic, keys)) };
+      const weekly = x.mic === FUND_MIC ? await fundHistory(x.symbol, fundCall) : await fetchHistory(x.symbol, x.mic, keys);
+      x.priceHistory = { ...(x.priceHistory ?? {}), ...weekly };
       done += 1;
     } catch (err) {
       failed.push(`${x.symbol}: ${err.message.replace(/\s*Consider upgrading.*$/i, '')}`);
@@ -405,9 +417,11 @@ async function loadHistory(list) {
 }
 
 function stalePrices() {
-  if (!state.settings.quoteApiKey && !state.settings.avApiKey) return [];
-  return state.holdings.filter((x) => !x.manual && (!x.priceAt || x.priceAt.slice(0, 10) !== today() || x.priceError));
+  const priced = (x) => (x.mic === FUND_MIC ? Boolean(state.settings.eodhdApiKey) : Boolean(state.settings.quoteApiKey || state.settings.avApiKey));
+  return state.holdings.filter((x) => !x.manual && priced(x) && (!x.priceAt || x.priceAt.slice(0, 10) !== today() || x.priceError));
 }
+// Runs the database's fund_data (EODHD for funds; see market.js).
+const fundCall = (args) => rpc('fund_data', args);
 
 // ── values ───────────────────────────────────────────────────────────────────
 
@@ -478,6 +492,47 @@ function renderSide() {
   ];
 }
 
+// Credit card networks, and a small mark for each beside the card's name (simple drawings of the
+// brands' marks, not their artwork). Screen readers get the network's name.
+const CARD_NETWORKS = { visa: 'Visa', mastercard: 'Mastercard' };
+function cardMark(account, extra = '') {
+  const n = account.type === 'credit' && CARD_NETWORKS[account.cardNetwork] ? account.cardNetwork : null;
+  if (!n) return null;
+  const NS = 'http://www.w3.org/2000/svg';
+  const el = (tag, attrs, ...kids) => {
+    const e = document.createElementNS(NS, tag);
+    for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+    e.append(...kids);
+    return e;
+  };
+  const svg = el('svg', { viewBox: '0 0 24 16', class: `fin-card-mark ${extra}`.trim(), role: 'img', 'aria-label': CARD_NETWORKS[n] });
+  if (n === 'visa') {
+    svg.append(el('rect', { width: 24, height: 16, rx: 2.5, class: 'fin-visa-bg' }),
+      el('text', { x: 12, y: 11, 'text-anchor': 'middle', class: 'fin-visa-text' }, 'VISA'));
+  } else {
+    const clip = `mc-${newId().slice(0, 6)}`;
+    svg.append(el('rect', { width: 24, height: 16, rx: 2.5, class: 'fin-mc-bg' }),
+      el('clipPath', { id: clip }, el('circle', { cx: 9.5, cy: 8, r: 5 })),
+      el('circle', { cx: 9.5, cy: 8, r: 5, class: 'fin-mc-red' }),
+      el('circle', { cx: 14.5, cy: 8, r: 5, class: 'fin-mc-yellow' }),
+      el('circle', { cx: 14.5, cy: 8, r: 5, class: 'fin-mc-orange', 'clip-path': `url(#${clip})` }));
+  }
+  return svg;
+}
+
+// How much of a credit card's limit is used: { used (0–100), level, left }, or null without a limit.
+// The bar shows it (its width goes to the stylesheet as --used); teal, amber from 60%, red from 90%.
+function limitUse(account, value) {
+  if (account.type !== 'credit' || account.creditLimit == null) return null;
+  const used = account.creditLimit > 0 ? Math.min(100, Math.max(0, Math.round((-value / account.creditLimit) * 100))) : 100;
+  return { used, level: used >= 90 ? 'high' : used >= 60 ? 'mid' : 'low', left: account.creditLimit + value };
+}
+function usageBar(use, extra = '') {
+  const bar = h('span', { class: 'fin-usage-bar', 'data-level': use.level });
+  bar.style.setProperty('--used', `${use.used}%`);
+  return h('span', { class: `fin-usage ${extra}`.trim(), 'aria-hidden': 'true' }, bar);
+}
+
 function accountGroup(key, label, total, list) {
   const holdsCurrent = view.name === 'account' && list.some((a) => a.id === view.id);
   // Each type has its own icon and tint, so the groups are easy to tell apart at a glance.
@@ -494,15 +549,19 @@ function accountGroup(key, label, total, list) {
     h('ul', { class: 'fin-accounts' }, list.map((a) => {
       const value = accountValue(a);
       const current = view.name === 'account' && view.id === a.id;
+      const use = limitUse(a, value);
       return h('li', {},
         h('button', {
-          type: 'button', class: 'fin-account', 'data-key': `acc-${a.id}`,
+          type: 'button', class: `fin-account${use ? ' fin-account--limit' : ''}`, 'data-key': `acc-${a.id}`,
           'aria-current': current ? 'page' : null,
           onclick: () => selectAccount(a.id),
         },
-          h('span', { class: 'fin-account-name' }, a.name),
+          h('span', { class: 'fin-account-name' }, cardMark(a), a.name),
           // No + on positive balances here: less text, and the negative ones (in red) stand out.
-          h('span', { class: `fin-num ${tone(value)}` }, money(value, a.currency))));
+          h('span', { class: `fin-num ${tone(value)}` }, money(value, a.currency)),
+          // A credit card with a limit: a thin bar of how much is used (said in words for screen readers).
+          use && usageBar(use, 'fin-usage-side'),
+          use && h('span', { class: 'fin-sr' }, `, ${use.used}% of the credit limit used`)));
     })));
 }
 
@@ -527,16 +586,26 @@ function openAccountDialog(existing = null) {
   const name = input({ type: 'text', required: true, autocomplete: 'off', value: existing?.name });
   const type = select(ACCOUNT_TYPES.map((t) => [t, ACCOUNT_TYPE_LABELS[t]]), existing?.type ?? 'checking');
   const cur = select(CURRENCIES.map((c) => [c, c]), existing?.currency ?? 'EUR', { disabled: used });
+  // Credit cards only: the limit, so the account shows what's left to spend.
+  const limit = input({ type: 'number', step: '0.01', min: '0', inputmode: 'decimal', value: existing?.creditLimit != null ? String(existing.creditLimit / 100) : null });
+  const limitField = field('Credit limit', limit, 'Optional. Shows how much is left to spend.');
+  const network = select([['', 'Not set'], ...Object.entries(CARD_NETWORKS)], existing?.cardNetwork ?? '');
+  const networkField = field('Network', network);
+  const syncType = () => { limitField.hidden = networkField.hidden = type.value !== 'credit'; };
+  type.addEventListener('change', syncType);
+  syncType();
+  const creditLimit = () => (type.value === 'credit' && limit.value !== '' ? toMinor(limit.value) : null);
+  const cardNetwork = () => (type.value === 'credit' && network.value) || null;
   const returnKey = existing ? 'edit-account' : document.activeElement?.dataset?.key;
   const close = () => { dialog.close(); render(returnKey); };
   dialog.replaceChildren(h('form', {
     onsubmit: async (e) => {
       e.preventDefault();
       if (existing) {
-        Object.assign(existing, { name: name.value.trim(), type: type.value, currency: cur.value });
+        Object.assign(existing, { name: name.value.trim(), type: type.value, currency: cur.value, creditLimit: creditLimit(), cardNetwork: cardNetwork() });
         persist(); close(); say(`Saved ${existing.name}.`);
       } else {
-        const account = { id: newId(), name: name.value.trim(), type: type.value, currency: cur.value };
+        const account = { id: newId(), name: name.value.trim(), type: type.value, currency: cur.value, creditLimit: creditLimit(), cardNetwork: cardNetwork() };
         state.accounts.push(account);
         dialog.close();
         selectAccount(account.id);
@@ -546,7 +615,7 @@ function openAccountDialog(existing = null) {
     },
   },
     h('h2', { id: 'account-dialog-h', class: 'fin-dialog-title' }, existing ? 'Edit account' : 'Add account'),
-    field('Name', name), field('Type', type),
+    field('Name', name), field('Type', type), networkField, limitField,
     field('Currency', cur, used
       ? 'Fixed, because this account already has transactions.'
       : 'USD amounts are converted to EUR at the daily rate.'),
@@ -586,7 +655,7 @@ function renderAccount(account) {
   return h('div', {},
     h('div', { class: 'fin-account-head' },
       h('div', {},
-        h('h2', { class: 'fin-title' }, account.name),
+        h('h2', { class: 'fin-title' }, cardMark(account, 'fin-card-mark--title'), account.name),
         h('p', { class: 'fin-meta' }, `${ACCOUNT_TYPE_LABELS[account.type]} · ${account.currency}`, account.archived && ' · Archived')),
       h('div', { class: 'fin-actions' },
         button('Edit', () => openAccountDialog(account), 'secondary', { 'data-key': 'edit-account' }),
@@ -615,25 +684,44 @@ function renderAccount(account) {
         }, 'danger', { 'aria-label': `Delete account ${account.name}` }))),
     account.archived && h('p', { class: 'fin-notice' },
       'This account is archived. It is hidden from the account groups and left out of net worth. Its transactions are kept.'),
+    // Each card: a label, the figure, and a short note under it (as on the Insights tabs).
     h('dl', { class: 'fin-stats' },
-      h('div', {}, h('dt', {}, inv?.hasHoldings ? 'Value' : 'Balance'), h('dd', { class: `fin-num ${tone(value)}` }, signed(value, account.currency))),
+      h('div', {}, h('dt', {}, inv?.hasHoldings ? 'Value' : 'Balance'), h('dd', { class: `fin-num ${tone(value)}` }, signed(value, account.currency)),
+        h('p', { class: 'fin-stat-note' }, inv?.hasHoldings ? 'holdings at today’s prices'
+          : account.type === 'credit' ? (value < 0 ? 'owed on the card' : 'in your favour') : 'up to today')),
+      // A credit card with a limit: what's left to spend (the limit, less what's owed) and how much is used.
+      limitUse(account, value) && (() => {
+        const { used, left } = limitUse(account, value);
+        return h('div', {}, h('dt', {}, 'Available'),
+          h('dd', { class: `fin-num ${left < 0 ? 'fin-neg' : ''}` }, money(left, account.currency)),
+          usageBar(limitUse(account, value)),
+          h('p', { class: 'fin-stat-note' }, left < 0
+            ? `${money(-left, account.currency)} over the ${money(account.creditLimit, account.currency)} limit`
+            : `${used}% of the ${money(account.creditLimit, account.currency)} limit used`));
+      })(),
       account.currency !== 'EUR' && h('div', {}, h('dt', {}, 'In EUR'),
-        h('dd', { class: 'fin-num' }, rate == null ? 'rate pending' : signed(convert(value, rate), 'EUR'))),
+        h('dd', { class: 'fin-num' }, rate == null ? 'rate pending' : signed(convert(value, rate), 'EUR')),
+        h('p', { class: 'fin-stat-note' }, rate == null ? 'waiting for today’s rate' : `at today’s rate, 1 ${account.currency} = ${num(rate, 4)} EUR`)),
       // For investments, the transactions are the money paid in; the gain is value minus that.
-      inv?.hasHoldings && h('div', {}, h('dt', {}, 'Invested'), h('dd', { class: 'fin-num' }, money(inv.invested, account.currency))),
+      inv?.hasHoldings && h('div', {}, h('dt', {}, 'Invested'), h('dd', { class: 'fin-num' }, money(inv.invested, account.currency)),
+        h('p', { class: 'fin-stat-note' }, 'money put in')),
       inv?.hasHoldings && h('div', {}, h('dt', {}, 'Gain'),
-        h('dd', { class: `fin-num ${tone(value - inv.invested)}` }, signed(value - inv.invested, account.currency),
-          inv.invested > 0 && h('span', { class: 'fin-stat-sub' }, ` ${((value - inv.invested) / inv.invested * 100).toFixed(1)}%`))),
+        h('dd', { class: `fin-num ${tone(value - inv.invested)}` }, signed(value - inv.invested, account.currency)),
+        h('p', { class: 'fin-stat-note' }, inv.invested > 0
+          ? `${value >= inv.invested ? '+' : ''}${num((value - inv.invested) / inv.invested * 100)}% on what was put in`
+          : 'value less what was put in')),
       // Like Buxfer's forecast: the balance once everything scheduled in the next 30 days happens,
       // and the transactions already added for those days.
       (state.schedules.some((s) => scheduledEffect(s, account.id) !== 0) || totalsOf(account.id).plannedCount > 0) && (() => {
         const next = forecast(account.id, value, state.schedules, daysFromToday(FORECAST_DAYS)) + totalsOf(account.id).planned;
         return h('div', {}, h('dt', {}, `Forecast, ${FORECAST_DAYS} days`),
-          h('dd', { class: `fin-num ${tone(next)}` }, signed(next, account.currency)));
+          h('dd', { class: `fin-num ${tone(next)}` }, signed(next, account.currency)),
+          h('p', { class: 'fin-stat-note' }, 'with what’s scheduled or dated ahead'));
       })()),
     accountTabs(),
     view.tab === 'insights'
-      ? (account.type === 'investment' ? investmentInsights(account) : insightsPanel(new Set([account.id])))
+      ? (account.type === 'investment' ? investmentInsights(account)
+        : insightsPanel(new Set([account.id]), { spendingOnly: account.type === 'credit', balanceOf: account }))
       : [account.type === 'investment' && holdingsSection(account), transactionsSection(account)]);
 }
 
@@ -1705,7 +1793,7 @@ function symbolPicker(onPick) {
   const box = input({
     type: 'text', autocomplete: 'off', spellcheck: 'false', role: 'combobox',
     'aria-autocomplete': 'list', 'aria-expanded': 'false', 'aria-controls': listId,
-    placeholder: 'Ticker or name, e.g. VWCE or Apple',
+    placeholder: 'Ticker, name or fund ISIN, e.g. VWCE, Apple or LU0109981661',
   });
   const listbox = h('ul', { id: listId, role: 'listbox', class: 'fin-options', hidden: true, 'aria-label': 'Matches' });
   const note = h('p', { class: 'fin-hint', 'aria-live': 'polite' });
@@ -1744,7 +1832,10 @@ function symbolPicker(onPick) {
     inflight?.abort();
     inflight = new AbortController();
     try {
-      results = await searchSymbols(q, inflight.signal);
+      // An ISIN (a fund): ask EODHD what it is; listings from Twelve Data's search follow.
+      const fund = isIsin(q) && state.settings.eodhdApiKey ? await fundSearch(q.toUpperCase(), fundCall).catch(() => null) : null;
+      const listings = await searchSymbols(q, inflight.signal).catch((err) => { if (fund && err.name !== 'AbortError') return []; throw err; });
+      results = fund ? [fund, ...listings] : listings;
       note.textContent = results.length ? `${results.length} matches. Use the arrow keys to choose.` : 'No matches.';
       paint();
     } catch (err) {
@@ -1874,6 +1965,180 @@ function openHoldingDialog(x) {
 // ── lots: a holding's buys and sells ─────────────────────────────────────────
 
 let openLotsId = null;
+let openChartId = null; // the holding whose charts are open
+
+// A holding's price over time, and the gain or loss on the units held (needs its buys and sells).
+function holdingChartPanel(x) {
+  const hist = holdingHistory(x, state.lots, today());
+  // Built with h(), which leaves out false and null (append() would print them as text).
+  const panel = (...kids) => h('div', { class: 'fin-tx-form', 'aria-label': `Charts of ${x.symbol}` }, ...kids);
+  if (hist.length < 2) {
+    return panel(h('p', { class: 'fin-hint' }, x.mic
+      ? `Not enough prices for ${x.symbol} yet. Load its price history, or add its buys and sells.`
+      : `Not enough prices for ${x.symbol} yet. Add its buys and sells (each has a price), or update its price over time.`),
+    x.mic && button('Load price history', () => loadHistory([x]), 'secondary fin-btn-sm'));
+  }
+  const last = hist.at(-1);
+  const pct = last.cost ? ` (${last.gain >= 0 ? '+' : ''}${num((last.gain / last.cost) * 100)}%)` : '';
+  return panel(
+    last.gain != null && h('p', { class: 'fin-readout' },
+      'Now ', h('strong', { class: 'fin-num' }, money(last.value, x.currency)), ' for ', shownQty(last.units), ' units, ',
+      h('strong', { class: `fin-num ${tone(last.gain)}` }, signed(last.gain, x.currency)), hideAmounts ? '' : pct, ' on what they cost.'),
+    h('div', { class: 'fin-hold-charts' },
+      timeChart(hist.map((p) => ({ date: p.date, v: Math.round(p.price * 100) })), {
+        id: `price-${x.id}`, title: `Price of ${x.symbol}`, unit: `${x.currency} per unit`, format: (v) => money(v, x.currency),
+      }),
+      last.gain != null && timeChart(hist.map((p) => ({ date: p.date, v: p.gain })), {
+        id: `gain-${x.id}`, title: 'Gain or loss', unit: 'on the units held then', format: (v) => signed(v, x.currency), kind: 'gain',
+      })),
+    last.gain == null && h('p', { class: 'fin-hint' }, 'Add its buys and sells to see the gain or loss over time.'));
+}
+
+// One series over time, placed by date. `kind`:
+// - 'change' (default): the total on the left axis, and on the right the same gridlines as the change
+//   since the first point (one scale, two readings); the line is green above where it started and
+//   red below, with that level marked. `ref` adds a dashed line to compare with (e.g. money invested).
+// - 'gain': a line around zero, gains shaded green and losses red.
+// One tab stop: ←/→ step through the points (Home/End jump), the readout says the values; a table
+// has them all. `wide` for a full-width chart.
+function timeChart(points, { id, title, unit, format, kind = 'change', ref = null, refLabel = '', wide = false }) {
+  const NS = 'http://www.w3.org/2000/svg';
+  const el = (tag, attrs = {}) => {
+    const n = document.createElementNS(NS, tag);
+    for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+    return n;
+  };
+  const change = kind === 'change';
+  const W = wide ? 860 : 560; const H = wide ? 260 : 220; const L = 66; const R = change ? 66 : 12; const T = 12; const B = 26;
+  const plotW = W - L - R; const plotH = H - T - B;
+  const base = points[0].v;
+  const vals = [...points.map((p) => p.v), ...(ref ?? []).map((p) => p.v)];
+  let lo = Math.min(...vals);
+  let hi = Math.max(...vals);
+  if (kind === 'gain') { lo = Math.min(0, lo); hi = Math.max(0, hi); }
+  if (hi === lo) { hi += 100; lo -= 100; }
+  const raw = (hi - lo) / 4;
+  const mag = 10 ** Math.floor(Math.log10(raw));
+  const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((v) => v >= raw);
+  const bottom = Math.floor(lo / step) * step;
+  const top = Math.ceil(hi / step) * step;
+  const t0 = Date.parse(points[0].date);
+  const span = Math.max(1, Date.parse(points.at(-1).date) - t0);
+  const x = (p) => L + ((Date.parse(p.date) - t0) / span) * plotW;
+  const y = (v) => T + plotH - ((v - bottom) / (top - bottom)) * plotH;
+  const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, class: 'fin-chart fin-time-chart', role: 'img', 'aria-label': `${title}${unit ? `, ${unit}` : ''}, from ${shortDate(points[0].date)} ${points[0].date.slice(0, 4)} to ${shortDate(points.at(-1).date)} ${points.at(-1).date.slice(0, 4)}` });
+  const short = (v) => (hideAmounts ? '•••' : format(Math.round(v)).replace(/[.,]00(?=\D*$)/, ''));
+  for (let v = bottom; v <= top + step / 2; v += step) {
+    svg.append(el('line', { x1: L, x2: W - R, y1: y(v), y2: y(v), class: v === 0 && kind === 'gain' ? 'fin-axis-line' : 'fin-grid-line' }));
+    const t = el('text', { x: L - 8, y: y(v) + 4, class: 'fin-tick', 'text-anchor': 'end' });
+    t.textContent = short(v);
+    svg.append(t);
+    if (change) {
+      // The same gridline read as up or down since the start.
+      const d = Math.round(v - base);
+      const r = el('text', { x: W - R + 8, y: y(v) + 4, class: `fin-tick ${d > 0 ? 'fin-tick-up' : d < 0 ? 'fin-tick-down' : ''}`, 'text-anchor': 'start' });
+      r.textContent = hideAmounts ? '•••' : d === 0 ? '0' : `${d > 0 ? '+' : '−'}${format(Math.abs(d)).replace(/[.,]00(?=\D*$)/, '').replace(/^[+−-]/, '')}`;
+      svg.append(r);
+    }
+  }
+  const pathOf = (list) => list.map((p, i) => `${i ? 'L' : 'M'}${x(p).toFixed(1)},${y(p.v).toFixed(1)}`).join('');
+  const line = pathOf(points);
+  // Above and below a level (the start, or zero): two clip areas.
+  const split = (level) => {
+    const at = Math.min(T + plotH, Math.max(T, y(level)));
+    const upId = `${id}-up`;
+    const downId = `${id}-down`;
+    const upClip = el('clipPath', { id: upId });
+    upClip.append(el('rect', { x: L - 4, y: T - 4, width: plotW + 8, height: at - T + 4 }));
+    const downClip = el('clipPath', { id: downId });
+    downClip.append(el('rect', { x: L - 4, y: at, width: plotW + 8, height: T + plotH - at + 4 }));
+    svg.append(upClip, downClip);
+    return { up: `url(#${upId})`, down: `url(#${downId})`, at };
+  };
+  if (ref) svg.append(el('path', { d: pathOf(ref), class: 'fin-line fin-line-ref' }));
+  if (kind === 'gain') {
+    const clip = split(0);
+    const area = `${line}L${x(points.at(-1)).toFixed(1)},${clip.at}L${x(points[0]).toFixed(1)},${clip.at}Z`;
+    svg.append(el('path', { d: area, class: 'fin-area-gain', 'clip-path': clip.up }));
+    svg.append(el('path', { d: area, class: 'fin-area-loss', 'clip-path': clip.down }));
+    svg.append(el('path', { d: line, class: 'fin-line fin-line-gain' }));
+  } else {
+    const clip = split(base);
+    svg.append(el('line', { x1: L, x2: W - R, y1: clip.at, y2: clip.at, class: 'fin-base-line' }));
+    svg.append(el('path', { d: line, class: 'fin-line fin-line-up', 'clip-path': clip.up }));
+    svg.append(el('path', { d: line, class: 'fin-line fin-line-down', 'clip-path': clip.down }));
+  }
+  // Dates along the bottom: about five, evenly spread.
+  const ticks = Math.min(wide ? 7 : 5, points.length);
+  for (let k = 0; k < ticks; k += 1) {
+    const d = new Date(t0 + (span * k) / Math.max(1, ticks - 1)).toISOString().slice(0, 10);
+    const t = el('text', { x: L + (plotW * k) / Math.max(1, ticks - 1), y: H - 8, class: 'fin-tick', 'text-anchor': k === 0 ? 'start' : k === ticks - 1 ? 'end' : 'middle' });
+    t.textContent = new Date(`${d}T00:00:00`).toLocaleDateString(undefined, span < 120 * 864e5 ? { day: 'numeric', month: 'short' } : { month: 'short', year: 'numeric' });
+    svg.append(t);
+  }
+  const guide = el('line', { class: 'fin-guide', y1: T, y2: T + plotH, x1: -10, x2: -10 });
+  const dot = el('circle', { class: 'fin-dot fin-dot-gain', r: 4, cx: -10, cy: -10 });
+  svg.append(guide, dot);
+  const readout = h('p', { class: 'fin-readout', 'aria-live': 'polite' });
+  const refAt = (date) => ref?.find((r) => r.date === date)?.v;
+  const signedOf = (v) => (v === 0 ? format(0) : `${v > 0 ? '+' : '−'}${format(Math.abs(v)).replace(/^[+−-]/, '')}`);
+  let at = points.length - 1;
+  const show = (i) => {
+    at = Math.max(0, Math.min(points.length - 1, i));
+    const p = points[at];
+    guide.setAttribute('x1', x(p)); guide.setAttribute('x2', x(p));
+    dot.setAttribute('cx', x(p)); dot.setAttribute('cy', y(p.v));
+    dot.setAttribute('class', `fin-dot ${kind === 'gain' ? 'fin-dot-gain' : p.v >= base ? 'fin-dot-up' : 'fin-dot-down'}`);
+    const d = p.v - base;
+    const r = refAt(p.date);
+    // replaceChildren doesn't flatten lists (it would print them as text), so flatten them here.
+    readout.replaceChildren(...[h('strong', {}, `${shortDate(p.date)} ${p.date.slice(0, 4)}`), ' ',
+      h('strong', { class: `fin-num ${kind === 'gain' ? tone(p.v) : ''}` }, format(p.v)),
+      change && at > 0 && [' · ', h('span', { class: `fin-num ${tone(d)}` }, signedOf(d)),
+        !hideAmounts && base > 0 ? ` (${d >= 0 ? '+' : ''}${num((d / base) * 100)}%)` : '', ' since the start'],
+      r != null && [' · ', refLabel.toLowerCase(), ' ', h('span', { class: 'fin-num' }, format(r))],
+    ].flat().filter((x) => x != null && x !== false && x !== ''));
+  };
+  const wrap = h('div', {
+    class: 'fin-chart-wrap', tabindex: '0', role: 'group', 'aria-label': `${title}: use the arrow keys to read each point`,
+    onkeydown: (e) => {
+      const move = { ArrowLeft: at - 1, ArrowRight: at + 1, Home: 0, End: points.length - 1 }[e.key];
+      if (move === undefined) return;
+      e.preventDefault();
+      show(move);
+    },
+    onfocus: () => show(at),
+  }, svg);
+  // Pointer: the nearest point by date.
+  svg.addEventListener('pointermove', (e) => {
+    const box = svg.getBoundingClientRect();
+    const px = ((e.clientX - box.left) / box.width) * W;
+    let best = 0;
+    points.forEach((p, i) => { if (Math.abs(x(p) - px) < Math.abs(x(points[best]) - px)) best = i; });
+    show(best);
+  });
+  show(at);
+  const table = h('details', { class: 'fin-chart-table' },
+    h('summary', {}, 'Show as a table'),
+    h('div', { class: 'fin-scroll' }, h('table', { class: 'fin-table' },
+      h('caption', { class: 'fin-sr' }, title),
+      h('thead', {}, h('tr', {}, h('th', { scope: 'col' }, 'Date'), h('th', { scope: 'col', class: 'fin-r' }, title),
+        change && h('th', { scope: 'col', class: 'fin-r' }, 'Since the start'),
+        ref && h('th', { scope: 'col', class: 'fin-r' }, refLabel))),
+      h('tbody', {}, [...points].reverse().map((p) => h('tr', {},
+        h('th', { scope: 'row' }, `${shortDate(p.date)} ${p.date.slice(0, 4)}`),
+        h('td', { class: `fin-r fin-num ${kind === 'gain' ? tone(p.v) : ''}` }, format(p.v)),
+        change && h('td', { class: `fin-r fin-num ${tone(p.v - base)}` }, signedOf(p.v - base)),
+        ref && h('td', { class: 'fin-r fin-num' }, refAt(p.date) == null ? '—' : format(refAt(p.date)))))))));
+  return h('section', { class: 'fin-hold-chart', 'aria-labelledby': `${id}-h` },
+    h('div', { class: 'fin-chart-head' },
+      h('h4', { id: `${id}-h`, class: 'fin-label' }, title, unit && ' ', unit && h('span', { class: 'fin-muted fin-chart-unit' }, unit)),
+      (change || ref) && h('ul', { class: 'fin-legend', 'aria-label': 'Legend' },
+        change && h('li', {}, h('span', { class: 'fin-key fin-key-up' }), 'up since the start'),
+        change && h('li', {}, h('span', { class: 'fin-key fin-key-down' }), 'down'),
+        ref && h('li', {}, h('span', { class: 'fin-key fin-key-ref' }), refLabel))),
+    readout, wrap, table);
+}
 const lotsOfHolding = (id) => state.lots.filter((l) => l.holdingId === id).sort((a, b) => a.date.localeCompare(b.date));
 // A holding with lots takes its units from them.
 function recalcHolding(x) {
@@ -1926,12 +2191,34 @@ function holdingsSection(account) {
   const list = state.holdings.filter((x) => x.accountId === account.id);
   const picker = symbolPicker();
   const qty = input({ type: 'number', step: 'any', min: '0', required: true, inputmode: 'decimal' });
-  const symField = field('Stock or ETF', picker.box);
+  const symField = field('Stock, ETF or fund', picker.box);
   // field() wraps the bare input; swap in the combobox wrapper and its description.
   symField.replaceChild(picker.el, picker.box);
   picker.el.prepend(picker.box);
   symField.append(picker.note);
   const error = h('p', { class: 'fin-error', role: 'alert' });
+  // Something no provider lists (a pension fund, a private holding): added by hand, with a price you
+  // type and update yourself. Its name is the one typed in the search box.
+  const byHand = h('div', { class: 'fin-grid fin-by-hand', hidden: true });
+  const handCode = input({ type: 'text', autocomplete: 'off', spellcheck: 'false', maxlength: '12', placeholder: 'Optional' });
+  const handCur = select(CURRENCIES.map((c) => [c, c]), account.currency);
+  const handPrice = input({ type: 'number', step: 'any', min: '0', inputmode: 'decimal' });
+  byHand.append(field('Short name', handCode, 'Shown in lists. Defaults to the name.'), field('Currency', handCur), field('Price per unit', handPrice));
+  let manualMode = false;
+  const toggle = h('button', { type: 'button', class: 'fin-link', 'aria-expanded': 'false', 'data-key': 'hold-by-hand' });
+  const setManual = (on, focus = true) => {
+    manualMode = on;
+    byHand.hidden = !on;
+    handPrice.required = on;
+    toggle.setAttribute('aria-expanded', String(on));
+    toggle.textContent = on ? 'Search for a listing instead' : 'Not listed? Add it by hand';
+    symField.querySelector('label').textContent = on ? 'Name' : 'Stock, ETF or fund';
+    picker.box.placeholder = on ? 'e.g. My pension fund' : 'Ticker, name or fund ISIN, e.g. VWCE, Apple or LU0109981661';
+    error.textContent = '';
+    if (focus) (on && picker.box.value.trim() ? handPrice : picker.box).focus();
+  };
+  toggle.addEventListener('click', () => setManual(!manualMode));
+  setManual(false, false);
   return h('section', { class: 'fin-card', 'aria-labelledby': 'hold-h' },
     h('div', { class: 'fin-card-head' },
       h('h3', { id: 'hold-h', class: 'fin-label' }, 'Holdings ', h('span', { class: 'fin-count' }, String(list.length))),
@@ -1958,6 +2245,7 @@ function holdingsSection(account) {
           const sum = own.length ? lotSummary(own) : null;
           const gain = sum && v != null ? v - sum.cost : null;
           const open = openLotsId === x.id;
+          const charted = openChartId === x.id;
           const row = h('tr', {},
             h('td', {}, x.symbol),
             h('td', {}, x.name ?? '', x.priceError && h('span', { class: 'fin-sub fin-row-error' },
@@ -1969,23 +2257,40 @@ function holdingsSection(account) {
             h('td', { class: 'fin-r fin-num fin-muted' }, sum ? money(sum.cost, x.currency) : '—',
               sum?.avgPrice != null && h('span', { class: 'fin-sub' }, `avg ${money(Math.round(sum.avgPrice * 100), x.currency)}`)),
             h('td', { class: `fin-r fin-num ${gain == null ? '' : tone(gain)}` }, gain == null ? '—' : signed(gain, x.currency),
-              gain != null && sum.cost > 0 && h('span', { class: 'fin-sub' }, `${gain >= 0 ? '+' : ''}${((gain / sum.cost) * 100).toFixed(1)}%`)),
+              gain != null && sum.cost > 0 && h('span', { class: 'fin-sub' }, `${gain >= 0 ? '+' : ''}${num((gain / sum.cost) * 100)}%`)),
             h('td', { class: 'fin-r' }, h('div', { class: 'fin-row-actions fin-row-actions--keep' },
               iconButton('edit', `Edit ${x.symbol}`, () => openHoldingDialog(x), { 'data-key': `hold-edit-${x.id}` }),
+              button('Chart', () => { openChartId = charted ? null : x.id; render(`chart-${x.id}`); },
+                'secondary fin-btn-sm', { 'aria-expanded': String(charted), 'data-key': `chart-${x.id}`, 'aria-label': `Chart of ${x.symbol}` }),
               button(own.length ? `Lots (${own.length})` : 'Add lots', () => { openLotsId = open ? null : x.id; render(`lots-${x.id}`); },
                 'secondary fin-btn-sm', { 'aria-expanded': String(open), 'data-key': `lots-${x.id}` }),
               iconButton('trash', `Remove ${x.symbol}`, () => undoable(`${x.symbol} removed${own.length ? ` with its ${own.length} buys and sells` : ''}.`, ['holdings', 'lots'], () => {
                 state.holdings = state.holdings.filter((y) => y.id !== x.id);
                 state.lots = state.lots.filter((l) => l.holdingId !== x.id);
               }), { danger: true }))));
-          return [row, open && h('tr', { class: 'fin-edit-row' }, h('td', { colspan: 9 }, lotsPanel(x)))];
+          return [row,
+            charted && h('tr', { class: 'fin-edit-row' }, h('td', { colspan: 9 }, holdingChartPanel(x))),
+            open && h('tr', { class: 'fin-edit-row' }, h('td', { colspan: 9 }, lotsPanel(x)))];
         })))),
     h('form', {
       class: 'fin-tx-form',
       onsubmit: async (e) => {
         e.preventDefault();
+        if (manualMode) {
+          const name = picker.box.value.trim();
+          if (!name) { error.textContent = 'Give it a name.'; picker.box.focus(); return; }
+          const holding = {
+            id: newId(), accountId: account.id, symbol: handCode.value.trim() || name, mic: null, exchange: 'By hand',
+            name, currency: handCur.value, quantity: Number(qty.value), price: Number(handPrice.value),
+            manual: true, priceAt: new Date().toISOString(),
+          };
+          state.holdings.push(holding);
+          persist(); render();
+          say(`Added ${name}. Update its price in the holdings list whenever you like.`);
+          return;
+        }
         const r = picker.picked();
-        if (!r) { error.textContent = 'Choose a listing from the search results.'; picker.box.focus(); return; }
+        if (!r) { error.textContent = 'Choose a listing from the search results, or add it by hand.'; picker.box.focus(); return; }
         const holding = {
           id: newId(), accountId: account.id, symbol: r.symbol, mic: r.mic, exchange: r.exchange,
           name: r.name, currency: r.currency, quantity: Number(qty.value), price: null,
@@ -1997,8 +2302,11 @@ function holdingsSection(account) {
       },
     },
       h('div', { class: 'fin-grid fin-grid-hold' }, symField, field('Quantity', qty)),
+      byHand,
       error,
-      h('button', { type: 'submit', class: 'fin-btn btn-primary' }, 'Add holding')));
+      h('div', { class: 'fin-actions' },
+        h('button', { type: 'submit', class: 'fin-btn btn-primary' }, 'Add holding'),
+        toggle)));
 }
 
 // ── IOUs ─────────────────────────────────────────────────────────────────────
@@ -2163,7 +2471,7 @@ function renderPerson(personId) {
 
 let insightsPeriod = readPref('finance:period', { preset: 'this-month' });
 const compactEUR = (minor) => (hideAmounts ? '•••'
-  : new Intl.NumberFormat(undefined, { style: 'currency', currency: 'EUR', notation: 'compact', maximumFractionDigits: 1 }).format(minor / 100));
+  : new Intl.NumberFormat(numLocale(), { style: 'currency', currency: 'EUR', notation: 'compact', maximumFractionDigits: 1 }).format(minor / 100));
 
 function bucketLabel(key, unit, multiYear) {
   if (unit === 'year') return key;
@@ -2403,7 +2711,9 @@ function insightsFor(range, accountIds, onlyCategory = null) {
   return totals && insightsFrom(totals, { ...range, categories: state.categories });
 }
 
-function insightsPanel(accountIds) {
+// `spendingOnly` (credit cards): just spending, no income, net or savings. `balanceOf` (an account's
+// own tab): its balance over the period, after the cards and before the other charts.
+function insightsPanel(accountIds, { spendingOnly = false, balanceOf = null } = {}) {
   // "All time" starts at the first transaction of these accounts (from the account totals).
   const firsts = state.accounts.filter((a) => !accountIds || accountIds.has(a.id)).map((a) => totalsOf(a.id).first).filter(Boolean);
   const first = firsts.reduce((min, d) => (d < min ? d : min), today());
@@ -2428,29 +2738,51 @@ function insightsPanel(accountIds) {
   return h('div', { class: 'fin-insights' },
     periodControls(range),
     h('dl', { class: 'fin-stats' },
-      h('div', {}, h('dt', {}, 'Income'), h('dd', { class: 'fin-pos' }, money(r.income, 'EUR')), vs(r.income, p.income)),
+      !spendingOnly && h('div', {}, h('dt', {}, 'Income'), h('dd', { class: 'fin-pos' }, money(r.income, 'EUR')), vs(r.income, p.income)),
       h('div', {}, h('dt', {}, 'Spending'), h('dd', { class: 'fin-neg' }, money(r.expenses, 'EUR')),
         vs(r.expenses, p.expenses),
         r.refunds > 0 && h('p', { class: 'fin-stat-note' }, `after ${money(r.refunds, 'EUR')} of refunds`)),
-      h('div', {}, h('dt', {}, 'Net'), h('dd', { class: tone(r.net) }, signed(r.net, 'EUR')),
+      !spendingOnly && h('div', {}, h('dt', {}, 'Net'), h('dd', { class: tone(r.net) }, signed(r.net, 'EUR')),
         h('p', { class: 'fin-stat-note' }, `${signed(p.net, 'EUR')} the ${prevLabel(prevRange)}`)),
-      h('div', {}, h('dt', {}, 'Saved'), h('dd', {}, rate),
+      !spendingOnly && h('div', {}, h('dt', {}, 'Saved'), h('dd', {}, rate),
         h('p', { class: 'fin-stat-note' }, 'of income')),
       // Averages over the whole months of the period that have ended (not this month, still going).
       avg && h('div', {}, h('dt', {}, 'Average spending a month'), h('dd', { class: 'fin-neg' }, money(Math.round(avg.r.expenses / avg.months), 'EUR')),
         h('p', { class: 'fin-stat-note' }, avg.note)),
-      avg && h('div', {}, h('dt', {}, 'Average income a month'), h('dd', { class: 'fin-pos' }, money(Math.round(avg.r.income / avg.months), 'EUR')),
+      avg && !spendingOnly && h('div', {}, h('dt', {}, 'Average income a month'), h('dd', { class: 'fin-pos' }, money(Math.round(avg.r.income / avg.months), 'EUR')),
         h('p', { class: 'fin-stat-note' }, avg.note))),
+    // An account's own tab: its balance over the period, first of the charts.
+    balanceOf && balanceChart(balanceOf, range),
     r.count === 0
-      ? h('p', { class: 'fin-notice' }, 'No income or spending in this period. Transfers between your accounts don’t count.')
+      ? h('p', { class: 'fin-notice' }, spendingOnly
+        ? 'No spending in this period. Payments to the card are transfers, so they don’t count.'
+        : 'No income or spending in this period. Transfers between your accounts don’t count.')
       : [
-        incomeSpendChart(r),
+        spendingOnly
+          ? h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'spend-time-h' },
+            h('div', { class: 'fin-chart-head' }, h('h3', { id: 'spend-time-h', class: 'fin-label' }, `Spending by ${r.unit}`)),
+            singleColumns(r.series.map((b) => ({ key: b.key, value: b.expenses })), r.unit, range, 'Spending'))
+          : incomeSpendChart(r),
         h('div', { class: 'fin-break-grid' },
           categoryBreakdown('Spending by category', r.spending, r.expenses),
-          categoryBreakdown('Income by category', r.earning, r.income)),
+          !spendingOnly && categoryBreakdown('Income by category', r.earning, r.income)),
         categoryOverTime(range, prevRange, accountIds, r),
       ],
     h('p', { class: 'fin-hint fin-mt' }, 'Transfers between your accounts and opening balances aren’t counted. Loans and repayments count only what isn’t owed back, refunds lower spending (in their first category that isn’t an income one, like a salary), and a transaction with several categories counts under its first one.'));
+}
+
+// An account's balance over a period, in its own currency, at the end of each day, week or month
+// (from the database's balances_at), up to today.
+function balanceChart(account, range) {
+  const to = range.to > today() ? today() : range.to;
+  const { ends } = historyPoints(range.from, to);
+  if (ends.length < 2) return null;
+  const runs = ask('balances_at', { p_dates: ends.map((e) => e.date), p_accounts: [account.id], p_native: true });
+  if (!runs) return h('section', { class: 'fin-card' }, loader('Working out the balance…'));
+  const values = runMap(runs).get(account.id)?.values ?? [];
+  return h('section', { class: 'fin-card fin-pad' }, timeChart(ends.map((e, i) => ({ date: e.date, v: Number(values[i] ?? 0) })), {
+    id: `bal-${account.id}`, title: 'Balance', unit: `in ${account.currency}`, format: (v) => money(v, account.currency), wide: true,
+  }));
 }
 
 // The period of the same length just before `range`.
@@ -2591,100 +2923,6 @@ function recordSnapshot() {
   persist();
 }
 
-// Net worth and investments over time, as two lines on one EUR axis. The readout above shows the
-// hovered or focused point; the table below has every value.
-// `labels` name the two lines (`total` and `investments` on each point) and the chart.
-function netWorthChart(points, unit, from, to, labels = { total: 'Net worth', investments: 'Investments', title: 'Net worth over time' }) {
-  const NS = 'http://www.w3.org/2000/svg';
-  const el = (tag, attrs = {}) => {
-    const n = document.createElementNS(NS, tag);
-    for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
-    return n;
-  };
-  const W = 760; const H = 260; const L = 60; const R = 12; const T = 12; const B = 26;
-  const plotW = W - L - R; const plotH = H - T - B;
-  const values = points.flatMap((p) => [p.total, p.investments]);
-  const lo = Math.min(0, ...values);
-  const hi = Math.max(1, ...values);
-  // Clean ticks: a step of 1, 2, 2.5 or 5 times a power of ten, five or so across the range.
-  const raw = (hi - lo) / 4;
-  const mag = 10 ** Math.floor(Math.log10(raw));
-  const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((v) => v >= raw);
-  const bottom = Math.floor(lo / step) * step;
-  const top = Math.ceil(hi / step) * step;
-  const y = (v) => T + plotH - ((v - bottom) / (top - bottom)) * plotH;
-  const x = (i) => L + (points.length === 1 ? plotW / 2 : (plotW * i) / (points.length - 1));
-  const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, class: 'fin-chart', role: 'group', 'aria-label': `${labels.title}, by ${unit}` });
-
-  for (let v = bottom; v <= top + step / 2; v += step) {
-    svg.append(el('line', { x1: L, x2: W - R, y1: y(v), y2: y(v), class: v === 0 ? 'fin-axis-line' : 'fin-grid-line' }));
-    const t = el('text', { x: L - 8, y: y(v) + 4, class: 'fin-tick', 'text-anchor': 'end' });
-    t.textContent = compactEUR(v);
-    svg.append(t);
-  }
-  const path = (key) => points.map((p, i) => `${i ? 'L' : 'M'}${x(i)},${y(p[key])}`).join('');
-  // A light wash under the net-worth line, down to zero.
-  svg.append(el('path', { class: 'fin-area-net', d: `${path('total')}L${x(points.length - 1)},${y(Math.max(0, bottom))}L${x(0)},${y(Math.max(0, bottom))}Z` }));
-  svg.append(el('path', { class: 'fin-line fin-line-inv', d: path('investments') }));
-  svg.append(el('path', { class: 'fin-line fin-line-net', d: path('total') }));
-  const last = points.length - 1;
-  svg.append(el('circle', { class: 'fin-dot fin-dot-inv', cx: x(last), cy: y(points[last].investments), r: 4 }));
-  svg.append(el('circle', { class: 'fin-dot fin-dot-net', cx: x(last), cy: y(points[last].total), r: 4 }));
-
-  const multiYear = from.slice(0, 4) !== to.slice(0, 4);
-  const every = Math.ceil(points.length / 10);
-  const readout = h('p', { class: 'fin-readout', 'aria-live': 'polite' });
-  const rest = () => readout.replaceChildren(h('span', { class: 'fin-muted' }, 'Hover or focus the chart for the values at each point.'));
-  const guide = el('line', { class: 'fin-guide', y1: T, y2: T + plotH, x1: -10, x2: -10 });
-  svg.append(guide);
-  points.forEach((p, i) => {
-    const w = points.length === 1 ? plotW : plotW / (points.length - 1);
-    const hit = el('rect', {
-      x: Math.max(L, x(i) - w / 2), y: T, width: Math.min(w, W - R - Math.max(L, x(i) - w / 2)), height: plotH,
-      class: 'fin-hit', tabindex: '0',
-      'aria-label': `${bucketTitle(p.key, unit)}: ${labels.total.toLowerCase()} ${money(p.total, 'EUR')}, ${labels.investments.toLowerCase()} ${money(p.investments, 'EUR')}`,
-    });
-    const show = () => {
-      guide.setAttribute('x1', x(i));
-      guide.setAttribute('x2', x(i));
-      readout.replaceChildren(
-        h('strong', {}, bucketTitle(p.key, unit)), ' ',
-        h('span', { class: 'fin-key fin-key-net' }), h('strong', { class: 'fin-num' }, money(p.total, 'EUR')), ` ${labels.total.toLowerCase()} `,
-        h('span', { class: 'fin-key fin-key-inv' }), h('strong', { class: 'fin-num' }, money(p.investments, 'EUR')), ` ${labels.investments.toLowerCase()}`);
-    };
-    hit.addEventListener('pointerenter', show);
-    hit.addEventListener('focus', show);
-    svg.append(hit);
-    if (i % every === 0 || i === last) {
-      const t = el('text', { x: x(i), y: H - 8, class: 'fin-tick', 'text-anchor': i === 0 ? 'start' : i === last ? 'end' : 'middle' });
-      t.textContent = bucketLabel(p.key, unit, multiYear);
-      svg.append(t);
-    }
-  });
-  svg.addEventListener('pointerleave', () => { guide.setAttribute('x1', -10); guide.setAttribute('x2', -10); rest(); });
-  rest();
-
-  const table = h('details', { class: 'fin-chart-table' },
-    h('summary', {}, 'Show as a table'),
-    h('div', { class: 'fin-scroll' }, h('table', { class: 'fin-table' },
-      h('caption', { class: 'fin-sr' }, `${labels.title}, by ${unit}`),
-      h('thead', {}, h('tr', {}, h('th', { scope: 'col' }, 'At the end of'),
-        h('th', { scope: 'col', class: 'fin-r' }, labels.total), h('th', { scope: 'col', class: 'fin-r' }, labels.investments))),
-      h('tbody', {}, points.map((p) => h('tr', {},
-        h('th', { scope: 'row' }, bucketTitle(p.key, unit)),
-        h('td', { class: 'fin-r fin-num' }, money(p.total, 'EUR')),
-        h('td', { class: 'fin-r fin-num' }, money(p.investments, 'EUR'))))))));
-
-  return h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'nw-chart-h' },
-    h('div', { class: 'fin-chart-head' },
-      h('h3', { id: 'nw-chart-h', class: 'fin-label' }, labels.title),
-      h('ul', { class: 'fin-legend', 'aria-label': 'Legend' },
-        h('li', {}, h('span', { class: 'fin-key fin-key-net' }), labels.total),
-        h('li', {}, h('span', { class: 'fin-key fin-key-inv' }), labels.investments))),
-    readout,
-    h('div', { class: 'fin-chart-wrap' }, svg),
-    table);
-}
 
 // Insights for an investment account: its value against what was put in, over the period, and
 // each holding's value, cost and gain today.
@@ -2726,12 +2964,15 @@ function investmentInsights(account) {
       h('div', {}, h('dt', {}, 'Invested'), h('dd', {}, money(now.investments, 'EUR')),
         h('p', { class: 'fin-stat-note' }, byLots ? 'cost of the units held' : 'money moved into the account')),
       h('div', {}, h('dt', {}, 'Gain'), h('dd', { class: tone(gain) }, signed(gain, 'EUR')),
-        now.investments > 0 && h('p', { class: 'fin-stat-note' }, `${gain >= 0 ? '+' : ''}${((gain / now.investments) * 100).toFixed(1)}%`)),
+        now.investments > 0 && h('p', { class: 'fin-stat-note' }, `${gain >= 0 ? '+' : ''}${num((gain / now.investments) * 100)}%`)),
       h('div', {}, h('dt', {}, `Change since ${shortDate(pts[0].date)}${pts[0].date.slice(0, 4) != thisYear ? ` ${pts[0].date.slice(0, 4)}` : ''}`),
         h('dd', { class: tone(change) }, signed(change, 'EUR')),
         h('p', { class: 'fin-stat-note' }, 'value, including new money'))),
     pts.length > 1
-      ? netWorthChart(pts, hist.unit, range.from, to, { total: 'Value', investments: 'Invested', title: 'Value and money invested' })
+      ? h('section', { class: 'fin-card fin-pad' }, timeChart(pts.map((p) => ({ date: p.date, v: p.total })), {
+        id: `inv-${account.id}`, title: 'Value over time', unit: 'in EUR', format: (v) => money(v, 'EUR'), wide: true,
+        ref: pts.map((p) => ({ date: p.date, v: p.investments })), refLabel: 'Invested',
+      }))
       : h('p', { class: 'fin-notice' }, 'Pick a longer period to see the account over time.'),
     h('p', { class: 'fin-hint' },
       'Value is at market prices today and on days the app has recorded (once a day, when you open it). Before that, ',
@@ -2754,7 +2995,7 @@ function investmentInsights(account) {
           h('td', { class: 'fin-r fin-num' }, money(value, 'EUR')),
           h('td', { class: 'fin-r fin-num fin-muted' }, cost == null ? '—' : money(cost, 'EUR')),
           h('td', { class: `fin-r fin-num ${g == null ? '' : tone(g)}` }, g == null ? '—' : signed(g, 'EUR'),
-            g != null && cost > 0 && h('span', { class: 'fin-sub' }, `${g >= 0 ? '+' : ''}${((g / cost) * 100).toFixed(1)}%`)),
+            g != null && cost > 0 && h('span', { class: 'fin-sub' }, `${g >= 0 ? '+' : ''}${num((g / cost) * 100)}%`)),
           h('td', { class: 'fin-r fin-num fin-muted' }, totalValue ? `${Math.round((value / totalValue) * 100)}%` : ''))))))));
 }
 
@@ -2800,13 +3041,18 @@ function renderNetWorth() {
         h('div', {}, h('dt', {}, 'Net worth today'), h('dd', {}, money(now.total, 'EUR'))),
         h('div', {}, h('dt', {}, `Change since ${shortDate(start.date)}${start.date.slice(0, 4) != thisYear ? ` ${start.date.slice(0, 4)}` : ''}`),
           h('dd', { class: tone(change) }, signed(change, 'EUR')),
-          start.total > 0 && h('p', { class: 'fin-stat-note' }, `${change >= 0 ? '+' : ''}${((change / start.total) * 100).toFixed(1)}%`)),
+          start.total > 0 && h('p', { class: 'fin-stat-note' }, `${change >= 0 ? '+' : ''}${num((change / start.total) * 100)}%`)),
         h('div', {}, h('dt', {}, 'Investments'), h('dd', {}, money(now.investments, 'EUR')),
           now.total > 0 && h('p', { class: 'fin-stat-note' }, `${Math.round((now.investments / now.total) * 100)}% of net worth`)),
         h('div', {}, h('dt', {}, 'Debts'), h('dd', { class: debts ? 'fin-neg' : '' }, money(debts, 'EUR')),
           h('p', { class: 'fin-stat-note' }, 'credit cards and other negative balances'))),
       pts.length > 1
-        ? netWorthChart(pts, hist.unit, range.from, to)
+        ? [
+          h('section', { class: 'fin-card fin-pad' },
+            timeChart(pts.map((p) => ({ date: p.date, v: p.total })), { id: 'nw', title: 'Net worth over time', unit: 'in EUR', format: (v) => money(v, 'EUR'), wide: true })),
+          pts.some((p) => p.investments) && h('section', { class: 'fin-card fin-pad' },
+            timeChart(pts.map((p) => ({ date: p.date, v: p.investments })), { id: 'nw-inv', title: 'Investments', unit: 'in EUR', format: (v) => money(v, 'EUR') })),
+        ]
         : h('p', { class: 'fin-notice' }, 'Pick a longer period to see net worth over time.'),
       h('p', { class: 'fin-hint' },
         hist.firstSnapshot
@@ -2996,7 +3242,7 @@ function upcomingRows(account, { cols, inEur, balance }) {
   };
   return [
     h('tr', { class: 'fin-month fin-upcoming-head' }, h('th', { colspan: cols, scope: 'colgroup' },
-      'Upcoming ', h('span', { class: 'fin-upcoming-note' }, `· not in the balance yet · scheduled ones for the next ${FORECAST_DAYS} days`))),
+      'Upcoming ', h('span', { class: 'fin-upcoming-note' }, `· scheduled for the next ${FORECAST_DAYS} days`))),
     ...items.reverse().map((it) => (it.t ? plannedRow(it) : scheduleRow(it))),
   ];
 }
@@ -3043,10 +3289,11 @@ const SETTINGS_PAGES = [
   { key: 'backup', label: 'Backup and restore', group: 'Data', needsAll: true, render: () => backupSection() },
   { key: 'buxfer', label: 'Import from Buxfer', group: 'Data', needsAll: true, render: () => buxferSection() },
   { key: 'import', label: 'Import CSV', group: 'Data', needsAll: true, render: () => importSection() },
-  { key: 'ft', label: 'Import holdings (FT.com)', group: 'Data', render: () => ftSection() },
+  { key: 'ft', label: 'Import holdings', group: 'Data', render: () => ftSection() },
   { key: 'link', label: 'Link transfers', group: 'Data', needsAll: true, render: () => linkTransfersSection() },
   { key: 'export', label: 'Export', group: 'Data', needsAll: true, render: () => exportSection() },
   { key: 'delete', label: 'Delete all data', group: 'Data', render: () => deleteAllSection() },
+  { key: 'display', label: 'Display', group: 'Account', render: () => displaySection() },
   { key: 'account', label: 'Your account', group: 'Account', render: () => accountSection() },
 ];
 let settingsPage = 'categories'; // remembered while the page stays open
@@ -3139,22 +3386,51 @@ function rulesSection() {
 function marketSection() {
   const key = input({ type: 'password', autocomplete: 'off', value: state.settings.quoteApiKey });
   const avKey = input({ type: 'password', autocomplete: 'off', value: state.settings.avApiKey });
+  const eodKey = input({ type: 'password', autocomplete: 'off', value: state.settings.eodhdApiKey });
   return h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'settings-h' },
     h('form', {
       onsubmit: async (e) => {
         e.preventDefault();
         state.settings.quoteApiKey = key.value.trim();
         state.settings.avApiKey = avKey.value.trim();
+        state.settings.eodhdApiKey = eodKey.value.trim();
         persist();
         say('API keys saved. Fetching prices…');
         await refreshPrices(state.holdings.filter((x) => !x.manual));
       },
     },
-      h('p', { class: 'fin-hint' }, 'Both keys are free and saved with your account, so they work on every device. Prices refresh once a day when you open the page.'),
+      h('p', { class: 'fin-hint' }, 'The keys are free and saved with your account, so they work on every device. Prices refresh once a day when you open the page.'),
       h('div', { class: 'fin-grid' },
         field('Twelve Data API key', key, 'From twelvedata.com. Search, and prices for US listings.'),
-        field('Alpha Vantage API key', avKey, 'From alphavantage.co. Prices for Xetra, London and other non-US listings, which Twelve Data’s free plan excludes. 25 lookups a day.')),
+        field('Alpha Vantage API key', avKey, 'From alphavantage.co. Prices for Xetra, London and other non-US listings, which Twelve Data’s free plan excludes. 25 lookups a day.'),
+        field('EODHD API key', eodKey, 'From eodhd.com. Prices for funds, found by their ISIN (e.g. LU0109981661). The database fetches them, as EODHD can’t be reached from a web page. The free plan allows about 20 lookups a day.')),
       h('button', { type: 'submit', class: 'fin-btn btn-primary' }, 'Save keys')));
+}
+
+// How numbers look, and amounts hidden or shown. Saved in this browser.
+function displaySection() {
+  const sample = (key) => new Intl.NumberFormat(NUMBER_FORMATS[key].locale, { style: 'currency', currency: 'EUR' }).format(1234567.89);
+  const fmt = h('div', { class: 'fin-choices', role: 'radiogroup', 'aria-labelledby': 'fmt-h' },
+    Object.entries(NUMBER_FORMATS).map(([key, f]) => h('label', { class: 'fin-choice' },
+      h('input', {
+        type: 'radio', name: 'number-format', value: key, checked: key === numberFormat, 'data-key': `fmt-${key || 'auto'}`,
+        onchange: () => {
+          numberFormat = key;
+          writePref('finance:number-format', key);
+          render(`fmt-${key || 'auto'}`);
+          say(`Numbers now look like ${sample(key)}.`);
+        },
+      }),
+      h('span', {}, key ? f.label : f.label.split(' (')[0], h('span', { class: 'fin-sub' }, key ? sample(key) : `${sample(key)} here`)))));
+  return h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'settings-h' },
+    h('h3', { id: 'fmt-h', class: 'fin-label' }, 'Number format'),
+    h('p', { class: 'fin-hint' }, 'How amounts, units and percentages are written everywhere in Fin. Saved in this browser. Exports keep plain numbers (1234.56) so spreadsheets read them.'),
+    fmt,
+    h('h3', { class: 'fin-label fin-mt' }, 'Hide amounts'),
+    h('p', { class: 'fin-hint' }, 'To show Fin to someone without showing your money: the eye in the header, or Alt+H (Option+H on a Mac).'),
+    h('label', { class: 'fin-switch' },
+      h('input', { type: 'checkbox', role: 'switch', checked: hideAmounts, 'data-key': 'hide-switch', onchange: (e) => setHideAmounts(e.target.checked) }),
+      h('span', { class: 'fin-switch-track', 'aria-hidden': 'true' }), 'Hide amounts'));
 }
 
 // Start over: removes the data, keeps the sign-in and API keys. Needs DELETE typed to unlock.
@@ -3470,29 +3746,43 @@ function buxferSection() {
       button('Cancel', () => { buxferDraft = null; render('bux-file'); })));
 }
 
-// FT.com portfolio export → buys and sells on the holdings of one investment account.
+// FT.com portfolio export, or a fund's movements list (a pension fund's "ListagemMovimentos.xls")
+// → buys and sells on the holdings of one investment account.
 let ftDraft = null;
 
+// Text from a file that may be UTF-16 (what some banks call .xls is tab-separated UTF-16 text).
+async function readText(file) {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const bom16 = bytes[0] === 0xFF && bytes[1] === 0xFE;
+  const zeros = bytes.slice(0, 200).filter((b, i) => i % 2 === 1 && b === 0).length;
+  return new TextDecoder(bom16 || zeros > 40 ? 'utf-16le' : 'utf-8').decode(bytes).replace(/^\uFEFF/, '');
+}
+
 async function readFtFile(file) {
-  const rows = parseCsv(await file.text());
-  if (!rows.length || !isFtExport(rows[0])) { say('That file doesn’t look like an FT.com portfolio transactions export.'); return; }
+  let rows = parseCsv(await readText(file));
+  const movements = rows.length > 0 && isFundMovements(rows[0]);
+  // The movements list names its portfolio ("Carteira"), which may also be the account's name.
+  const portfolio = movements ? normalize(rows[1]?.[rows[0].findIndex((x) => normalize(x) === 'carteira')] ?? '') : '';
+  if (movements) rows = fundMovementsToFt(rows);
+  else if (!rows.length || !isFtExport(rows[0])) { say('That file isn’t an FT.com transactions export or a fund’s movements list.'); return; }
   const investments = state.accounts.filter((a) => a.type === 'investment' && !a.archived);
   // Guess the account from the file name ("ETFs_Transactions_…" → an account with "ETF" in its name).
   const hint = file.name.split(/[_\s-]/)[0].replace(/s$/i, '').toLowerCase();
-  const guess = investments.find((a) => a.name.toLowerCase().includes(hint)) ?? investments[0];
+  const guess = (portfolio && investments.find((a) => normalize(a.name).includes(portfolio)))
+    ?? investments.find((a) => a.name.toLowerCase().includes(hint)) ?? investments[0];
   ftDraft = { name: file.name, rows, accountId: guess?.id ?? '' };
   render('ft-account');
 }
 
 function ftSection() {
-  const head = h('h3', { class: 'fin-label' }, 'Import holdings (FT.com)');
+  const head = h('h3', { class: 'fin-label' }, 'Import holdings');
   const investments = state.accounts.filter((a) => a.type === 'investment' && !a.archived);
   if (!ftDraft) {
-    const file = input({ type: 'file', accept: '.csv,text/csv', 'data-key': 'ft-file' });
+    const file = input({ type: 'file', accept: '.csv,.xls,.txt,.tsv,text/csv,text/plain', 'data-key': 'ft-file' });
     file.addEventListener('change', () => file.files[0] && readFtFile(file.files[0]));
     return h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'settings-h' }, head,
-      h('p', { class: 'fin-hint' }, 'The transactions export of an FT.com portfolio: every buy and sell with its date, units and price. They become the lots of the account’s holdings, which then show what they cost and what you’ve gained, and give the net-worth history real values over time. Holdings are matched by ticker (VWCE, SXR8) and created when missing. Importing the same file again adds nothing.'),
-      investments.length === 0 ? h('p', { class: 'fin-notice' }, 'Add an investment account first.') : h('div', { class: 'fin-grid' }, field('FT.com export (CSV)', file)));
+      h('p', { class: 'fin-hint' }, 'Every buy and sell with its date, units and price, from either the transactions export of an FT.com portfolio, or a fund’s movements list (a pension fund’s “ListagemMovimentos”, with Data, Fundo, Operação, Nº UPs and Valor UP). They become the lots of the account’s holdings, which then show what they cost and what you’ve gained, and give the net-worth history real values over time. Holdings are matched by ticker or name and created when missing; a fund from a movements list is priced by hand, starting at its latest unit value. Importing the same file again adds nothing.'),
+      investments.length === 0 ? h('p', { class: 'fin-notice' }, 'Add an investment account first.') : h('div', { class: 'fin-grid' }, field('Export file', file)));
   }
   const d = ftDraft;
   const acc = select([...investments].sort(byName).map((a) => [a.id, a.name]), d.accountId, { 'data-key': 'ft-account' });

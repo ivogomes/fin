@@ -377,7 +377,6 @@ nav .fin-account { padding-left: 12px; }
 .fin-stats > div:first-child { border-color: color-mix(in srgb, var(--f-accent) 35%, var(--f-border)); }
 .fin-stats dt { font-size: 13px; color: var(--f-muted); }
 .fin-stats dd { margin: 4px 0 0; font-size: 26px; font-weight: 650; letter-spacing: -0.02em; }
-.fin-stat-sub { font-size: 13px; font-weight: 500; letter-spacing: 0; }
 
 /* ── Buttons ──────────────────────────────────────────── */
 .fin-btn {
@@ -467,6 +466,7 @@ nav .fin-account { padding-left: 12px; }
 textarea.fin-input { resize: vertical; }
 
 .fin-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: 14px; margin: 0 0 14px; }
+.fin-by-hand[hidden] { display: none; } /* display:grid would beat [hidden] */
 .fin-grid-2 { grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); }
 .fin-inline { display: flex; gap: 8px; }
 .fin-inline .fin-input:first-child { width: 5rem; flex: none; }
@@ -551,6 +551,13 @@ textarea.fin-input { resize: vertical; }
 .fin-welcome .fin-empty { margin: 8px 0 20px; font-size: 15px; }
 .fin-signin { display: flex; flex-direction: column; gap: 14px; max-width: 24rem; margin-top: 20px; }
 .fin-signin .fin-hint:empty, .fin-signin .fin-error:empty { display: none; }
+
+/* A set of radio choices as small cards (Settings → Display). */
+.fin-choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: 8px; margin: 4px 0 8px; }
+.fin-choice { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border: 1px solid var(--f-border); border-radius: var(--f-radius-sm); background: var(--f-surface); cursor: pointer; }
+.fin-choice:has(input:checked) { border-color: var(--f-accent); background: var(--f-accent-soft); }
+.fin-choice input { margin-top: 3px; accent-color: var(--f-accent); }
+.fin-choice .fin-sub { display: block; font-variant-numeric: tabular-nums; }
 
 /* ── Tables ───────────────────────────────────────────── */
 .fin-scroll { overflow-x: auto; }
@@ -825,10 +832,10 @@ textarea.fin-input { resize: vertical; }
 .fin-break-row--dot.fin-break-child { padding-left: 4px; }
 .fin-break-row--dot.fin-break-child .fin-break-name { padding-left: 14px; }
 
-/* Loading: a piggy bank swallowing coins (decoration; still when motion is reduced). */
-:root { --f-pig: #F6C1CF; --f-pig-ink: #B85C78; --f-coin: #F0C04E; --f-coin-ink: #A8741A; }
+/* Loading: Fin's fin on a rolling wave (decoration; still when motion is reduced). */
+:root { --f-fin: #1F7A8C; --f-wave: #5BBFB5; }
 @media (prefers-color-scheme: dark) {
-  :root { --f-pig: #7A4A5A; --f-pig-ink: #F2AFC2; --f-coin: #E3B05A; --f-coin-ink: #FBE3A8; }
+  :root { --f-fin: #7FD2C9; --f-wave: #2E8C84; }
 }
 /* Opening a page: centred on the screen; it has no background, so the header stays visible. */
 .fin-page-loader {
@@ -843,38 +850,55 @@ textarea.fin-input { resize: vertical; }
   text-align: center;
   pointer-events: none;
 }
-.fin-piggy { width: 112px; height: auto; overflow: visible; margin-bottom: 8px; }
-/* Inside a page: a coin spinning beside the message. */
-.fin-loader { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 24px 20px; color: var(--f-muted); font-size: 13px; }
-.fin-spin-coin { width: 18px; height: 18px; flex: none; animation: fin-coin-spin 1.1s linear infinite; }
+.fin-circling { width: 200px; height: auto; margin-bottom: 10px; }
 .fin-loader-text { margin: 0; font-weight: 500; color: var(--f-text); }
 .fin-loader-quip { font-size: 12px; color: var(--f-muted); }
-.fin-pig { fill: var(--f-pig); stroke: var(--f-pig-ink); stroke-width: 2; stroke-linejoin: round; }
-.fin-pig-dark { fill: var(--f-pig-ink); }
-.fin-pig-tail { fill: none; stroke: var(--f-pig-ink); stroke-width: 2; stroke-linecap: round; }
-.fin-coin { fill: var(--f-coin); stroke: var(--f-coin-ink); stroke-width: 2; }
-.fin-coin-mark { stroke: var(--f-coin-ink); stroke-width: 1.6; stroke-linecap: round; }
-.fin-coin-fall { animation: fin-coin-fall 1.6s ease-in infinite; }
-.fin-pig-bounce { transform-origin: 40px 59px; animation: fin-pig-bounce 1.6s ease-in-out infinite; }
-@keyframes fin-coin-fall {
-  0% { transform: translateY(-20px); opacity: 0; }
-  15% { opacity: 1; }
-  55% { transform: translateY(12px); opacity: 1; }
-  62%, 100% { transform: translateY(15px); opacity: 0; }
+/* Inside a page: a small bobbing fin beside the message. */
+.fin-loader { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 24px 20px; color: var(--f-muted); font-size: 13px; }
+.fin-bobbing { width: 28px; height: 20px; flex: none; overflow: hidden; }
+.fin-shape { fill: var(--f-fin); }
+.fin-wave { fill: var(--f-wave); }
+.fin-wave-back { opacity: 0.4; animation: fin-roll 1.6s linear infinite reverse; }
+.fin-wave-front { animation: fin-roll 1s linear infinite; }
+.fin-wave-small { animation-name: fin-roll-small; }
+/* The fin rises at the left, glides across, then dives at the right; the water hides it below. */
+.fin-swim { animation: fin-swim 3.2s ease-in-out infinite; }
+.fin-bob { animation: fin-bob 1.2s ease-in-out infinite; }
+@keyframes fin-roll { to { transform: translateX(-20px); } }
+@keyframes fin-roll-small { to { transform: translateX(-8px); } }
+@keyframes fin-swim {
+  0% { transform: translate(-10px, 30px) rotate(-8deg); }
+  14% { transform: translate(18px, 0) rotate(0deg); }
+  50% { transform: translate(68px, -2px) rotate(2deg); }
+  84% { transform: translate(118px, 0) rotate(0deg); }
+  100% { transform: translate(146px, 30px) rotate(14deg); }
 }
-@keyframes fin-pig-bounce {
-  0%, 55% { transform: scale(1, 1); }
-  63% { transform: scale(1.05, 0.93); }
-  73% { transform: scale(0.98, 1.04); }
-  83%, 100% { transform: scale(1, 1); }
-}
-@keyframes fin-coin-spin {
-  0%, 100% { transform: scaleX(1); }
-  50% { transform: scaleX(0.15); }
+@keyframes fin-bob {
+  0%, 100% { transform: translateY(2px) rotate(-3deg); }
+  50% { transform: translateY(-2px) rotate(3deg); }
 }
 @media (prefers-reduced-motion: reduce) {
-  .fin-coin-fall, .fin-pig-bounce, .fin-spin-coin { animation: none; }
+  .fin-wave-back, .fin-wave-front, .fin-bob { animation: none; }
+  .fin-swim { animation: none; transform: translate(68px, 0); }
 }
+
+/* A credit card's limit used: a thin bar under "Available" (the note beside it says the same). */
+.fin-usage { display: block; height: 6px; margin-top: 8px; border-radius: 3px; background: var(--f-surface-2); border: 1px solid var(--f-border); overflow: hidden; }
+/* Card network marks beside a credit card's name (Visa, Mastercard), in their brand colours. */
+.fin-card-mark { width: 24px; height: 16px; flex: none; margin-right: 8px; vertical-align: -3px; border-radius: 2.5px; }
+.fin-card-mark--title { width: 36px; height: 24px; margin-right: 12px; vertical-align: -2px; }
+.fin-visa-bg { fill: #1A1F71; }
+.fin-visa-text { fill: #FFFFFF; font: italic 800 7.5px var(--font-sans); letter-spacing: 0.2px; }
+.fin-mc-bg { fill: #252525; }
+.fin-mc-red { fill: #EB001B; }
+.fin-mc-yellow { fill: #F79E1B; }
+.fin-mc-orange { fill: #FF5F00; }
+/* In the side panel: under the card's name and balance, across the row. */
+.fin-account--limit { flex-wrap: wrap; row-gap: 0; }
+.fin-usage-side { flex: 1 0 100%; height: 4px; margin: 4px 0 2px; border: 0; background: color-mix(in srgb, var(--f-text) 10%, transparent); }
+.fin-usage-bar { display: block; width: var(--used, 0%); height: 100%; border-radius: 3px; background: var(--f-accent); }
+.fin-usage-bar[data-level="mid"] { background: var(--f-warn); }
+.fin-usage-bar[data-level="high"] { background: var(--f-neg); }
 
 /* ── Net worth chart ──────────────────────────────────── */
 /* Line colours, validated with the dataviz palette check in both modes. */
@@ -888,6 +912,32 @@ textarea.fin-input { resize: vertical; }
 .fin-dot-net { fill: var(--f-chart-net); }
 .fin-dot-inv { fill: var(--f-chart-inv); }
 .fin-guide { stroke: var(--f-border-strong); stroke-width: 1; }
+/* A holding's charts (Chart in the holdings list): its price, and the gain or loss on the units held,
+   green above zero and red below. Side by side when there's room. */
+.fin-hold-charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr)); gap: 12px 24px; }
+.fin-hold-chart .fin-label { margin: 0 0 2px; }
+.fin-chart-unit { font-weight: 400; text-transform: none; letter-spacing: 0; }
+.fin-time-chart { touch-action: pan-y; }
+.fin-line-price { stroke: var(--f-chart-net); }
+.fin-line-gain { stroke: var(--f-text); stroke-width: 1.5; }
+.fin-area-gain { fill: var(--f-pos); opacity: 0.18; }
+.fin-area-loss { fill: var(--f-neg); opacity: 0.18; }
+.fin-dot-price { fill: var(--f-chart-net); }
+.fin-dot-gain { fill: var(--f-text); }
+.fin-chart-wrap:focus-visible { outline: 2px solid var(--f-accent); outline-offset: 2px; border-radius: 6px; }
+/* Charts with a change axis: the line is green above where it started and red below (the level is
+   marked, and the right axis says + or −, so colour isn't the only cue). */
+.fin-line-up { stroke: var(--f-pos); }
+.fin-line-down { stroke: var(--f-neg); }
+.fin-line-ref { stroke: var(--f-muted); stroke-width: 1.5; stroke-dasharray: 5 4; }
+.fin-base-line { stroke: var(--f-border-strong); stroke-width: 1; stroke-dasharray: 2 3; }
+.fin-tick-up { fill: var(--f-pos); }
+.fin-tick-down { fill: var(--f-neg); }
+.fin-dot-up { fill: var(--f-pos); }
+.fin-dot-down { fill: var(--f-neg); }
+.fin-key-up { background: var(--f-pos); }
+.fin-key-down { background: var(--f-neg); }
+.fin-key-ref { width: 16px; height: 2px; vertical-align: middle; background: repeating-linear-gradient(90deg, var(--f-muted) 0 5px, transparent 5px 8px); }
 .fin-key-net { background: var(--f-chart-net); }
 .fin-key-inv { background: var(--f-chart-inv); }
 .fin-mark-net { fill: var(--f-chart-net); }

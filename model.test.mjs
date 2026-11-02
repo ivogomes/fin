@@ -6,10 +6,10 @@ import {
   holdingValue, investmentValue, netWorth, defaultState, withRunningBalance,
   crossConvert, batchRow, makeTransfer,
   parseCsv, toCsv, parseAmount, parseDate, guessDateFormat, guessDecimal, guessMapping, importRows,
-  findTransferPairs, detectBuxferFile, buxferImport,
+  findTransferPairs, detectBuxferFile, buxferImport, isFundMovements, fundMovementsToFt,
   categoryPath, categoryResolver, categoriesOf, sortedCategories,
   parseBuxferIou, iouSign, iouType, personBalances, personHistory,
-  periodRange, granularity, insights, completeMonths, accountRuns, historyPoints, incomeCategories, REFUNDS_UNMATCHED, netWorthHistory, isFtExport, ftImport, lotSummary, investedHistory,
+  periodRange, granularity, insights, completeMonths, holdingHistory, accountRuns, historyPoints, incomeCategories, REFUNDS_UNMATCHED, netWorthHistory, isFtExport, ftImport, lotSummary, investedHistory,
   descriptionIndex, suggestDescriptions, filterTransactions, ruleSuggestion,
   parseFrequency, addInterval, occurrences, forecast, scheduledTransactions, advanceSchedule,
 } from './model.js';
@@ -785,4 +785,50 @@ test('account runs: EUR totals at each date and the last date, as the database g
   assert.deepEqual(runs.get('u'), { last: '2026-01-31', values: [900, 900, 900] });
   assert.deepEqual(accountRuns(accounts, tx, dates, () => 1, { skipOpening: true }).get('a').values, [0, -250, -250]);
   assert.equal(ends.at(-1).date, '2026-03-15');
+});
+
+test('fund movements list (pension fund export) → lots of one holding, priced by hand', () => {
+  const rows = [
+    ['Data', 'Carteira', 'Classe', 'Fundo', 'Operação', 'Nº UPs', 'Valor UP', 'Valor', 'Saldo Ups', 'Valorização', ''],
+    ['15.03.2026', 'Work', 'Fundos Pensões', 'Some Pension Fund', 'Subscrição - UPC', '2,5000', '8,0000', '20,0000', '12,5100', '100,08', ''],
+    ['10.02.2026', 'Work', 'Fundos Pensões', 'Some Pension Fund', 'Subs-Retroc.Comissão - RDC', '0,0100', '7,9000', '0,0800', '10,0100', '79,08', ''],
+    ['05.01.2026', 'Work', 'Fundos Pensões', 'Some Pension Fund', 'Subscrição - UPC', '1.000,0000', '0,0100', '10,0000', '10,0000', '78,00', ''],
+    ['01.01.2026', 'Work', 'Fundos Pensões', 'Some Pension Fund', 'Comissão de gestão', '0,1000', '7,8000', '0,7800', '', '', ''],
+  ];
+  assert.equal(isFundMovements(rows[0]), true);
+  assert.equal(isFundMovements(['Date', 'Name', 'Symbol']), false);
+  const ft = fundMovementsToFt(rows);
+  assert.deepEqual(ft[1], ['2026-03-15', 'Some Pension Fund', 'Some Pension Fund', 'Buy', '2.5', '8', 'EUR', '0']);
+  assert.equal(ft[3][4], '1000'); // thousands separator
+  let n = 0;
+  const res = ftImport(ft, 'acc', { id: () => `i${++n}`, holdings: [], lots: [] });
+  assert.equal(res.newHoldings.length, 1);
+  const h = res.newHoldings[0];
+  assert.deepEqual([h.symbol, h.exchange, h.mic, h.manual, h.price], ['Some Pension Fund', 'By hand', null, true, 8]);
+  assert.equal(res.newLots.length, 3);
+  assert.equal(res.skipped.length, 1); // the fee row isn't a buy or a sell
+  // a holding added by hand under a short name is matched by its name
+  const byHand = [{ id: 'h', accountId: 'acc', symbol: 'PENSION', name: 'Some Pension Fund', currency: 'EUR', quantity: 0, manual: true }];
+  const again = ftImport(ft, 'acc', { id: () => `j${++n}`, holdings: byHand, lots: [] });
+  assert.equal(again.newHoldings.length, 0);
+  assert.ok(again.newLots.every((l) => l.holdingId === 'h'));
+});
+
+test('holding history: price, units, cost and gain at each known price, from the first buy', () => {
+  const x = { id: 'h', quantity: 15, price: 12, priceAt: '2026-03-10T09:00:00Z', priceHistory: { '2025-12-26': 9, '2026-01-09': 10, '2026-02-06': 11 } };
+  const lots = [
+    { holdingId: 'h', date: '2026-01-05', kind: 'buy', quantity: 10, price: 10, fees: 0 },
+    { holdingId: 'h', date: '2026-02-20', kind: 'buy', quantity: 10, price: 11, fees: 0 },
+    { holdingId: 'h', date: '2026-03-01', kind: 'sell', quantity: 5, price: 11.5, fees: 0 },
+  ];
+  const hist = holdingHistory(x, lots, '2026-03-15');
+  assert.deepEqual(hist.map((p) => p.date), ['2026-01-05', '2026-01-09', '2026-02-06', '2026-02-20', '2026-03-01', '2026-03-10']);
+  assert.deepEqual(hist[1], { date: '2026-01-09', price: 10, units: 10, cost: 10000, value: 10000, gain: 0 });
+  assert.deepEqual(hist[2], { date: '2026-02-06', price: 11, units: 10, cost: 10000, value: 11000, gain: 1000 });
+  const last = hist.at(-1); // 15 units left, costing 15 × 10.50 after the sell at average cost
+  assert.deepEqual([last.units, last.cost, last.value, last.gain], [15, 15750, 18000, 2250]);
+  // without buys and sells: today's units, no cost or gain
+  const plain = holdingHistory({ ...x, id: 'other' }, lots, '2026-03-15');
+  assert.equal(plain[0].date, '2025-12-26');
+  assert.equal(plain[0].gain, null);
 });

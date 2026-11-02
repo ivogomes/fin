@@ -18,8 +18,8 @@ const TABLES = {
     from: (r) => ({ id: r.id, name: r.name, parentId: r.parent_id ?? null }),
   },
   accounts: {
-    to: (a) => ({ id: a.id, name: a.name, type: a.type, currency: a.currency, archived: Boolean(a.archived) }),
-    from: (r) => ({ id: r.id, name: r.name, type: r.type, currency: r.currency, archived: r.archived }),
+    to: (a) => ({ id: a.id, name: a.name, type: a.type, currency: a.currency, archived: Boolean(a.archived), credit_limit: a.creditLimit ?? null, card_network: a.cardNetwork ?? null }),
+    from: (r) => ({ id: r.id, name: r.name, type: r.type, currency: r.currency, archived: r.archived, ...(r.credit_limit != null && { creditLimit: Number(r.credit_limit) }), ...(r.card_network && { cardNetwork: r.card_network }) }),
   },
   rules: {
     to: (x, i) => ({ id: x.id, pattern: x.pattern, match: x.match, category_id: x.categoryId ?? null, position: i }),
@@ -95,12 +95,12 @@ export const missingTables = () => [...missing];
 
 // Columns added after the first release. Saving needs them, so their absence is reported to the
 // app, which asks for schema.sql to be run again.
-const NEW_COLUMNS = { categories: ['parent_id'], transactions: ['category_ids', 'kind'], settings: ['fx', 'last_backup_at', 'backup_every'], holdings: ['price_history'] };
+const NEW_COLUMNS = { accounts: ['credit_limit', 'card_network'], categories: ['parent_id'], transactions: ['category_ids', 'kind'], settings: ['fx', 'last_backup_at', 'backup_every', 'eodhd_api_key'], holdings: ['price_history'] };
 let schemaOutdated = false;
 export const needsSchemaUpdate = () => schemaOutdated || missing.size > 0;
 
 const toSettingsRow = (s) => ({
-  quote_api_key: s.quoteApiKey || null, av_api_key: s.avApiKey || null, last_account_id: s.lastAccountId ?? null,
+  quote_api_key: s.quoteApiKey || null, av_api_key: s.avApiKey || null, eodhd_api_key: s.eodhdApiKey || null, last_account_id: s.lastAccountId ?? null,
   fx: s.fx ?? {},
   last_backup_at: s.lastBackupAt ?? null,
   backup_every: s.backupEvery ?? 7,
@@ -155,7 +155,7 @@ export async function load({ allTransactions: everything = false, today, until }
     .sort((a, b) => a.position - b.position).map(TABLES.rules.from);
   const s = settingsRows[0] ?? {};
   state.settings = {
-    quoteApiKey: s.quote_api_key ?? '', avApiKey: s.av_api_key ?? '', lastAccountId: s.last_account_id ?? undefined,
+    quoteApiKey: s.quote_api_key ?? '', avApiKey: s.av_api_key ?? '', eodhdApiKey: s.eodhd_api_key ?? '', lastAccountId: s.last_account_id ?? undefined,
     fx: s.fx ?? {}, // today's exchange rates, { USD: { rate, date } }, so they're fetched once a day
     lastBackupAt: s.last_backup_at ?? null, // when a backup was last downloaded
     backupEvery: s.backup_every ?? 7, // days between backup reminders; 0 = no reminders

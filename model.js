@@ -837,6 +837,32 @@ export function lotSummary(lots) {
   return { quantity, cost: Math.round(cost * 100), avgPrice: quantity ? cost / quantity : null };
 }
 
+// A holding over time, for its charts: at each date a price is known (its weekly closes, each buy
+// and sell, its current price), the price, the units held then, what they cost (sells at average
+// cost), their value and the gain or loss on them (minor units, in the holding's currency). It
+// starts at the first buy. Without buys and sells, units are today's and cost and gain are null.
+export function holdingHistory(holding, lots, today) {
+  const own = lots.filter((l) => l.holdingId === holding.id).sort((a, b) => a.date.localeCompare(b.date));
+  const prices = new Map(Object.entries(holding.priceHistory ?? {}).map(([d, p]) => [d, Number(p)]));
+  for (const l of own) if (!prices.has(l.date)) prices.set(l.date, l.price);
+  if (holding.price != null) {
+    const at = holding.priceAt?.slice(0, 10) ?? today;
+    prices.set(at > today ? today : at, holding.price);
+  }
+  const start = own[0]?.date ?? '';
+  return [...prices]
+    .filter(([d, p]) => d >= start && d <= today && p > 0)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([date, price]) => {
+      if (!own.length) {
+        return { date, price, units: holding.quantity, cost: null, value: Math.round(holding.quantity * price * 100), gain: null };
+      }
+      const { quantity, cost } = lotSummary(own.filter((l) => l.date <= date));
+      const value = Math.round(quantity * price * 100);
+      return { date, price, units: quantity, cost, value, gain: value - cost };
+    });
+}
+
 // Units held on a date, and the latest price known by then (the last trade's price).
 function lotsAt(lots, date) {
   let quantity = 0;
@@ -853,6 +879,36 @@ function lotsAt(lots, date) {
 // symbols like "VWCE:FRA:EUR" (ticker, exchange, currency).
 export const isFtExport = (header) =>
   /^date,name,symbol,type,quantity,price,price currency,fees/.test(header.map((x) => normalize(x)).join(','));
+
+// A fund's movements list, as pension funds and banks export it (e.g. "ListagemMovimentos.xls",
+// really tab-separated text): "Data, Carteira, Classe, Fundo, Operação, Nº UPs, Valor UP, Valor,
+// Saldo UPs, Valorização", dates as dd.mm.yyyy and decimal commas.
+export function isFundMovements(header) {
+  const n = header.map((x) => normalize(x));
+  return n.includes('data') && n.includes('fundo') && n.includes('operacao') && n.includes('valor up') && n.some((x) => /^n\S?\s*ups$/.test(x));
+}
+
+// The same movements as an FT.com export's rows, so ftImport turns them into lots: subscriptions
+// (and commission rebates paid in units) are buys, redemptions and transfers out are sells; anything
+// else keeps its own name and is skipped. The fund's name is its symbol; priced by hand, in EUR.
+export function fundMovementsToFt(rows) {
+  const [header, ...body] = rows;
+  const n = header.map((x) => normalize(x));
+  const c = { date: n.indexOf('data'), fund: n.indexOf('fundo'), op: n.indexOf('operacao'), units: n.findIndex((x) => /^n\S?\s*ups$/.test(x)), price: n.indexOf('valor up') };
+  // 1.234,5678 → 1234.5678 (units and unit values have more decimals than money).
+  const num = (x) => Number(String(x ?? '').trim().replace(/\./g, '').replace(',', '.'));
+  const out = [['Date', 'Name', 'Symbol', 'Type', 'Quantity', 'Price', 'Price Currency', 'Fees']];
+  for (const r of body) {
+    if (!r[c.date]?.trim()) continue;
+    const [dd, mm, yyyy] = r[c.date].trim().split(/[./-]/);
+    const op = normalize(r[c.op] ?? '');
+    const type = /resgate|reembolso|venda|transf\w*\s*(de\s*)?sa[ií]da/.test(op) ? 'Sell'
+      : /subscri|subs\b|subs-|compra|reinvest|transf\w*\s*(de\s*)?entrada/.test(op) ? 'Buy' : (r[c.op] || '').trim();
+    const fund = (r[c.fund] ?? '').trim().replace(/:/g, ' ');
+    out.push([`${yyyy}-${mm}-${dd}`, fund, fund, type, String(num(r[c.units])), String(num(r[c.price])), 'EUR', '0']);
+  }
+  return out;
+}
 
 // FT exchange codes → the exchange's MIC (used to price the listing).
 const FT_MIC = { FRA: 'XFRA', GER: 'XETR', LSE: 'XLON', PAR: 'XPAR', AEX: 'XAMS', MIL: 'XMIL', NSQ: 'XNAS', NYQ: 'XNYS', NMQ: 'XNAS', TOR: 'XTSE' };
@@ -885,10 +941,13 @@ export function ftImport(rows, accountId, ctx) {
     const price = Number(r[c.price]);
     if (!kind) { skipped.push({ line: i + 2, reason: `${r[c.type] || 'empty'} rows aren't buys or sells` }); return; }
     if (!ticker || !date || !(quantity > 0) || !(price >= 0)) { skipped.push({ line: i + 2, reason: 'missing symbol, date, units or price' }); return; }
-    let holding = [...holdings, ...newHoldings].find((x) => normalize(x.symbol) === normalize(ticker));
+    // By ticker, or by name (a fund added by hand under a short name).
+    let holding = [...holdings, ...newHoldings].find((x) => normalize(x.symbol) === normalize(ticker)
+      || (r[c.name] && normalize(x.name ?? '') === normalize(r[c.name])));
     if (!holding) {
       holding = {
-        id: ctx.id(), accountId, symbol: ticker.toUpperCase(), mic: FT_MIC[exch] ?? null, exchange: FT_EXCHANGE[exch] ?? exch ?? null,
+        // No exchange: a fund priced by hand (from a movements list).
+        id: ctx.id(), accountId, symbol: exch ? ticker.toUpperCase() : ticker, mic: FT_MIC[exch] ?? null, exchange: FT_EXCHANGE[exch] ?? exch ?? 'By hand',
         name: r[c.name] || ticker, currency: (r[c.cur] || currency || BASE).toUpperCase(), quantity: 0, price: null, manual: true,
       };
       newHoldings.push(holding);

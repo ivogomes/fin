@@ -67,6 +67,14 @@ On small screens the account panel folds behind an **Accounts** button, the head
 
 Two levels, like Buxfer: a category is top-level or sits under one, and is shown as "Parent / Child". A transaction can have several categories (chips you add and remove in the table or the edit form). Rules add one category when a transaction has none. Settings → Categories lists the tree with how many transactions use each one; deleting a category removes it from those transactions (they stay), deletes rules that set it, and moves its subcategories to the top level. Imports read several categories separated by commas, each possibly a path; Buxfer's `tags.csv` builds the whole tree.
 
+## Credit cards
+
+A credit card account can have a credit limit (Edit account). It then shows what's left to spend, the limit less what's owed, with how much of the limit is used. Its Insights tab is about spending only: no income, net or savings.
+
+## Charts over time
+
+Balances, net worth, investment values and holding prices are drawn as one line on one scale: the left axis gives the amount, the right axis the same gridlines as the change since the start of the period, and the line is green above where it started and red below (that level is marked). An account's Insights tab starts with its balance over the period; an investment's value has what was put in as a dashed line.
+
 ## Insights
 
 **Insights** in the header covers all accounts (archived ones included); each account also has an Insights tab. Pick a period (this or last week, month or year, the last 30 or 90 days, the last 12 months, all time, or a custom range). It shows income, spending, net and the share of income saved, a chart of income against spending by day, week, month or year (with a table view), and spending and income per top-level category, each opening onto its subcategories.
@@ -78,6 +86,10 @@ What counts: transfers between your accounts and opening balances don't. A trans
 A holding can have lots: its buys and sells, each with a date, units, price and fees. With lots, its units come from them, and the holdings table shows what it cost (and the average price) and the gain. Open a holding's **Lots** to see them, add a buy or sell, or delete one.
 
 Settings → **Import holdings (FT.com)** reads an FT.com portfolio transactions export (`Date,Name,Symbol,Type,Quantity,Price,…`, symbols like `VWCE:FRA:EUR`). Pick the investment account it belongs to; holdings are matched by ticker or created, the preview compares the units with what the holdings have now, and importing the same file again adds nothing. Dividend rows are skipped. Importing from Buxfer leaves the units of holdings with lots alone.
+
+Settings → Import holdings also reads a fund's movements list, as pension funds export it ("ListagemMovimentos.xls": tab-separated text with Data, Fundo, Operação, Nº UPs and Valor UP). Subscriptions become buys, redemptions sells; the fund becomes a holding priced by hand at its latest unit value.
+
+Each holding has a **Chart** button: its price over time (weekly closes once its price history is loaded, plus the price of each buy and sell), and the gain or loss on the units held at each point (value less what they cost, sells at average cost), shaded green above zero and red below. Arrow keys step through the points; a table has them all.
 
 ## Insights for investment accounts
 
@@ -124,6 +136,7 @@ Settings → **Export (CSV)** downloads transactions, accounts, holdings and cat
 - **Exchange rates:** Frankfurter (ECB reference rates), no key. Each transaction keeps the rate of its own date.
 - **Search and US prices:** Twelve Data, free key. Its free plan doesn't include Xetra and most other non-US exchanges.
 - **Non-US prices:** Alpha Vantage, free key, 25 lookups a day. Xetra, London and Toronto suffixes are documented; Frankfurt, Paris and Amsterdam are unconfirmed.
-- **By hand:** any holding without a live price can have its price typed in.
+- **Funds (by ISIN):** EODHD, free key (about 20 lookups a day). Type the fund's ISIN (e.g. LU0109981661) when adding a holding. EODHD doesn't let web pages read its answers, so the database fetches them (`fund_data` in `schema.sql`, using Postgres's `http` extension) with your key, which only that function reads.
+- **By hand:** any holding without a live price can have its price typed in. Something no provider lists (a pension fund, say) can be added with **Not listed? Add it by hand** under the holdings: a name, currency and price per unit, which you update from the holdings list.
 
 API keys are saved in your settings row in the database, so they follow you between devices.
