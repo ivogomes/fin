@@ -159,6 +159,12 @@ alter table accounts add column if not exists credit_limit bigint;
 alter table accounts add column if not exists card_network text;
 alter table settings add column if not exists last_backup_at timestamptz;
 alter table settings add column if not exists backup_every integer not null default 7;
+-- A transaction split across categories: [{ "categoryId": …, "amount": cents }], adding up to its amount.
+alter table transactions add column if not exists splits jsonb;
+-- A dividend (kind 'dividend'): the holding that paid it.
+alter table transactions add column if not exists holding_id text;
+-- Suggested schedules turned down ("Not recurring"), so they aren't offered again.
+alter table settings add column if not exists hidden_suggestions jsonb not null default '[]';
 
 -- ── Calculations done in the database ─────────────────────────────────────────
 -- The app doesn't load every transaction on every page: these functions return what a page shows.
@@ -183,7 +189,7 @@ language sql immutable as $$ select floor(x + 0.5)::bigint $$;
 
 -- Whether a transaction matches the filters of a list (the app's filter bar): p_text (normalised)
 -- in the description or memo, or p_amount (cents) as its size; p_wanted, categories any of which it
--- has (a category and its subcategories); p_uncategorized; p_type expense/income/refund/transfer;
+-- has (a category and its subcategories); p_uncategorized; p_type expense/income/refund/dividend/transfer;
 -- dates; sizes in cents. `cats` is fin_cats of the row.
 create or replace function fin_match(
   t transactions, cats text[], p_text text, p_amount bigint, p_wanted text[], p_uncategorized boolean,
@@ -195,6 +201,7 @@ language sql stable as $$
     and (p_type is null
       or (p_type = 'transfer' and t.transfer_id is not null)
       or (p_type = 'refund' and t.kind = 'refund')
+      or (p_type = 'dividend' and t.kind = 'dividend')
       or (p_type = 'expense' and t.transfer_id is null and t.kind is distinct from 'refund' and t.amount < 0)
       or (p_type = 'income' and t.transfer_id is null and t.kind is distinct from 'refund' and t.amount > 0))
     and (not coalesce(p_uncategorized, false) or (cardinality(cats) = 0 and t.transfer_id is null))
@@ -317,7 +324,9 @@ $$;
 -- The rules are the app's (model.js insightTotals): transfers and opening balances don't count; a
 -- transaction counts after its IOU entries; amounts in EUR at the transaction's rate, else today's
 -- (p_rates); a refund lowers spending, in its first category that isn't an income one (more in
--- than out over all of history), else under 'refunds'; one category per transaction (its first).
+-- than out over all of history), else under 'refunds'; one category per transaction (its first),
+-- except a split one, whose parts count under their own categories (its IOU entries go with the
+-- first part); dividends with no category under 'dividends'.
 -- p_only keeps transactions in that category or its subcategories.
 create or replace function insight_totals(
   p_from date, p_to date, p_accounts text[] default null, p_only text default null, p_rates jsonb default '{}'::jsonb
@@ -344,8 +353,14 @@ language sql stable as $$
   ),
   t as (
     select tr.date, tr.kind,
-      fin_round(tr.amount * coalesce(tr.rate, (p_rates ->> a.currency)::double precision, 1)) + coalesce(i.amount, 0) as eur,
+      fin_round(sp.amount * coalesce(tr.rate, (p_rates ->> a.currency)::double precision, 1))
+        + case when sp.n = 1 then coalesce(i.amount, 0) else 0 end as eur,
       case
+        when sp.split then case
+          when sp.cat is null then case when tr.kind = 'dividend' then 'dividends' end
+          when tr.kind = 'refund' and coalesce((select c.parent_id from cats c where c.id = sp.cat), sp.cat) in (select top from income_tops) then 'refunds'
+          else sp.cat end
+        when tr.kind = 'dividend' and cardinality(fin_cats(tr.category_ids, tr.category_id)) = 0 then 'dividends'
         when tr.kind is distinct from 'refund' then (fin_cats(tr.category_ids, tr.category_id))[1]
         when cardinality(fin_cats(tr.category_ids, tr.category_id)) = 0 then null
         else coalesce((
@@ -357,6 +372,14 @@ language sql stable as $$
     from transactions tr
     join accounts a on a.user_id = tr.user_id and a.id = tr.account_id
     left join iou i on i.transaction_id = tr.id
+    -- One row per part: a split transaction's parts, or the whole transaction.
+    cross join lateral (
+      select nullif(e.value ->> 'categoryId', '') as cat, (e.value ->> 'amount')::bigint as amount, e.n, true as split
+      from jsonb_array_elements(case when jsonb_typeof(tr.splits) = 'array' then tr.splits else '[]'::jsonb end) with ordinality as e(value, n)
+      union all
+      select null, tr.amount, 1, false
+      where coalesce(jsonb_array_length(case when jsonb_typeof(tr.splits) = 'array' then tr.splits end), 0) = 0
+    ) sp
     where tr.user_id = auth.uid() and tr.date between p_from and p_to
       and (p_accounts is null or tr.account_id = any(p_accounts))
       and tr.transfer_id is null and tr.kind is distinct from 'opening'
@@ -492,6 +515,29 @@ language sql stable as $$
   where tr.user_id = auth.uid() and tr.transfer_id is null
     and cardinality(fin_cats(tr.category_ids, tr.category_id)) = 0
     and fin_norm(tr.description) = p_key
+$$;
+
+-- Payments that may repeat: transactions from p_since to p_today grouped by account, description
+-- (normalised) and direction, with their dates and amounts oldest first, for groups of three or more.
+-- Transfers and special kinds are left out. The app decides which look regular (model.js
+-- suggestSchedules; recurringGroups gives the same groups).
+create or replace function recurring_candidates(p_since date, p_today date) returns jsonb
+language sql stable as $$
+  select coalesce(jsonb_agg(jsonb_build_object(
+    'accountId', account_id, 'key', key, 'sign', sign, 'description', description,
+    'categoryIds', cats, 'dates', dates, 'amounts', amounts)), '[]'::jsonb)
+  from (
+    select account_id, fin_norm(description) as key, sign(amount)::int as sign,
+      (array_agg(description order by date desc, id desc))[1] as description,
+      (jsonb_agg(to_jsonb(fin_cats(category_ids, category_id)) order by date desc, id desc)) -> 0 as cats,
+      jsonb_agg(date order by date, id) as dates,
+      jsonb_agg(amount order by date, id) as amounts
+    from transactions
+    where user_id = auth.uid() and transfer_id is null and kind is null and amount <> 0
+      and trim(description) <> '' and date between p_since and p_today
+    group by account_id, fin_norm(description), sign(amount)
+    having count(*) >= 3
+  ) g
 $$;
 
 do $$

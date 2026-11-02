@@ -34,13 +34,19 @@
   </h1>
   <span id="sync" class="fin-sync" role="status" hidden></span>
   <nav aria-label="Sections" class="fin-nav">
-    <a class="fin-btn secondary" data-nav="overview" href="/tools/finance/" hidden>Accounts</a>
+    <a class="fin-btn secondary" data-nav="overview" href="/tools/finance/" hidden>Overview</a>
+    <a class="fin-btn secondary" data-nav="accounts" href="/tools/finance/?account=" hidden>Accounts</a>
     <a class="fin-btn secondary" data-nav="search" href="/tools/finance/?page=search" hidden>Search</a>
     <a class="fin-btn secondary" data-nav="scheduled" href="/tools/finance/?page=scheduled" hidden>Scheduled</a>
     <a class="fin-btn secondary" data-nav="insights" href="/tools/finance/?page=insights" hidden>Insights</a>
     <a class="fin-btn secondary" data-nav="ious" href="/tools/finance/?page=ious" hidden>IOUs</a>
     <a class="fin-btn secondary" data-nav="settings" href="/tools/finance/?page=settings" hidden>Settings</a>
   </nav>
+  <button type="button" id="cmd-open" class="fin-cmd-open" aria-haspopup="dialog" aria-keyshortcuts="Control+K Meta+K" title="Go to anything (Ctrl+K)" hidden>
+    <svg class="fin-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M10.5 4a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13Z"/><path d="m15.5 15.5 5 5"/></svg>
+    <span class="fin-cmd-open-label">Go to…</span>
+    <kbd class="fin-cmd-open-key" aria-hidden="true">Ctrl K</kbd>
+  </button>
   <button type="button" id="hide-amounts" class="fin-hide-toggle" aria-pressed="false" aria-label="Hide amounts" title="Hide amounts (Alt+H)" hidden>
     <svg class="fin-icon fin-eye-open" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><path d="M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z"/></svg>
     <svg class="fin-icon fin-eye-shut" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4l16 16"/><path d="M9.9 5.8A9.7 9.7 0 0 1 12 5.5c6 0 9.5 6.5 9.5 6.5a17 17 0 0 1-2.9 3.7M6.6 7.3A16.6 16.6 0 0 0 2.5 12S6 18.5 12 18.5a9.4 9.4 0 0 0 4.4-1.1"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>
@@ -55,6 +61,7 @@
 
 <dialog id="account-dialog" class="fin-dialog" aria-labelledby="account-dialog-h"></dialog>
 <dialog id="tx-dialog" class="fin-dialog fin-dialog-wide" aria-labelledby="tx-dialog-h"></dialog>
+<dialog id="cmd-dialog" class="fin-dialog fin-cmd" aria-label="Go to"></dialog>
 
 <p id="status" class="fin-sr" role="status" aria-live="polite"></p>
 <div id="toast" class="fin-toast" role="status" hidden></div>

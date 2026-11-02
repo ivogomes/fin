@@ -12,6 +12,7 @@ import {
   periodRange, granularity, insights, completeMonths, holdingHistory, accountRuns, historyPoints, incomeCategories, REFUNDS_UNMATCHED, netWorthHistory, isFtExport, ftImport, lotSummary, investedHistory,
   descriptionIndex, suggestDescriptions, filterTransactions, ruleSuggestion,
   parseFrequency, addInterval, occurrences, forecast, scheduledTransactions, advanceSchedule,
+  splitsOf, scaleSplits, DIVIDENDS, recurringGroups, suggestSchedules, xirr, lotFlows, returnSummary,
 } from './model.js';
 
 test('periods: presets relative to today, Monday weeks, granularity', () => {
@@ -831,4 +832,103 @@ test('holding history: price, units, cost and gain at each known price, from the
   const plain = holdingHistory({ ...x, id: 'other' }, lots, '2026-03-15');
   assert.equal(plain[0].date, '2025-12-26');
   assert.equal(plain[0].gain, null);
+});
+
+test('splits: each part counts under its own category; IOUs go with the first part; refunds too', () => {
+  const accounts = [{ id: 'eur', currency: 'EUR' }];
+  const categories = [{ id: 'food', name: 'Food', parentId: null }, { id: 'home', name: 'Home', parentId: null }, { id: 'pay', name: 'Pay', parentId: null }];
+  const tx = [
+    { id: 'p', accountId: 'eur', date: '2026-10-01', amount: 200000, categoryIds: ['pay'], rate: 1 },
+    {
+      id: 'shop', accountId: 'eur', date: '2026-10-03', amount: -5000, rate: 1, categoryIds: ['food', 'home'],
+      splits: [{ categoryId: 'food', amount: -3200 }, { categoryId: 'home', amount: -1800 }],
+    },
+    { id: 'back', accountId: 'eur', date: '2026-10-04', amount: 900, rate: 1, kind: 'refund', categoryIds: ['home', 'pay'],
+      splits: [{ categoryId: 'home', amount: 500 }, { categoryId: 'pay', amount: 400 }] },
+  ];
+  const ious = [{ transactionId: 'shop', amount: 1000 }];
+  const r = insights(tx, { from: '2026-10-01', to: '2026-10-31', accounts, categories, ious });
+  assert.equal(r.spending.find((c) => c.id === 'food').amount, 3200 - 1000);
+  assert.equal(r.spending.find((c) => c.id === 'home').amount, 1800 - 500);
+  assert.equal(r.spending.find((c) => c.id === REFUNDS_UNMATCHED).amount, -400); // a refund part in an income category
+  assert.equal(r.expenses, 5000 - 1000 - 900);
+  const onlyHome = insights(tx, { from: '2026-10-01', to: '2026-10-31', accounts, categories, ious, onlyCategory: 'home' });
+  assert.equal(onlyHome.expenses, 1300);
+  assert.deepEqual(scaleSplits([{ categoryId: 'a', amount: -3000 }, { categoryId: 'b', amount: -1000 }], -5001),
+    [{ categoryId: 'a', amount: -3751 }, { categoryId: 'b', amount: -1250 }]);
+  assert.equal(splitsOf({ splits: [] }), null);
+});
+
+test('dividends: income on their own line without a category, and a filter type', () => {
+  const accounts = [{ id: 'eur', currency: 'EUR' }];
+  const tx = [
+    { id: 'd1', accountId: 'eur', date: '2026-10-02', amount: 1234, rate: 1, kind: 'dividend', categoryIds: [] },
+    { id: 'd2', accountId: 'eur', date: '2026-10-03', amount: 500, rate: 1, kind: 'dividend', categoryIds: ['inv'] },
+    { id: 'x', accountId: 'eur', date: '2026-10-03', amount: 700, rate: 1, categoryIds: [] },
+  ];
+  const r = insights(tx, { from: '2026-10-01', to: '2026-10-31', accounts, categories: [{ id: 'inv', name: 'Investing', parentId: null }] });
+  assert.equal(r.income, 2434);
+  assert.equal(r.earning.find((c) => c.id === DIVIDENDS).amount, 1234);
+  assert.equal(r.earning.find((c) => c.id === 'inv').amount, 500);
+  assert.deepEqual(filterTransactions(tx, { type: 'dividend' }).map((t) => t.id), ['d2', 'd1']);
+});
+
+test('recurring: monthly and weekly rhythms are suggested; irregular, stopped, varying or scheduled ones are not', () => {
+  const t = (id, accountId, date, amount, description) => ({ id, accountId, date, amount, description, categoryIds: ['c'] });
+  const tx = [
+    // monthly rent, drifting a couple of days with weekends
+    t('r1', 'a', '2026-07-01', -80000, 'Rent'), t('r2', 'a', '2026-08-03', -80000, 'rent'), t('r3', 'a', '2026-09-01', -80000, 'Rent'), t('r4', 'a', '2026-10-01', -80000, 'Rent'),
+    // weekly lessons
+    t('w1', 'a', '2026-10-06', -2000, 'Lesson'), t('w2', 'a', '2026-10-13', -2000, 'Lesson'), t('w3', 'a', '2026-10-20', -2000, 'Lesson'),
+    // irregular
+    t('i1', 'a', '2026-08-01', -500, 'Cafe'), t('i2', 'a', '2026-08-04', -500, 'Cafe'), t('i3', 'a', '2026-09-20', -500, 'Cafe'),
+    // monthly, but stopped in June
+    t('s1', 'a', '2026-04-10', -999, 'Gym'), t('s2', 'a', '2026-05-10', -999, 'Gym'), t('s3', 'a', '2026-06-10', -999, 'Gym'),
+    // monthly, but the amounts wander
+    t('v1', 'a', '2026-08-15', -1000, 'Shop'), t('v2', 'a', '2026-09-15', -5000, 'Shop'), t('v3', 'a', '2026-10-15', -9000, 'Shop'),
+    // already scheduled
+    t('k1', 'a', '2026-08-20', -3000, 'Phone'), t('k2', 'a', '2026-09-20', -3000, 'Phone'), t('k3', 'a', '2026-10-20', -3000, 'Phone'),
+    // a transfer is never suggested
+    { ...t('x1', 'a', '2026-08-25', -100, 'Save'), transferId: 'q1' }, { ...t('x2', 'a', '2026-09-25', -100, 'Save'), transferId: 'q2' }, { ...t('x3', 'a', '2026-10-25', -100, 'Save'), transferId: 'q3' },
+  ];
+  const groups = recurringGroups(tx, { since: '2025-11-01', until: '2026-11-02' });
+  const list = suggestSchedules(groups, { today: '2026-11-02', schedules: [{ accountId: 'a', description: 'PHONE' }] });
+  assert.deepEqual(list.map((s) => [s.description, s.every, s.unit, s.nextDate]), [
+    ['Rent', 1, 'month', '2026-11-01'], // a day late may just not be entered yet
+    ['Lesson', 1, 'week', '2026-11-03'],
+  ]);
+  const rent = list.find((s) => s.description === 'Rent');
+  assert.deepEqual([rent.kind, rent.amount, rent.categoryId, rent.count, rent.anchorDay], ['expense', 80000, 'c', 4, 1]);
+  assert.equal(suggestSchedules(groups, { today: '2026-11-02', hidden: [rent.id] }).some((s) => s.description === 'Rent'), false);
+});
+
+test('returns: XIRR on dated flows, lot flows, and no annual rate under a year', () => {
+  // 1,000 in, worth 1,100 a year later: 10% a year.
+  assert.ok(Math.abs(xirr([{ date: '2025-01-01', amount: -100000 }, { date: '2026-01-01', amount: 110000 }]) - 0.1) < 0.001);
+  // Money added late counts for less time: 1,000 for two years and 1,000 for one, worth 2,300.
+  const r = xirr([{ date: '2024-01-01', amount: -100000 }, { date: '2025-01-01', amount: -100000 }, { date: '2026-01-01', amount: 230000 }]);
+  const yrs = (d) => (Date.parse('2026-01-01') - Date.parse(d)) / (365.25 * 864e5);
+  assert.ok(Math.abs(100000 * (1 + r) ** yrs('2024-01-01') + 100000 * (1 + r) ** yrs('2025-01-01') - 230000) < 1);
+  assert.equal(xirr([{ date: '2025-01-01', amount: -100 }]), null);
+  assert.deepEqual(lotFlows([
+    { date: '2025-01-01', kind: 'buy', quantity: 10, price: 50, fees: 2 },
+    { date: '2025-06-01', kind: 'sell', quantity: 4, price: 60, fees: 1 },
+  ]), [{ date: '2025-01-01', amount: -50200 }, { date: '2025-06-01', amount: 23900 }]);
+  const short = returnSummary([{ date: '2026-09-01', amount: -100000 }, { date: '2026-11-01', amount: 105000 }]);
+  assert.deepEqual([short.annual, short.gain, short.simple], [null, 5000, 0.05]);
+});
+
+test('net worth history: an investment without buys and sells climbs to its value instead of jumping', () => {
+  const accounts = [{ id: 'fund', type: 'investment', currency: 'EUR' }];
+  const transactions = [{ accountId: 'fund', date: '2026-01-01', amount: 100000, rate: 1 }];
+  const opts = { from: '2026-01-01', to: '2026-05-31', today: '2026-05-31', holdingsValue: () => 120000 };
+  const plain = netWorthHistory({ accounts, transactions }, opts);
+  assert.deepEqual(plain.points.map((p) => p.total), [100000, 100000, 100000, 100000, 120000]);
+  assert.equal(plain.estimated, false);
+  const smooth = netWorthHistory({ accounts, transactions }, { ...opts, estimate: { paidIn: () => 100000, first: () => '2026-01-01' } });
+  const totals = smooth.points.map((p) => p.total);
+  assert.equal(smooth.estimated, true);
+  assert.equal(totals.at(-1), 120000);
+  assert.ok(totals.every((v, i) => i === 0 || v > totals[i - 1])); // rising all the way
+  assert.equal(totals[0], Math.round(100000 * (1 + 0.2 * (30 / 150)))); // end of January: 30 of 150 days
 });

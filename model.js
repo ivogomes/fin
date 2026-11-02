@@ -81,6 +81,23 @@ export function categoryResolver(categories, id) {
 // The categories of a transaction, reading older rows that had a single categoryId.
 export const categoriesOf = (t) => t.categoryIds ?? (t.categoryId ? [t.categoryId] : []);
 
+// A transaction split across categories has `splits`: [{ categoryId, amount }], amounts in the
+// account's currency with the transaction's sign, adding up to its amount. Its categoryIds are the
+// parts' categories (so filters find it), and Insights count each part under its own category.
+export const splitsOf = (t) => (Array.isArray(t.splits) && t.splits.length ? t.splits : null);
+
+// Parts scaled to a new total (the amount was edited): each keeps its share; rounding goes to the last.
+export function scaleSplits(splits, total) {
+  const before = splits.reduce((s, p) => s + p.amount, 0);
+  let used = 0;
+  return splits.map((p, i) => {
+    const amount = i === splits.length - 1 ? total - used
+      : before ? Math.round((p.amount * total) / before) : 0;
+    used += amount;
+    return { ...p, amount };
+  });
+}
+
 // Category ids sorted so parents come before their children and each family stays together.
 export function sortedCategories(categories) {
   const byName = (a, b) => a.name.localeCompare(b.name);
@@ -145,6 +162,7 @@ export function filterTransactions(transactions, filter, { categories = [] } = {
     if (maxMinor != null && size > maxMinor) return false;
     if (type === 'transfer' && !t.transferId) return false;
     if (type === 'refund' && t.kind !== 'refund') return false;
+    if (type === 'dividend' && t.kind !== 'dividend') return false;
     if (type === 'expense' && (t.transferId || t.kind === 'refund' || t.amount >= 0)) return false;
     if (type === 'income' && (t.transferId || t.kind === 'refund' || t.amount <= 0)) return false;
     const cats = categoriesOf(t);
@@ -614,6 +632,75 @@ export function advanceSchedule(rec) {
   return { ...rec, nextDate: addInterval(rec.nextDate, rec, rec.anchorDay) };
 }
 
+// ── Payments that look recurring ─────────────────────────────────────────────
+
+// Transactions grouped by account, description (case and accents ignored) and direction, with their
+// dates and amounts oldest first, between `since` and `until`: groups of three or more. Transfers and
+// special kinds (refunds, openings, dividends) are left out. The database's recurring_candidates
+// gives the same.
+export function recurringGroups(transactions, { since, until }) {
+  const map = new Map();
+  const sorted = [...transactions].sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id));
+  for (const t of sorted) {
+    if (t.transferId || t.kind || !t.description?.trim() || !t.amount || t.date < since || t.date > until) continue;
+    const key = normalize(t.description);
+    const sign = Math.sign(t.amount);
+    const id = `${t.accountId}|${key}|${sign}`;
+    const g = map.get(id) ?? { accountId: t.accountId, key, sign, dates: [], amounts: [] };
+    g.dates.push(t.date);
+    g.amounts.push(t.amount);
+    g.description = t.description; // the latest spelling
+    g.categoryIds = categoriesOf(t);
+    map.set(id, g);
+  }
+  return [...map.values()].filter((g) => g.dates.length >= 3);
+}
+
+// How often something can repeat, with how many days a date may drift (weekends, short months).
+const RHYTHMS = [
+  { every: 1, unit: 'week', days: 7, slack: 1 },
+  { every: 2, unit: 'week', days: 14, slack: 2 },
+  { every: 1, unit: 'month', days: 30.44, slack: 4 },
+  { every: 3, unit: 'month', days: 91.31, slack: 8 },
+  { every: 1, unit: 'year', days: 365.25, slack: 12 },
+];
+
+// Schedules worth suggesting from `recurringGroups`: the latest dates (up to six) are evenly spaced
+// by a week, two weeks, a month, a quarter or a year; the last one is at most about two of those
+// ago (it still happens); and the amounts are about the same (all but one within 30% of the typical one). Groups
+// already scheduled (same account and description) or dismissed (`hidden`, their ids) are left out.
+// Each suggestion is a schedule's fields plus its id, `typical` amount, `count` and `lastDate`.
+export function suggestSchedules(groups, { schedules = [], today, hidden = [] }) {
+  const scheduled = new Set(schedules.map((s) => `${s.accountId}|${normalize(s.description)}`));
+  const out = [];
+  for (const g of groups) {
+    const id = `${g.accountId}|${g.key}|${g.sign}`;
+    if (hidden.includes(id) || scheduled.has(`${g.accountId}|${g.key}`)) continue;
+    const dates = g.dates.slice(-6);
+    const amounts = g.amounts.slice(-6).map((a) => Math.abs(Number(a)));
+    if (dates.length < 3) continue;
+    const gaps = dates.slice(1).map((d, i) => (utc(d) - utc(dates[i])) / 864e5);
+    const rhythm = RHYTHMS.find((r) => gaps.every((gap) => Math.abs(gap - r.days) <= r.slack));
+    if (!rhythm) continue;
+    const last = dates.at(-1);
+    if ((utc(today) - utc(last)) / 864e5 > rhythm.days * 2 + rhythm.slack) continue;
+    const typical = [...amounts].sort((a, b) => a - b)[Math.floor(amounts.length / 2)];
+    if (amounts.filter((a) => Math.abs(a - typical) > typical * 0.3).length > 1) continue;
+    const anchorDay = Number(last.slice(8, 10));
+    // The next date after the last one, moved on past any that are well behind (a day or two late
+    // may just not be entered yet).
+    let nextDate = addInterval(last, rhythm, anchorDay);
+    while ((utc(today) - utc(nextDate)) / 864e5 > rhythm.slack) nextDate = addInterval(nextDate, rhythm, anchorDay);
+    out.push({
+      id, accountId: g.accountId, description: g.description, kind: g.sign < 0 ? 'expense' : 'income',
+      amount: amounts.at(-1), typical, categoryId: g.categoryIds?.[0] ?? null,
+      every: rhythm.every, unit: rhythm.unit, anchorDay, nextDate, endDate: null,
+      lastDate: last, count: g.dates.length,
+    });
+  }
+  return out.sort((a, b) => a.nextDate.localeCompare(b.nextDate) || a.description.localeCompare(b.description));
+}
+
 // ── Insights ─────────────────────────────────────────────────────────────────
 // A transaction's `kind` marks the special ones: 'refund' (money back that cancels part of an
 // expense) and 'opening' (an opening balance, which is history, not income or spending).
@@ -681,6 +768,8 @@ export function completeMonths(from, to, today) {
 
 // Where a refund lowers spending when none of its categories is a spending one (see insights).
 export const REFUNDS_UNMATCHED = 'refunds';
+// Where dividends with no category count as income.
+export const DIVIDENDS = 'dividends';
 
 // Top-level categories that mostly take money in across all of history (salary, interest…): more
 // income than spending under them, refunds and transfers left out.
@@ -705,7 +794,8 @@ export function incomeCategories(transactions, categories) {
 // - A refund lowers spending (and its category's spending) instead of counting as income.
 // - Amounts are in EUR at each transaction's own rate (`rateOf(currency)` when it has none).
 // - In the category breakdown a transaction counts under its first category, so the parts add up
-//   to the total.
+//   to the total; a split one counts each part under that part's category.
+// - Dividends are income, under their category or, with none, on their own line (DIVIDENDS).
 // `onlyCategory` (an id) keeps only transactions whose first category is it or one of its children.
 //
 // Two steps, so the database can do the first (insight_totals in schema.sql) and the app the
@@ -728,9 +818,15 @@ export function insightTotals(transactions, { from, to, accountIds = null, accou
   const incomeTops = incomeCategories(transactions, categories);
   const categoryOf = (t) => {
     const cats = categoriesOf(t);
+    if (t.kind === 'dividend' && !cats.length) return DIVIDENDS;
     if (t.kind !== 'refund') return cats[0] ?? null;
     if (!cats.length) return null;
     return cats.find((c) => !incomeTops.has(parentOf.get(c) ?? c)) ?? REFUNDS_UNMATCHED;
+  };
+  // One part of a split transaction: its own category (a refund's income category goes to its line).
+  const partCategory = (t, c) => {
+    if (!c) return t.kind === 'dividend' ? DIVIDENDS : null;
+    return t.kind === 'refund' && incomeTops.has(parentOf.get(c) ?? c) ? REFUNDS_UNMATCHED : c;
   };
   const only = onlyCategory ? new Set([onlyCategory, ...categories.filter((c) => c.parentId === onlyCategory).map((c) => c.id)]) : null;
   const days = new Map();
@@ -745,30 +841,34 @@ export function insightTotals(transactions, { from, to, accountIds = null, accou
     if (t.date < from || t.date > to) continue;
     if (accountIds && !accountIds.has(t.accountId)) continue;
     if (t.transferId || t.kind === 'opening') continue;
-    if (only && !only.has(categoryOf(t))) continue;
     const rate = t.rate ?? rateOf(currency.get(t.accountId) ?? 'EUR') ?? 1;
-    const eur = Math.round(t.amount * rate) + (iouByTx.get(t.id) ?? 0);
-    if (!eur) continue;
-    count += 1;
-    const cat = categoryOf(t);
-    const day = days.get(t.date) ?? { date: t.date, income: 0, expenses: 0 };
-    days.set(t.date, day);
-    // A refund is money back on an expense: it cancels part of the spending in its category (a
-    // category can go below zero when more came back than was spent in the period). Not income.
-    if (t.kind === 'refund') {
-      expenses -= eur;
-      refunds += eur;
-      add(spend, cat, -eur);
-      day.expenses -= eur;
-    } else if (eur < 0) {
-      expenses -= eur;
-      add(spend, cat, -eur);
-      day.expenses -= eur;
-    } else {
-      income += eur;
-      add(earn, cat, eur);
-      day.income += eur;
-    }
+    // A split transaction counts part by part; its IOU entries go with the first part.
+    const parts = splitsOf(t)?.map((p) => ({ cat: partCategory(t, p.categoryId), amount: Number(p.amount) }))
+      ?? [{ cat: categoryOf(t), amount: t.amount }];
+    parts.forEach(({ cat, amount }, n) => {
+      if (only && !only.has(cat)) return;
+      const eur = Math.round(amount * rate) + (n === 0 ? iouByTx.get(t.id) ?? 0 : 0);
+      if (!eur) return;
+      count += 1;
+      const day = days.get(t.date) ?? { date: t.date, income: 0, expenses: 0 };
+      days.set(t.date, day);
+      // A refund is money back on an expense: it cancels part of the spending in its category (a
+      // category can go below zero when more came back than was spent in the period). Not income.
+      if (t.kind === 'refund') {
+        expenses -= eur;
+        refunds += eur;
+        add(spend, cat, -eur);
+        day.expenses -= eur;
+      } else if (eur < 0) {
+        expenses -= eur;
+        add(spend, cat, -eur);
+        day.expenses -= eur;
+      } else {
+        income += eur;
+        add(earn, cat, eur);
+        day.income += eur;
+      }
+    });
   }
   const list = (map) => [...map].map(([cat, amount]) => ({ cat, amount }));
   return { income, expenses, refunds, count, days: [...days.values()], spend: list(spend), earn: list(earn) };
@@ -861,6 +961,55 @@ export function holdingHistory(holding, lots, today) {
       const value = Math.round(quantity * price * 100);
       return { date, price, units: quantity, cost, value, gain: value - cost };
     });
+}
+
+// ── Returns ──────────────────────────────────────────────────────────────────
+
+// The money a holding's buys and sells moved, from your side (minor units, in its currency): a buy
+// is money paid in (negative, fees included), a sell money back (positive, less fees).
+export const lotFlows = (lots) => lots.map((l) => ({
+  date: l.date,
+  amount: Math.round((l.kind === 'sell' ? l.quantity * l.price - (l.fees ?? 0) : -(l.quantity * l.price + (l.fees ?? 0))) * 100),
+}));
+
+// The yearly rate that makes `flows` ([{ date, amount }]: money paid in negative, money back and
+// today's value positive) add up to nothing when each is discounted back to the first date: the
+// money-weighted annual return (XIRR), so money added late counts for less time. null without both
+// money in and money out, or when no rate between −99.99% and +10,000% a year fits.
+export function xirr(flows) {
+  const list = flows.filter((f) => f.amount).sort((a, b) => a.date.localeCompare(b.date));
+  if (!list.some((f) => f.amount < 0) || !list.some((f) => f.amount > 0)) return null;
+  const t0 = utc(list[0].date);
+  const years = list.map((f) => (utc(f.date) - t0) / (365.25 * 864e5));
+  const npv = (r) => list.reduce((s, f, i) => s + f.amount / (1 + r) ** years[i], 0);
+  let lo = -0.9999;
+  let hi = 100;
+  let fLo = npv(lo);
+  if (fLo * npv(hi) > 0) return null;
+  for (let i = 0; i < 200; i += 1) {
+    const mid = (lo + hi) / 2;
+    const fMid = npv(mid);
+    if (Math.abs(fMid) < 1e-6) return mid;
+    if (fMid * fLo < 0) hi = mid;
+    else { lo = mid; fLo = fMid; }
+  }
+  return (lo + hi) / 2;
+}
+
+// What `flows` add up to: money paid in, money back (today's value included), the gain, the years
+// from the first to the last, and the annual return (null under a year, where a yearly rate would
+// stretch a few weeks' move into a misleading number; `simple` is the plain return then).
+export function returnSummary(flows) {
+  const list = flows.filter((f) => f.amount);
+  const paidIn = -list.filter((f) => f.amount < 0).reduce((s, f) => s + f.amount, 0);
+  const back = list.filter((f) => f.amount > 0).reduce((s, f) => s + f.amount, 0);
+  const dates = list.map((f) => f.date).sort();
+  const years = dates.length ? (utc(dates.at(-1)) - utc(dates[0])) / (365.25 * 864e5) : 0;
+  return {
+    paidIn, back, gain: back - paidIn, years,
+    simple: paidIn ? (back - paidIn) / paidIn : null,
+    annual: years >= 1 ? xirr(list) : null,
+  };
 }
 
 // Units held on a date, and the latest price known by then (the last trade's price).
@@ -1029,7 +1178,12 @@ export function accountRuns(accounts, transactions, dates, rateOf = () => 1, { s
 
 // `runs` (from accountRuns or the database's balances_at, at these points' dates) can stand in for
 // `transactions`.
-export function netWorthHistory({ accounts, transactions = [], snapshots = [], holdings = [], lots = [] }, { from, to, today, holdingsValue, rateOf = () => 1, runs = null }) {
+// `estimate` ({ paidIn(account), first(account) }: what has been put in today, in EUR, and the date
+// of its first transaction) fills in an investment account whose holdings lack buys and sells: before
+// its snapshots, instead of only what was put in (and a jump to market value on the last day), the
+// value is what was put in by then plus a gain growing evenly from the first transaction to today's.
+// `estimated` in the answer says whether any point was worked out that way.
+export function netWorthHistory({ accounts, transactions = [], snapshots = [], holdings = [], lots = [] }, { from, to, today, holdingsValue, rateOf = () => 1, runs = null, estimate = null }) {
   const { unit, ends } = historyPoints(from, to);
   const accountRun = runs ?? accountRuns(accounts, transactions, ends.map((e) => e.date), rateOf);
   const snaps = [...snapshots].sort((a, b) => a.date.localeCompare(b.date));
@@ -1066,12 +1220,24 @@ export function netWorthHistory({ accounts, transactions = [], snapshots = [], h
   const firstLot = (a) => holdings.filter((x) => x.accountId === a.id)
     .map((x) => lotsOf.get(x.id)?.[0]?.date).filter(Boolean).sort()[0] ?? null;
 
+  // The gain an account has today, spread evenly from its first transaction: the share of it on `date`.
+  const growth = (a) => {
+    if (!estimate) return null;
+    const paidIn = estimate.paidIn(a);
+    const first = estimate.first(a);
+    if (!(paidIn > 0) || !first || first >= today) return null;
+    const gain = holdingsValue(a) / paidIn - 1;
+    const span = utc(today) - utc(first);
+    return (date) => 1 + gain * Math.min(1, Math.max(0, (utc(date) - utc(first)) / span));
+  };
+  let estimated = false;
   const points = ends.map(({ key, date }) => ({ key, date, total: 0, investments: 0, byType: {} }));
   for (const a of accounts) {
     const run = accountRun.get(a.id) ?? { last: null, values: [] };
     const lastDate = run.last;
     const valuedByHoldings = a.type === 'investment' && holdingsValue(a) != null;
     const lotsFrom = valuedByHoldings ? firstLot(a) : null;
+    const grow = valuedByHoldings && !lotsFrom ? growth(a) : null;
     for (const [pi, p] of points.entries()) {
       let value = Number(run.values[pi] ?? 0);
       if (a.archived && lastDate && p.date >= lastDate) value = 0;
@@ -1079,8 +1245,11 @@ export function netWorthHistory({ accounts, transactions = [], snapshots = [], h
         if (p.date >= today) value = holdingsValue(a);
         else if (firstSnapshot && p.date >= firstSnapshot && snaps.filter((s) => s.date <= p.date).at(-1)?.values?.[a.id] != null) {
           value = snaps.filter((s) => s.date <= p.date).at(-1).values[a.id];
-        } else if (lotsFrom && p.date >= lotsFrom) {
-          value = lotValue(a, p.date) ?? value;
+        } else if (lotsFrom) {
+          if (p.date >= lotsFrom) value = lotValue(a, p.date) ?? value;
+        } else if (grow && value) {
+          value = Math.round(value * grow(p.date));
+          estimated = true;
         }
       }
       if (!value) continue;
@@ -1089,7 +1258,7 @@ export function netWorthHistory({ accounts, transactions = [], snapshots = [], h
       if (a.type === 'investment') p.investments += value;
     }
   }
-  return { unit, points, firstSnapshot };
+  return { unit, points, firstSnapshot, estimated };
 }
 
 // What had been put into an investment account by each date, in EUR minor units: from its holdings'

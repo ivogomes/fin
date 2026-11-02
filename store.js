@@ -8,7 +8,7 @@
 // the database (`refreshSummaries`) with the changes not yet counted there added on top
 // (`accountTotals`), so they move the moment something changes.
 
-import { defaultState, categoriesOf } from './model.js';
+import { defaultState, categoriesOf, splitsOf } from './model.js';
 import { selectAll, upsert, remove, removeAll, currentUser, hasColumns, rpc } from './cloud.js';
 
 // camelCase in the app ↔ snake_case in the database.
@@ -77,11 +77,14 @@ const TABLES = {
       id: t.id, account_id: t.accountId, date: t.date, description: t.description, amount: t.amount,
       category_ids: categoriesOf(t), rate: t.rate ?? null, memo: t.memo || null,
       transfer_id: t.transferId ?? null, kind: t.kind ?? null,
+      splits: splitsOf(t), holding_id: t.holdingId ?? null,
     }),
     from: (r) => ({
       // Rows saved before multiple categories have only category_id.
       id: r.id, accountId: r.account_id, date: r.date, description: r.description, amount: Number(r.amount),
       categoryIds: r.category_ids ?? (r.category_id ? [r.category_id] : []), rate: r.rate, memo: r.memo ?? '', transferId: r.transfer_id ?? undefined, kind: r.kind ?? undefined,
+      ...(Array.isArray(r.splits) && r.splits.length && { splits: r.splits.map((p) => ({ categoryId: p.categoryId ?? null, amount: Number(p.amount) })) }),
+      ...(r.holding_id && { holdingId: r.holding_id }),
     }),
   },
 };
@@ -95,7 +98,7 @@ export const missingTables = () => [...missing];
 
 // Columns added after the first release. Saving needs them, so their absence is reported to the
 // app, which asks for schema.sql to be run again.
-const NEW_COLUMNS = { accounts: ['credit_limit', 'card_network'], categories: ['parent_id'], transactions: ['category_ids', 'kind'], settings: ['fx', 'last_backup_at', 'backup_every', 'eodhd_api_key'], holdings: ['price_history'] };
+const NEW_COLUMNS = { accounts: ['credit_limit', 'card_network'], categories: ['parent_id'], transactions: ['category_ids', 'kind', 'splits', 'holding_id'], settings: ['fx', 'last_backup_at', 'backup_every', 'eodhd_api_key', 'hidden_suggestions'], holdings: ['price_history'] };
 let schemaOutdated = false;
 export const needsSchemaUpdate = () => schemaOutdated || missing.size > 0;
 
@@ -104,6 +107,7 @@ const toSettingsRow = (s) => ({
   fx: s.fx ?? {},
   last_backup_at: s.lastBackupAt ?? null,
   backup_every: s.backupEvery ?? 7,
+  hidden_suggestions: s.hiddenSuggestions ?? [],
 });
 
 let state = null;
@@ -159,6 +163,7 @@ export async function load({ allTransactions: everything = false, today, until }
     fx: s.fx ?? {}, // today's exchange rates, { USD: { rate, date } }, so they're fetched once a day
     lastBackupAt: s.last_backup_at ?? null, // when a backup was last downloaded
     backupEvery: s.backup_every ?? 7, // days between backup reminders; 0 = no reminders
+    hiddenSuggestions: s.hidden_suggestions ?? [], // suggested schedules turned down
   };
   snapshot();
   setSummaries(sums ?? []);

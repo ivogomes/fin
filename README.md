@@ -39,13 +39,21 @@ Tests: `node --test tools/finance/model.test.mjs`. On this machine the `node` sh
 
 ### After an update that adds a table
 
-`schema.sql` only creates what's missing, so running the whole file again is safe and keeps your data. Do this when a new feature needs a table (scheduled transactions added `schedules`); until then the app loads normally and says which feature can't save yet.
+`schema.sql` only creates what's missing, so running the whole file again is safe and keeps your data. Do this when a new feature needs a table or a column (scheduled transactions added `schedules`; splits and dividends added `transactions.splits` and `transactions.holding_id`); until then the app loads normally, says the database needs updating, and doesn't save.
 
 ## Pages
 
-Each section in the header (Accounts, Search, Scheduled, Insights, IOUs, Settings) is its own page with its own address, e.g. `/tools/finance/?page=search`, `?page=settings&section=backup` or `?account=<id>&tab=insights`; `/tools/finance/` opens the last account. Going to another section loads that page with fresh data, so switching sections also picks up changes made on another device.
+Each section in the header (Overview, Accounts, Search, Scheduled, Insights, IOUs, Settings) is its own page with its own address, e.g. `/tools/finance/?page=search`, `?page=settings&section=backup` or `?account=<id>&tab=insights`; `/tools/finance/` opens the Overview and `?account=` the last account opened. `?page=search&q=rent` opens Search already looking for "rent". Going to another section loads that page with fresh data, so switching sections also picks up changes made on another device.
 
 Not every page loads every transaction. Account totals (balances, counts, what's coming in the next 30 days) are worked out by the database (`account_summaries` in `schema.sql`), and a change you make shows in them at once; they're checked against the database again after each save. An account page asks the database for the 100 transactions it shows, with their running balance and filters applied (`account_transactions`), and the suggestions when adding transactions come from `description_index`. Search asks the database for one page of results with their In and Out totals (`search_transactions`), and Insights for the period's sums per day and per category (`insight_totals`, the same rules as `insightTotals` in `model.js`); the app groups those into weeks or months and parent categories. Net worth (and an investment account's Insights tab) asks for each account's running total at the end of each week or month (`balances_at`); investments are then valued from their holdings in the app. No page loads every transaction up front: the IOUs page fetches just the ones its entries are linked to, and the Settings pages that work on all of them (categories, rules, backup, imports, link transfers, export) load them when opened. A backup always has every transaction, wherever it's downloaded from. Anything waiting to be saved is sent first, and leaving with something typed but not saved asks first. Moving between accounts, account tabs and settings pages stays instant, and the address follows, so reloading or bookmarking keeps you there.
+
+## Overview
+
+The first page. It shows net worth, what you've spent and earned this month against last month up to the same day, everything coming up in the next two weeks across accounts (scheduled dates, with **Enter** and **Skip** for the ones due, and transactions added with a later date), this month's spending by category against the same days last month, and each credit card with what's owed and how much of its limit is left. When some payments look recurring but have no schedule, a line points to them.
+
+## Go to (Ctrl/⌘+K)
+
+**Go to…** in the header, or Ctrl+K (⌘K on a Mac) anywhere, opens a box to jump to any account, page or settings page, or to start something: add transactions or an account, schedule a transaction, hide amounts. Type to narrow the list (names starting with what you type come first); ↓/↑ move, Enter goes, Esc closes. Whatever you type can also be searched for in your transactions.
 
 ## Adding transactions from the keyboard
 
@@ -65,6 +73,10 @@ When you categorize a transaction by hand and no rule would already do that, the
 
 On small screens the account panel folds behind an **Accounts** button, the header tabs scroll sideways, transactions stack as cards, dialogs fill the screen, and a round **+** button opens quick entry for the account on screen. The tool installs as an app (manifest and icons in this folder; `sw.js` keeps the app's own files so it opens instantly, while data always comes from the database). The app's "Add transactions" shortcut opens `?add`.
 
+## Splitting a transaction
+
+A transaction can be split across categories, like a supermarket receipt that's part food and part household. In the edit form (or the single-transaction form), **Split across categories** replaces the categories with parts: each a category and an amount. The parts must add up to the transaction's amount; the form says how much is left to put in a part. In the list a split shows each part's category with its amount. Insights count each part under its own category, filters find the transaction under any of them, and changing the amount in place keeps each part's share. Setting or removing categories on selected transactions undoes a split; adding a category leaves split ones alone.
+
 ## Categories
 
 Two levels, like Buxfer: a category is top-level or sits under one, and is shown as "Parent / Child". A transaction can have several categories (chips you add and remove in the table or the edit form). Rules add one category when a transaction has none. Settings → Categories lists the tree with how many transactions use each one; deleting a category removes it from those transactions (they stay), deletes rules that set it, and moves its subcategories to the top level. Imports read several categories separated by commas, each possibly a path; Buxfer's `tags.csv` builds the whole tree.
@@ -75,13 +87,13 @@ A credit card account can have a credit limit (Edit account). It then shows what
 
 ## Charts over time
 
-Balances, net worth, investment values and holding prices are drawn as one line on one scale: the left axis gives the amount, the right axis the same gridlines as the change since the start of the period, and the line is green above where it started and red below (that level is marked). An account's Insights tab starts with its balance over the period; an investment's value has what was put in as a dashed line.
+Hovering a chart (or moving through it with the keyboard) shows a small box by the point, column or slice with its numbers; the line above the chart says the same for screen readers, and "Show as a table" has them all. Balances, net worth, investment values and holding prices are drawn as one line on one scale: the left axis gives the amount, the right axis the same gridlines as the change since the start of the period, and the line is green above where it started and red below (that level is marked). An account's Insights tab starts with its balance over the period; an investment's value has what was put in as a dashed line.
 
 ## Insights
 
 **Insights** in the header covers all accounts (archived ones included); each account also has an Insights tab. Pick a period (this or last week, month or year, the last 30 or 90 days, the last 12 months, all time, or a custom range). It shows income, spending, net and the share of income saved, a chart of income against spending by day, week, month or year (with a table view), and spending and income per top-level category, each opening onto its subcategories.
 
-What counts: transfers between your accounts and opening balances don't. A transaction counts after its IOU entries, so a loan or its repayment counts as nothing and a shared bill counts only your share. A refund (a transaction of kind "refund", marked ↩) is money back on an expense: it lowers spending and never counts as income. It lowers spending in its first category that is a spending one; categories that take in more than goes out across all your history (a salary, say) are skipped, as a refund tagged with one only says where the money came from. A refund with no spending category lowers spending on its own line, "Refunds with no expense category". A category can show negative spending when more came back than was spent in the period. Amounts are in EUR at each transaction's own rate. A transaction with several categories counts under its first one, so the categories add up to the total.
+What counts: transfers between your accounts and opening balances don't. A transaction counts after its IOU entries, so a loan or its repayment counts as nothing and a shared bill counts only your share. A refund (a transaction of kind "refund", marked ↩) is money back on an expense: it lowers spending and never counts as income. It lowers spending in its first category that is a spending one; categories that take in more than goes out across all your history (a salary, say) are skipped, as a refund tagged with one only says where the money came from. A refund with no spending category lowers spending on its own line, "Refunds with no expense category". A category can show negative spending when more came back than was spent in the period. Amounts are in EUR at each transaction's own rate. A transaction with several categories counts under its first one, so the categories add up to the total; a split one counts each part under that part's category. Dividends are income, under their category or, without one, on a "Dividends" line.
 
 ## Holdings and their buys and sells
 
@@ -93,9 +105,17 @@ Settings → Import holdings also reads a fund's movements list, as pension fund
 
 Each holding has a **Chart** button: its price over time (weekly closes once its price history is loaded, plus the price of each buy and sell), and the gain or loss on the units held at each point (value less what they cost, sells at average cost), shaded green above zero and red below. Arrow keys step through the points; a table has them all.
 
+## Dividends
+
+**Dividend** is a transaction type (with expense, income, refund and transfer) in the single-transaction and edit forms. A dividend can name the holding that paid it (**From holding**), wherever the money landed; the list then says "Dividend from VWCE". Dividends count as income in Insights, and in the investment account's return and its holdings' returns. Filters have a Dividends type.
+
 ## Insights for investment accounts
 
-An investment account's Insights tab shows its value against the money invested over the period (same presets), the gain, the change in value, and each holding's units, value, cost, gain and share today. "Invested" is the cost of the units held when every holding has buys and sells, otherwise the money moved into the account. Past values follow the same rules as net worth below.
+An investment account's Insights tab shows its value against the money invested over the period (same presets), the gain, the change in value, its annual return, the dividends in the period, and each holding's units, value, cost, gain, dividends, return and share today. "Invested" is the cost of the units held when every holding has buys and sells, otherwise the money moved into the account. Past values follow the same rules as net worth below.
+
+**Annual return** is money-weighted (XIRR, `xirr` in `model.js`): the yearly rate that makes the money paid in, the money back (sells, dividends) and today's value balance out, so money added late counts for less time. It covers everything from the first buy (or the first transaction), not just the period. With buys and sells for every holding it uses those; otherwise the money moved in and out of the account. Under a year it shows the plain return instead, since a yearly rate would stretch a few weeks' move into a misleading number.
+
+**Allocation today:** a donut of the account's holdings at today's prices, by holding or by currency, with each one's value and share. The Net worth tab has the same for every holding across your investment accounts.
 
 **Price history:** an investment account's Insights has **Load price history**: weekly closing prices per holding (Alpha Vantage for non-US exchanges, Twelve Data for US ones; one lookup each), kept in `holdings.price_history` and refreshed weekly after that. With it, past values use each week's close instead of the last trade price.
 
@@ -103,7 +123,7 @@ An investment account's Insights tab shows its value against the money invested 
 
 ## Net worth
 
-Insights → **Net worth** (or click the net-worth card in the side panel). It shows net worth and the investments part over the chosen period (shared with the Income and spending tab), the change over the period, debts, and today's split by account type. Closed (archived) accounts count until their last transaction, then as nothing. Investment accounts are at market value today; on earlier dates they use the daily `snapshots` the app records (once a day, when you open it). Before the first snapshot, holdings with buys and sells are valued as the units held then times the latest trade price by then; holdings without them at what was put in, because there's no price history.
+Insights → **Net worth** (or click the net-worth card in the side panel). It shows net worth and the investments part over the chosen period (shared with the Income and spending tab), the change over the period, debts, and today's split by account type. Closed (archived) accounts count until their last transaction, then as nothing. Investment accounts are at market value today; on earlier dates they use the daily `snapshots` the app records (once a day, when you open it). Before the first snapshot, holdings with buys and sells are valued as the units held then times the latest trade price by then. An account whose holdings have no buys and sells is estimated: what had been put in by then, plus today's gain growing evenly from its first transaction, so the line climbs to today's value instead of jumping on the last day. The note under the chart says when that's the case.
 
 ## Exchange rates
 
@@ -116,6 +136,8 @@ Money you lent or borrowed, per person. Each entry is positive when they owe you
 ## Scheduled transactions
 
 A schedule repeats every N days, weeks, months or years. Monthly and yearly ones keep their day of the month (the 31st falls back to the month's last day and returns to the 31st). Nothing is added by itself: when a date is due it shows greyed out under "Upcoming", at the top of the account's transactions, with **Enter** (adds the transaction with that date) and **Skip**. Each account with schedules also shows a 30-day forecast. Create them under **Scheduled**, with **Schedule…** on an account, with **Repeat** in the single-transaction form, or by importing Buxfer's `reminders.csv`.
+
+**Looks recurring:** the Scheduled page lists payments that came round regularly over the last 13 months and have no schedule yet: the same account, description and direction at least three times, evenly spaced by a week, two weeks, a month, a quarter or a year (a few days' drift allowed), the last one recent, and about the same amount each time (all but one within 30%). **Schedule…** opens the schedule form filled in from them; **Not recurring** stops suggesting it (kept in `settings.hidden_suggestions`). The database groups the transactions (`recurring_candidates`); the app decides which look regular (`suggestSchedules` in `model.js`).
 
 Transactions you add with a date after today don't count in the balance or net worth yet. They also wait greyed out under "Upcoming" (where you can edit or delete them), with the balance they would leave, and are part of the 30-day forecast; on their date they join the list like any other.
 

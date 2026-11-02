@@ -8,6 +8,7 @@ import {
   parseCsv, toCsv, guessDateFormat, guessDecimal, guessMapping, importRows, IMPORT_FIELDS, findTransferPairs,
   detectBuxferFile, buxferImport, isFtExport, ftImport, isFundMovements, fundMovementsToFt, lotSummary,
   UNITS, frequencyLabel, addInterval, occurrences, forecast, scheduledEffect, scheduledTransactions, advanceSchedule,
+  splitsOf, scaleSplits, DIVIDENDS, suggestSchedules, lotFlows, returnSummary,
 } from './model.js';
 import {
   fetchRate, fetchRateRange, fetchQuote, fetchQuoteAV, fetchHistory, alphaVantageCovers, searchSymbols, today,
@@ -24,22 +25,24 @@ import { configured, currentUser, completeSignIn, sendSignInLink, signOut, Signe
 // Set once the signed-in user's data has loaded (see boot() at the bottom).
 let state = null;
 // view: { name: 'account', id } | { name: 'settings' }
-// Each main section is its own page, with its own address: …/finance/?page=search, ?page=settings
-// &section=backup, ?account=<id>&tab=insights, and …/finance/ for the last account. Going to another
-// section loads that page, so its data is fresh; within a page (accounts, settings pages) it's instant.
+// Each main section is its own page, with its own address: …/finance/ (the overview), ?page=search
+// (&q=… to search for something), ?page=settings&section=backup, ?account=<id>&tab=insights, and
+// ?account= for the last account opened. Going to another section loads that page, so its data is
+// fresh; within a page (accounts, settings pages) it's instant.
 const BASE_PATH = '/tools/finance/';
-const PAGES = ['search', 'scheduled', 'insights', 'ious', 'settings'];
+const PAGES = ['overview', 'search', 'scheduled', 'insights', 'ious', 'settings'];
 const sectionOf = (v) => (v.name === 'account' ? 'accounts' : v.name);
 function urlOf(v) {
   const q = new URLSearchParams();
   if (v.name === 'account') {
-    if (v.id) q.set('account', v.id);
+    q.set('account', v.id ?? '');
     if (v.tab === 'insights') q.set('tab', 'insights');
-  } else {
+  } else if (v.name !== 'overview') {
     q.set('page', v.name);
     if (v.name === 'settings' && v.section) q.set('section', v.section);
     if (v.name === 'insights' && v.tab === 'networth') q.set('tab', 'networth');
     if (v.name === 'ious' && v.personId) q.set('person', v.personId);
+    if (v.name === 'search' && v.q) q.set('q', v.q);
   }
   const s = q.toString();
   return s ? `${BASE_PATH}?${s}` : BASE_PATH;
@@ -50,9 +53,13 @@ function viewFromUrl() {
   // Net worth was its own page; it's now a tab of Insights (old links still land there).
   if (page === 'networth' || (page === 'insights' && q.get('tab') === 'networth')) return { name: 'insights', tab: 'networth' };
   if (PAGES.includes(page)) {
-    return { name: page, ...(q.get('section') && { section: q.get('section') }), ...(q.get('person') && { personId: q.get('person') }) };
+    return {
+      name: page, ...(q.get('section') && { section: q.get('section') }), ...(q.get('person') && { personId: q.get('person') }),
+      ...(page === 'search' && q.get('q') && { q: q.get('q') }),
+    };
   }
-  return { name: 'account', id: q.get('account'), ...(q.get('tab') === 'insights' && { tab: 'insights' }) };
+  if (q.has('account')) return { name: 'account', id: q.get('account'), ...(q.get('tab') === 'insights' && { tab: 'insights' }) };
+  return { name: 'overview' };
 }
 let view = viewFromUrl();
 let shownView = view; // what's on screen, to fall back on if leaving the page is cancelled
@@ -173,7 +180,7 @@ const button = (label, onclick, kind = 'secondary', attrs = {}) =>
 // A transaction's type as a segmented switch (a radio group): one Tab stop, ←/→ move and pick, like
 // native radios. `compact` shows only the symbols (the quick-entry grid), with the names as labels
 // and tooltips. `value` reads and sets the picked type.
-const TX_TYPES = { expense: ['−', 'Expense'], income: ['+', 'Income'], refund: ['↩', 'Refund'], transfer: ['⇄', 'Transfer'] };
+const TX_TYPES = { expense: ['−', 'Expense'], income: ['+', 'Income'], refund: ['↩', 'Refund'], dividend: ['%', 'Dividend'], transfer: ['⇄', 'Transfer'] };
 function typeSwitch(kinds, value, { label = 'Transaction type', compact = false, onChange } = {}) {
   let current = value;
   const show = () => btns.forEach((b, i) => {
@@ -460,8 +467,8 @@ function groupTotal(list) {
 // Accounts are listed alphabetically everywhere (case and accents ignored).
 const byName = (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
 
-function renderSide() {
-  // Net worth in EUR; accounts still waiting for a rate are left out and counted.
+// Net worth in EUR; accounts still waiting for a rate are left out and counted.
+function netWorthNow() {
   const nw = { total: 0, unconverted: 0 };
   for (const a of state.accounts) {
     if (a.archived) continue;
@@ -469,6 +476,11 @@ function renderSide() {
     if (rate == null) nw.unconverted += 1;
     else nw.total += convert(accountValue(a), rate);
   }
+  return nw;
+}
+
+function renderSide() {
+  const nw = netWorthNow();
   return [
     // The net-worth card opens its own page: net worth over time and by account type.
     h('button', {
@@ -863,7 +875,7 @@ function filterBar(scope, { showAccount = false } = {}) {
   text.addEventListener('input', () => set({ text: text.value }, `${scope}-q`, 250));
   const cat = select([['*', 'All categories'], ['', 'Uncategorized'], ...catOptions()], f.categoryId == null ? '*' : f.categoryId, { 'data-key': `${scope}-cat`, 'aria-label': 'Category' });
   cat.addEventListener('change', () => set({ categoryId: cat.value === '*' ? null : cat.value }, `${scope}-cat`));
-  const type = select([['', 'All types'], ['expense', 'Expenses'], ['income', 'Income'], ['refund', 'Refunds'], ['transfer', 'Transfers']], f.type ?? '', { 'data-key': `${scope}-type`, 'aria-label': 'Type' });
+  const type = select([['', 'All types'], ['expense', 'Expenses'], ['income', 'Income'], ['refund', 'Refunds'], ['dividend', 'Dividends'], ['transfer', 'Transfers']], f.type ?? '', { 'data-key': `${scope}-type`, 'aria-label': 'Type' });
   type.addEventListener('change', () => set({ type: type.value || null }, `${scope}-type`));
   // A date box reports a "valid" date after almost every keystroke (typing 2026 passes through 0002,
   // 0020, 0202), and applying it redraws the list and resets the box mid-typing. So it applies a
@@ -926,7 +938,7 @@ function bulkBar(pageRows) {
     if (!setCat.value) return;
     const id = setCat.value;
     undoable(`${catLabel(id)} set on ${categorizable.length} transaction${categorizable.length === 1 ? '' : 's'}.`, ['transactions'], () => {
-      for (const t of categorizable) t.categoryIds = [id];
+      for (const t of categorizable) { t.categoryIds = [id]; delete t.splits; }
     });
   });
   const addCat = select([['', 'Add category…'], ...catOptions()], '', { 'aria-label': 'Add a category to the selected transactions', class: 'fin-input fin-input-sm' });
@@ -934,7 +946,8 @@ function bulkBar(pageRows) {
     if (!addCat.value) return;
     const id = addCat.value;
     undoable(`${catLabel(id)} added to ${categorizable.length} transaction${categorizable.length === 1 ? '' : 's'}.`, ['transactions'], () => {
-      for (const t of categorizable) if (!categoriesOf(t).includes(id)) t.categoryIds = [...categoriesOf(t), id];
+      // A split transaction keeps its parts (a category is added to a part in its edit form).
+      for (const t of categorizable) if (!splitsOf(t) && !categoriesOf(t).includes(id)) t.categoryIds = [...categoriesOf(t), id];
     });
   });
   return h('div', { class: 'fin-bulk', role: 'region', 'aria-label': 'Selected transactions' },
@@ -943,7 +956,7 @@ function bulkBar(pageRows) {
     categorizable.length > 0 && setCat,
     categorizable.length > 0 && addCat,
     categorizable.length > 0 && button('Remove categories', () => undoable(`Categories removed from ${categorizable.length} transaction${categorizable.length === 1 ? '' : 's'}.`, ['transactions'], () => {
-      for (const t of categorizable) t.categoryIds = [];
+      for (const t of categorizable) { t.categoryIds = []; delete t.splits; }
     }), 'secondary fin-btn-sm'),
     button('Delete', () => deleteTransactions(new Set(selected)), 'danger fin-btn-sm'),
     button('Clear selection', () => { selected.clear(); render(); }, 'secondary fin-btn-sm', { 'data-key': 'bulk-clear' }));
@@ -1030,6 +1043,8 @@ async function saveQuickEdit(t, field, raw) {
     if (field === 'amount') {
       const next = toMinor(value) * (t2.amount < 0 ? -1 : 1);
       if (p2) p2.amount = Math.round(next * (p2.amount / t2.amount));
+      // A split keeps each part's share of the new amount.
+      if (splitsOf(t2)) t2.splits = scaleSplits(t2.splits, next);
       t2.amount = next;
     }
   });
@@ -1086,7 +1101,9 @@ function txTable(rows, { caption, showBalance = false, showAccount = false, inEu
           t.kind === 'refund' && h('span', { class: 'fin-refund', title: 'Refund' }, icon('refund'), h('span', { class: 'fin-sr' }, 'Refund: ')),
           signed(t.amount, cur))),
         showBalance && h('td', { class: 'fin-r fin-num fin-muted c-bal' }, t.balance == null ? '' : money(t.balance, cur)),
-        h('td', { class: 'c-desc' }, quickCell(t, 'description', label, t.description), t.memo && h('span', { class: 'fin-sub' }, t.memo)),
+        h('td', { class: 'c-desc' }, quickCell(t, 'description', label, t.description),
+          t.kind === 'dividend' && h('span', { class: 'fin-sub' }, holdingOf(t.holdingId) ? `Dividend from ${holdingOf(t.holdingId).symbol}` : 'Dividend'),
+          t.memo && h('span', { class: 'fin-sub' }, t.memo)),
         showAccount && h('td', { class: 'c-acc' }, h('button', {
           type: 'button', class: 'fin-link fin-link-sm', onclick: () => selectAccount(t.accountId),
         }, account?.name ?? 'Deleted account')),
@@ -1255,6 +1272,11 @@ function descIndex() {
 
 // Search across every account (archived ones too).
 function renderSearch() {
+  // Arriving with something to search for (…?page=search&q=…, from Go to): start with it.
+  if (view.q) {
+    txFilters.set('search', { ...EMPTY_FILTER, text: view.q });
+    view = { name: 'search' };
+  }
   const f = filterOf('search');
   const active = filterActive(f);
   const key = JSON.stringify([txPage, f]);
@@ -1310,7 +1332,7 @@ const pickableAccounts = (keep) => state.accounts.filter((a) => !a.archived || a
 // keep their exchange rate).
 function transactionForm(account, tx) {
   const partner = transferPartner(tx);
-  let kind = tx.kind === 'refund' ? 'refund' : tx.amount > 0 ? 'income' : 'expense';
+  let kind = tx.kind === 'refund' || tx.kind === 'dividend' ? tx.kind : tx.amount > 0 ? 'income' : 'expense';
   // Suggestions fill in the description, and the categories when it has none (never the amount).
   const descCombo = descriptionCombo(descIndex, {
     label: 'Description',
@@ -1328,10 +1350,18 @@ function transactionForm(account, tx) {
   const amount = input({ type: 'number', step: '0.01', min: '0.01', required: true, inputmode: 'decimal', value: String(Math.abs(tx.amount) / 100) });
   const date = input({ type: 'date', required: true, value: tx.date });
   const cats = categoryPicker(categoriesOf(tx), { label: `Categories of ${tx.description}` });
+  const catField = pickerField('Categories', cats);
+  const split = splitEditor(splitsOf(tx), { total: () => toMinor(amount.value), currency: account.currency, cats, catField });
+  amount.addEventListener('input', () => split.refresh());
+  const holdingPick = holdingSelect(tx.holdingId);
+  const holdingField = field('From holding', holdingPick, 'Optional. Counts in that holding’s return.');
   const memo = h('textarea', { class: 'fin-input', rows: '2' });
   memo.value = tx.memo ?? '';
+  const error = h('p', { class: 'fin-error', role: 'alert' });
   const cancel = () => { editingTxId = null; render(`tx-edit-${tx.id}`); };
-  const kinds = typeSwitch(['expense', 'income', 'refund'], kind, { onChange: (k) => { kind = k; } });
+  const syncKind = () => { holdingField.hidden = kind !== 'dividend'; };
+  const kinds = typeSwitch(['expense', 'income', 'refund', 'dividend'], kind, { onChange: (k) => { kind = k; syncKind(); } });
+  syncKind();
 
   return h('form', {
     class: 'fin-tx-form',
@@ -1341,6 +1371,8 @@ function transactionForm(account, tx) {
       e.preventDefault();
       const sign = tx.transferId ? Math.sign(tx.amount) : kind === 'expense' ? -1 : 1;
       const next = toMinor(amount.value) * sign;
+      const parts = tx.transferId ? null : split.value();
+      if (parts?.error) { error.textContent = parts.error; parts.focus(); return; }
       const dateMoved = tx.date !== date.value;
       const shared = { date: date.value, description: desc.value.trim(), memo: memo.value.trim() };
       if (partner) {
@@ -1354,8 +1386,11 @@ function transactionForm(account, tx) {
       const catsBefore = categoriesOf(tx);
       Object.assign(tx, shared, {
         amount: next,
-        kind: tx.transferId ? tx.kind : kind === 'refund' ? 'refund' : tx.kind === 'opening' ? 'opening' : undefined,
-        categoryIds: tx.transferId ? [] : cats.value(),
+        kind: tx.transferId ? tx.kind : kind === 'refund' || kind === 'dividend' ? kind : tx.kind === 'opening' ? 'opening' : undefined,
+        holdingId: !tx.transferId && kind === 'dividend' ? holdingPick.value || undefined : undefined,
+        // Split: each part with the transaction's sign; its categories are the parts' (for filters).
+        splits: parts ? parts.parts.map((p) => ({ categoryId: p.categoryId || null, amount: p.amount * sign })) : undefined,
+        categoryIds: tx.transferId ? [] : parts ? [...new Set(parts.parts.map((p) => p.categoryId).filter(Boolean))] : cats.value(),
         // Keep the stored rate unless the date moved.
         rate: !dateMoved && tx.rate != null ? tx.rate : await ensureRate(account.currency, date.value),
       });
@@ -1371,9 +1406,11 @@ function transactionForm(account, tx) {
       : kinds.el,
     h('div', { class: 'fin-grid' },
       comboField('Description', descCombo), field(`Amount (${account.currency})`, amount),
-      field('Date', date)),
-    !tx.transferId && pickerField('Categories', cats),
+      field('Date', date), !tx.transferId && holdingField),
+    !tx.transferId && catField,
+    !tx.transferId && split.el,
     h('div', { class: 'fin-grid' }, field('Memo', memo)),
+    error,
     h('div', { class: 'fin-actions' },
       h('button', { type: 'submit', class: 'fin-btn btn-primary' }, 'Save changes'),
       button('Cancel', cancel)));
@@ -1412,6 +1449,20 @@ function categoryCell(t) {
   // transfers. A shared bill is a real expense: it keeps its categories, with the IOU underneath.
   const ious = iousOf(t.id);
   if (ious.length && ious[0].kind !== 'shared_bill') return iouLabel(ious);
+  // A split transaction: each part's category with its amount; changed in the edit form.
+  const parts = splitsOf(t);
+  if (parts) {
+    const cur = state.accounts.find((a) => a.id === t.accountId)?.currency ?? 'EUR';
+    return h('div', { class: 'fin-cats fin-cats-compact', role: 'group', 'aria-label': `Split of ${t.description}` },
+      parts.map((p) => h('span', { class: 'fin-cat-chip fin-cat-chip--part', 'data-hue': p.categoryId ? hueOf(p.categoryId) : '0' },
+        h('span', {}, catLabel(p.categoryId) || 'No category'),
+        h('span', { class: 'fin-num fin-cat-amt' }, money(Math.abs(p.amount), cur)))),
+      h('button', {
+        type: 'button', class: 'fin-link fin-link-sm', 'aria-label': `Change the split of ${t.description}`,
+        onclick: () => { editingTxId = t.id; render('tx-desc-edit'); },
+      }, 'Change'),
+      ious.length > 0 && h('div', { class: 'fin-sub' }, iouLabel(ious)));
+  }
   // Changes save straight away; the picker redraws itself, so the table keeps its place and focus.
   const picker = categoryPicker(categoriesOf(t), {
     label: `Categories of ${t.description}, ${shortDate(t.date)}`,
@@ -1469,6 +1520,85 @@ function pickerField(label, picker) {
   picker.el.setAttribute('aria-labelledby', id);
   return h('div', { class: 'fin-field fin-mb' }, h('span', { class: 'fin-field-label', id }, label), picker.el);
 }
+
+// Splitting a transaction across categories (a supermarket receipt: food and household): parts, each
+// a category and an amount, that add up to the transaction's amount. While it's split, the
+// categories picker (`catField`) is hidden. `total()` is the amount typed (positive cents).
+// `value()`: null when not split, { error, focus } when the parts don't work yet, else { parts }
+// with positive amounts. `refresh()` updates what's left after the amount changes.
+function splitEditor(initial, { total, currency, cats, catField }) {
+  let parts = initial ? initial.map((p) => ({ categoryId: p.categoryId ?? '', amount: Math.abs(p.amount) })) : null;
+  const wrap = h('div', { class: 'fin-split' });
+  const note = h('p', { class: 'fin-split-note', 'aria-live': 'polite' });
+  const headId = `split-${newId().slice(0, 8)}`;
+  const left = () => total() - parts.reduce((sum, p) => sum + p.amount, 0);
+  const status = () => {
+    if (!parts) return;
+    const l = left();
+    note.className = `fin-split-note ${l === 0 ? 'fin-split-ok' : 'fin-split-off'}`;
+    note.textContent = l === 0 ? 'The parts add up to the amount.'
+      : l > 0 ? `${money(l, currency)} left to put in a part.` : `The parts are ${money(-l, currency)} more than the amount.`;
+  };
+  const paint = (focus) => {
+    if (!parts) {
+      catField.hidden = false;
+      wrap.replaceChildren(h('button', {
+        type: 'button', class: 'fin-link fin-link-sm', 'data-key': 'split-start',
+        onclick: () => {
+          const t = total();
+          parts = [{ categoryId: cats.value()[0] ?? '', amount: t > 0 ? t : 0 }, { categoryId: '', amount: 0 }];
+          paint(1);
+        },
+      }, 'Split across categories'));
+      if (focus === 'start') wrap.querySelector('button').focus();
+      return;
+    }
+    catField.hidden = true;
+    const amounts = [];
+    const rows = parts.map((p, i) => {
+      const cat = select([['', 'No category'], ...catOptions()], p.categoryId, { 'aria-label': `Category of part ${i + 1}` });
+      cat.addEventListener('change', () => { p.categoryId = cat.value; });
+      const amt = input({
+        type: 'number', step: '0.01', min: '0.01', inputmode: 'decimal', value: p.amount ? String(p.amount / 100) : '',
+        'aria-label': `Amount of part ${i + 1} (${currency})`,
+      });
+      amt.addEventListener('input', () => { p.amount = amt.value === '' ? 0 : toMinor(amt.value); status(); });
+      amounts.push(amt);
+      return h('li', { class: 'fin-split-row' }, cat, amt,
+        parts.length > 2 ? iconButton('trash', `Remove part ${i + 1}`, () => { parts.splice(i, 1); paint(Math.min(i, parts.length - 1)); }) : h('span'));
+    });
+    wrap.replaceChildren(
+      h('span', { class: 'fin-field-label', id: headId }, `Split across categories (${currency})`),
+      h('ul', { class: 'fin-split-list', 'aria-labelledby': headId }, rows),
+      note,
+      h('div', { class: 'fin-actions' },
+        button('Add a part', () => { parts.push({ categoryId: '', amount: Math.max(0, left()) }); paint(parts.length - 1); }, 'secondary fin-btn-sm'),
+        button('Don’t split', () => { parts = null; paint('start'); }, 'secondary fin-btn-sm')));
+    status();
+    if (typeof focus === 'number') (amounts[focus]?.value ? amounts[focus] : rows[focus]?.querySelector('select'))?.focus();
+  };
+  paint();
+  return {
+    el: wrap,
+    refresh: status,
+    value: () => {
+      if (!parts) return null;
+      const bad = parts.findIndex((p) => !(p.amount > 0));
+      const firstAmount = (i) => () => wrap.querySelectorAll('.fin-split-row input')[i]?.focus();
+      if (parts.length < 2) return { error: 'A split needs at least two parts.', focus: firstAmount(0) };
+      if (bad >= 0) return { error: `Part ${bad + 1} needs an amount above zero.`, focus: firstAmount(bad) };
+      if (left() !== 0) return { error: `The parts must add up to the amount: ${note.textContent}`, focus: firstAmount(parts.length - 1) };
+      return { parts: parts.map((p) => ({ ...p })) };
+    },
+  };
+}
+
+// A dividend's holding: every holding, by symbol, with its account.
+function holdingSelect(selected) {
+  const list = [...state.holdings].sort((a, b) => a.symbol.localeCompare(b.symbol));
+  return select([['', 'Not linked to a holding'], ...list.map((x) => [x.id, `${x.symbol}${x.name && x.name !== x.symbol ? ` · ${x.name}` : ''} (${accountName(x.accountId)})`])], selected ?? '');
+}
+const holdingOf = (id) => state.holdings.find((x) => x.id === id);
 
 // ── add transactions dialog ──────────────────────────────────────────────────
 
@@ -1741,7 +1871,7 @@ function multiTxForm(account, close, swap) {
 function singleTxForm(account, close, swap) {
   const accounts = pickableAccounts(account.id);
   const accountOptions = accounts.map((a) => [a.id, `${a.name} (${a.currency})`]);
-  const type = typeSwitch(['expense', 'income', 'refund', 'transfer'], 'expense', { onChange: () => { sync(); suggest(); } });
+  const type = typeSwitch(['expense', 'income', 'refund', 'dividend', 'transfer'], 'expense', { onChange: () => { sync(); suggest(); } });
   // Suggestions fill in the type and categories (or both accounts, for a transfer), not the amount.
   let fillFrom = () => {};
   const descCombo = descriptionCombo(descIndex, {
@@ -1767,6 +1897,10 @@ function singleTxForm(account, close, swap) {
   const toField = field('To account', to);
   const receivedField = field('Amount received', received, 'Filled in from the daily rate. Change it to match what actually arrived.');
   const catField = pickerField('Categories', cats);
+  const split = splitEditor(null, { total: () => toMinor(amount.value), currency: account.currency, cats, catField });
+  amount.addEventListener('input', () => split.refresh());
+  const holdingPick = holdingSelect(null);
+  const holdingField = field('From holding', holdingPick, 'Optional. Counts in that holding’s return.');
   const acc = (id) => state.accounts.find((a) => a.id === id);
   let receivedTouched = false;
 
@@ -1779,7 +1913,9 @@ function singleTxForm(account, close, swap) {
     fromField.querySelector('label').textContent = transfer ? 'From account' : 'Account';
     toField.hidden = !transfer;
     to.required = transfer;
-    catField.hidden = transfer;
+    split.el.hidden = transfer;
+    if (transfer) catField.hidden = true; else if (!split.value()) catField.hidden = false;
+    holdingField.hidden = type.value !== 'dividend';
     receivedField.hidden = !cross;
     received.required = Boolean(cross);
     desc.required = !transfer;
@@ -1810,7 +1946,7 @@ function singleTxForm(account, close, swap) {
 
   fillFrom = (e) => {
     desc.value = e.description;
-    type.value = e.kind === 'transfer' ? 'transfer' : e.kind === 'refund' ? 'refund' : e.amount < 0 ? 'expense' : 'income';
+    type.value = ['transfer', 'refund', 'dividend'].includes(e.kind) ? e.kind : e.amount < 0 ? 'expense' : 'income';
     if (e.kind === 'transfer') {
       if (accounts.some((a) => a.id === e.accountId)) from.value = e.accountId;
       if (accounts.some((a) => a.id === e.toAccountId)) to.value = e.toAccountId;
@@ -1846,13 +1982,19 @@ function singleTxForm(account, close, swap) {
         persist(); close(); say(`Transferred from ${a.name} to ${b.name}.${repeats}${laterNote()}`);
         return;
       }
-      // None picked: the rules choose one, as in the quick form.
-      const categoryIds = cats.value().length ? cats.value() : [categorize(desc.value, state.rules)].filter(Boolean);
+      const parts = split.value();
+      if (parts?.error) { error.textContent = parts.error; parts.focus(); return; }
+      const sign = type.value === 'expense' ? -1 : 1;
+      // None picked: the rules choose one, as in the quick form. A split's are its parts'.
+      const categoryIds = parts ? [...new Set(parts.parts.map((p) => p.categoryId).filter(Boolean))]
+        : cats.value().length ? cats.value() : [categorize(desc.value, state.rules)].filter(Boolean);
       state.transactions.push({
         id: newId(), accountId: a.id, description: desc.value.trim(),
-        amount: sent * (type.value === 'expense' ? -1 : 1),
+        amount: sent * sign,
         categoryIds, rate: await ensureRate(a.currency, date.value), ...common,
-        ...(type.value === 'refund' ? { kind: 'refund' } : {}),
+        ...(type.value === 'refund' || type.value === 'dividend' ? { kind: type.value } : {}),
+        ...(type.value === 'dividend' && holdingPick.value ? { holdingId: holdingPick.value } : {}),
+        ...(parts ? { splits: parts.parts.map((p) => ({ categoryId: p.categoryId || null, amount: p.amount * sign })) } : {}),
       });
       const repeats = scheduleFrom({ description: desc.value.trim(), amount: sent, kind: type.value === 'expense' ? 'expense' : 'income', accountId: a.id, toAccountId: null, categoryId: categoryIds[0] ?? null });
       persist(); close(); say(`Transaction added.${repeats}${laterNote()}`);
@@ -1864,8 +2006,9 @@ function singleTxForm(account, close, swap) {
       comboField('Description', descCombo),
       catField, field('Date', date),
       amountField, receivedField,
-      fromField, toField,
+      fromField, toField, holdingField,
       field('Repeat', repeat, 'Adds a schedule: each next date shows on the account to enter or skip.')),
+    split.el,
     hint,
     h('div', { class: 'fin-grid' }, field('Memo', memo)),
     error,
@@ -2085,6 +2228,33 @@ function holdingChartPanel(x) {
     last.gain == null && h('p', { class: 'fin-hint' }, 'Add its buys and sells to see the gain or loss over time.'));
 }
 
+// A small box by the hovered or focused mark, saying what the chart's readout says. It's for the
+// eye: screen readers already hear the readout or the mark's own label, so it's hidden from them.
+// `show(kids, xFrac, yFrac)` places it at that share of the drawing (`svg`); its place goes to the
+// stylesheet in pixels (--tip-x, --tip-y), since the box can scroll sideways on a phone. Near an
+// edge it lines up with the edge instead of centring, and near the top it goes below the mark.
+function chartTip(wrap, svg) {
+  const tip = h('div', { class: 'fin-tip', 'aria-hidden': 'true', hidden: true });
+  wrap.classList.add('fin-has-tip');
+  wrap.append(tip);
+  return {
+    show(kids, xFrac, yFrac) {
+      tip.replaceChildren(...kids.flat().filter((k) => k != null && k !== false && k !== ''));
+      const box = wrap.getBoundingClientRect();
+      const art = svg.getBoundingClientRect();
+      const x = art.left - box.left + wrap.scrollLeft + xFrac * art.width;
+      const y = art.top - box.top + wrap.scrollTop + yFrac * art.height;
+      const seen = x - wrap.scrollLeft; // where it is in the visible part
+      tip.style.setProperty('--tip-x', `${Math.round(x)}px`);
+      tip.style.setProperty('--tip-y', `${Math.round(y)}px`);
+      tip.dataset.edge = seen < 90 ? 'start' : seen > wrap.clientWidth - 90 ? 'end' : 'mid';
+      tip.dataset.side = y < 64 ? 'below' : 'above';
+      tip.hidden = false;
+    },
+    hide() { tip.hidden = true; },
+  };
+}
+
 // One series over time, placed by date. `kind`:
 // - 'change' (default): the total on the left axis, and on the right the same gridlines as the change
 //   since the first point (one scale, two readings); the line is green above where it started and
@@ -2179,21 +2349,27 @@ function timeChart(points, { id, title, unit, format, kind = 'change', ref = nul
   const refAt = (date) => ref?.find((r) => r.date === date)?.v;
   const signedOf = (v) => (v === 0 ? format(0) : `${v > 0 ? '+' : '−'}${format(Math.abs(v)).replace(/^[+−-]/, '')}`);
   let at = points.length - 1;
-  const show = (i) => {
+  // What a point says: its date and value, the change since the start, and the line to compare with.
+  const info = (p, i) => {
+    const d = p.v - base;
+    const r = refAt(p.date);
+    return [h('strong', {}, `${shortDate(p.date)} ${p.date.slice(0, 4)}`), ' ',
+      h('strong', { class: `fin-num ${kind === 'gain' ? tone(p.v) : ''}` }, format(p.v)),
+      change && i > 0 && [' · ', h('span', { class: `fin-num ${tone(d)}` }, signedOf(d)),
+        !hideAmounts && base > 0 ? ` (${d >= 0 ? '+' : ''}${num((d / base) * 100)}%)` : '', ' since the start'],
+      r != null && [' · ', refLabel.toLowerCase(), ' ', h('span', { class: 'fin-num' }, format(r))],
+    ].flat().filter((k) => k != null && k !== false && k !== '');
+  };
+  let tip = null;
+  const show = (i, withTip = false) => {
     at = Math.max(0, Math.min(points.length - 1, i));
     const p = points[at];
     guide.setAttribute('x1', x(p)); guide.setAttribute('x2', x(p));
     dot.setAttribute('cx', x(p)); dot.setAttribute('cy', y(p.v));
     dot.setAttribute('class', `fin-dot ${kind === 'gain' ? 'fin-dot-gain' : p.v >= base ? 'fin-dot-up' : 'fin-dot-down'}`);
-    const d = p.v - base;
-    const r = refAt(p.date);
-    // replaceChildren doesn't flatten lists (it would print them as text), so flatten them here.
-    readout.replaceChildren(...[h('strong', {}, `${shortDate(p.date)} ${p.date.slice(0, 4)}`), ' ',
-      h('strong', { class: `fin-num ${kind === 'gain' ? tone(p.v) : ''}` }, format(p.v)),
-      change && at > 0 && [' · ', h('span', { class: `fin-num ${tone(d)}` }, signedOf(d)),
-        !hideAmounts && base > 0 ? ` (${d >= 0 ? '+' : ''}${num((d / base) * 100)}%)` : '', ' since the start'],
-      r != null && [' · ', refLabel.toLowerCase(), ' ', h('span', { class: 'fin-num' }, format(r))],
-    ].flat().filter((x) => x != null && x !== false && x !== ''));
+    // replaceChildren doesn't flatten lists (it would print them as text): info() gives a flat one.
+    readout.replaceChildren(...info(p, at));
+    if (withTip) tip.show(info(p, at), x(p) / W, y(p.v) / H);
   };
   const wrap = h('div', {
     class: 'fin-chart-wrap', tabindex: '0', role: 'group', 'aria-label': `${title}: use the arrow keys to read each point`,
@@ -2201,18 +2377,21 @@ function timeChart(points, { id, title, unit, format, kind = 'change', ref = nul
       const move = { ArrowLeft: at - 1, ArrowRight: at + 1, Home: 0, End: points.length - 1 }[e.key];
       if (move === undefined) return;
       e.preventDefault();
-      show(move);
+      show(move, true);
     },
-    onfocus: () => show(at),
+    onfocus: () => show(at, true),
+    onblur: () => tip.hide(),
   }, svg);
+  tip = chartTip(wrap, svg);
   // Pointer: the nearest point by date.
   svg.addEventListener('pointermove', (e) => {
     const box = svg.getBoundingClientRect();
     const px = ((e.clientX - box.left) / box.width) * W;
     let best = 0;
     points.forEach((p, i) => { if (Math.abs(x(p) - px) < Math.abs(x(points[best]) - px)) best = i; });
-    show(best);
+    show(best, true);
   });
+  svg.addEventListener('pointerleave', () => { if (document.activeElement !== wrap) tip.hide(); });
   show(at);
   const table = h('details', { class: 'fin-chart-table' },
     h('summary', {}, 'Show as a table'),
@@ -2635,6 +2814,8 @@ function incomeSpendChart(r) {
   const slot = plotW / series.length;
   const barW = Math.max(2, Math.min(24, (slot - 8) / 2 - 1));
   const every = Math.ceil(series.length / 12); // at most ~12 x labels
+  const chartWrap = h('div', { class: 'fin-chart-wrap' }, svg);
+  const tip = chartTip(chartWrap, svg);
   const multiYear = r.from.slice(0, 4) !== r.to.slice(0, 4);
   const readout = h('p', { class: 'fin-readout', 'aria-live': 'polite' });
   const showTotal = () => {
@@ -2662,17 +2843,20 @@ function incomeSpendChart(r) {
     const outBar = bar(cx + 1, b.expenses, 'fin-mark-out');
     if (inBar) g.append(inBar);
     if (outBar) g.append(outBar);
+    const info = () => [
+      h('strong', {}, bucketTitle(b.key, r.unit)), ' ',
+      h('span', { class: 'fin-key fin-key-in' }), h('strong', { class: 'fin-num' }, money(b.income, 'EUR')), ' income ',
+      h('span', { class: 'fin-key fin-key-out' }), h('strong', { class: 'fin-num' }, money(b.expenses, 'EUR')), ' spent',
+      h('span', { class: 'fin-muted' }, ` · net ${signed(b.income - b.expenses, 'EUR')}`)];
     const show = () => {
       svg.querySelectorAll('.fin-col.is-active').forEach((n) => n.classList.remove('is-active'));
       g.classList.add('is-active');
-      readout.replaceChildren(
-        h('strong', {}, bucketTitle(b.key, r.unit)), ' ',
-        h('span', { class: 'fin-key fin-key-in' }), h('strong', { class: 'fin-num' }, money(b.income, 'EUR')), ' income ',
-        h('span', { class: 'fin-key fin-key-out' }), h('strong', { class: 'fin-num' }, money(b.expenses, 'EUR')), ' spent',
-        h('span', { class: 'fin-muted' }, ` · net ${signed(b.income - b.expenses, 'EUR')}`));
+      readout.replaceChildren(...info());
+      tip.show(info(), cx / W, y(Math.max(b.income, b.expenses)) / H);
     };
     hit.addEventListener('pointerenter', show);
     hit.addEventListener('focus', show);
+    hit.addEventListener('blur', () => tip.hide());
     svg.append(g);
     if (i % every === 0) {
       const t = el('text', { x: cx, y: H - 8, class: 'fin-tick', 'text-anchor': 'middle' });
@@ -2683,6 +2867,7 @@ function incomeSpendChart(r) {
   svg.addEventListener('pointerleave', () => {
     svg.querySelectorAll('.fin-col.is-active').forEach((n) => n.classList.remove('is-active'));
     showTotal();
+    tip.hide();
   });
   showTotal();
 
@@ -2705,29 +2890,14 @@ function incomeSpendChart(r) {
         h('li', {}, h('span', { class: 'fin-key fin-key-in' }), 'Income'),
         h('li', {}, h('span', { class: 'fin-key fin-key-out' }), 'Spending'))),
     readout,
-    h('div', { class: 'fin-chart-wrap' }, svg),
+    chartWrap,
     table);
 }
 
-// Spending (or income) per top-level category, largest first, each opening onto its subcategories.
-// A donut of the top-level categories (the biggest seven, the rest as Other) with the total in the
-// middle, over the list of every category with its amount and share; a category with subcategories
-// opens to show them. Hover or focus a slice to read it in the middle. Slice colours go by rank
-// (validated categorical palette); each list row carries the same colour as a dot.
+// A donut: `slices` ({ label, amount, slot }: slot 0–6 or 'other' picks the colour) around the total.
+// Hover or focus a slice to read it in the middle (and in a tooltip beside it).
 const DONUT_SLOTS = 7;
-function categoryBreakdown(title, rows, total) {
-  const name = (id) => (id === REFUNDS_UNMATCHED ? 'Refunds with no expense category'
-    : id ? catLabel(id) || 'Deleted category' : 'Uncategorised');
-  const share = (amount) => (total > 0 ? `${Math.round((amount / total) * 100)}%` : '');
-  const positive = rows.filter((c) => c.amount > 0);
-  const slices = positive.slice(0, DONUT_SLOTS).map((c, i) => ({ label: name(c.id), amount: c.amount, slot: String(i) }));
-  const rest = positive.slice(DONUT_SLOTS).reduce((sum, c) => sum + c.amount, 0);
-  if (rest > 0) slices.push({ label: 'Other', amount: rest, slot: 'other' });
-  const slotOf = (id) => {
-    const i = positive.findIndex((c) => c.id === id);
-    return i < 0 ? null : i < DONUT_SLOTS ? String(i) : 'other';
-  };
-
+function donutChart(title, slices, total, { share }) {
   const NS = 'http://www.w3.org/2000/svg';
   const el = (tag, attrs = {}) => {
     const n = document.createElementNS(NS, tag);
@@ -2738,7 +2908,9 @@ function categoryBreakdown(title, rows, total) {
   const svg = el('svg', { viewBox: `0 0 ${S} ${S}`, class: 'fin-donut', role: 'group', 'aria-label': `${title}: ${slices.length} slices` });
   const centre = el('text', { x: C, y: C - 4, class: 'fin-donut-value', 'text-anchor': 'middle' });
   const caption = el('text', { x: C, y: C + 18, class: 'fin-donut-label', 'text-anchor': 'middle' });
-  const showTotal = () => { centre.textContent = money(total, 'EUR'); caption.textContent = 'Total'; };
+  const wrap = h('div', { class: 'fin-donut-wrap' }, svg);
+  const tip = chartTip(wrap, svg);
+  const showTotal = () => { centre.textContent = money(total, 'EUR'); caption.textContent = 'Total'; tip.hide(); };
   const sum = slices.reduce((x, sl) => x + sl.amount, 0);
   const pt = (r, a) => `${(C + r * Math.sin(a)).toFixed(2)},${(C - r * Math.cos(a)).toFixed(2)}`;
   let a0 = 0;
@@ -2750,9 +2922,15 @@ function categoryBreakdown(title, rows, total) {
       d: `M${pt(RO, a0)}A${RO},${RO} 0 ${large} 1 ${pt(RO, a1)}L${pt(RI, a1)}A${RI},${RI} 0 ${large} 0 ${pt(RI, a0)}Z`,
       'aria-label': `${sl.label}: ${money(sl.amount, 'EUR')}, ${share(sl.amount)}`,
     });
-    // The middle fits about 20 characters; the list beside it has the full name.
+    // The middle fits about 20 characters; the tooltip and the list beside it have the full name.
     const short = sl.label.length > 16 ? `${sl.label.slice(0, 15)}…` : sl.label;
-    const show = () => { centre.textContent = money(sl.amount, 'EUR'); caption.textContent = `${short} · ${share(sl.amount)}`; };
+    const mid = (a0 + a1) / 2;
+    const show = () => {
+      centre.textContent = money(sl.amount, 'EUR');
+      caption.textContent = `${short} · ${share(sl.amount)}`;
+      tip.show([h('strong', {}, sl.label), ' ', h('span', { class: 'fin-num' }, money(sl.amount, 'EUR')), ` · ${share(sl.amount)}`],
+        (C + RO * Math.sin(mid)) / S, (C - RO * Math.cos(mid)) / S);
+    };
     path.addEventListener('pointerenter', show);
     path.addEventListener('focus', show);
     path.addEventListener('pointerleave', showTotal);
@@ -2762,7 +2940,27 @@ function categoryBreakdown(title, rows, total) {
   }
   showTotal();
   svg.append(centre, caption);
+  return wrap;
+}
 
+// Spending (or income) per top-level category, largest first, each opening onto its subcategories.
+// A donut of the top-level categories (the biggest seven, the rest as Other) with the total in the
+// middle, over the list of every category with its amount and share; a category with subcategories
+// opens to show them. Slice colours go by rank (validated categorical palette); each list row
+// carries the same colour as a dot.
+function categoryBreakdown(title, rows, total) {
+  const name = (id) => (id === REFUNDS_UNMATCHED ? 'Refunds with no expense category'
+    : id === DIVIDENDS ? 'Dividends'
+      : id ? catLabel(id) || 'Deleted category' : 'Uncategorised');
+  const share = (amount) => (total > 0 ? `${Math.round((amount / total) * 100)}%` : '');
+  const positive = rows.filter((c) => c.amount > 0);
+  const slices = positive.slice(0, DONUT_SLOTS).map((c, i) => ({ label: name(c.id), amount: c.amount, slot: String(i) }));
+  const rest = positive.slice(DONUT_SLOTS).reduce((sum, c) => sum + c.amount, 0);
+  if (rest > 0) slices.push({ label: 'Other', amount: rest, slot: 'other' });
+  const slotOf = (id) => {
+    const i = positive.findIndex((c) => c.id === id);
+    return i < 0 ? null : i < DONUT_SLOTS ? String(i) : 'other';
+  };
   const dot = (slot) => h('span', { class: 'fin-dot', 'data-slot': slot ?? 'none', 'aria-hidden': 'true' });
   const line = (id, amount, child = false) => h('div', { class: `fin-break-row fin-break-row--dot${child ? ' fin-break-child' : ''}` },
     child ? h('span', { 'aria-hidden': 'true' }) : dot(slotOf(id)),
@@ -2772,7 +2970,7 @@ function categoryBreakdown(title, rows, total) {
   return h('section', { class: 'fin-card fin-pad', 'aria-label': title },
     h('h3', { class: 'fin-label' }, title),
     rows.length === 0 ? h('p', { class: 'fin-empty' }, 'Nothing in this period.') : [
-      slices.length > 0 && h('div', { class: 'fin-donut-wrap' }, svg),
+      slices.length > 0 && donutChart(title, slices, total, { share }),
       h('ul', { class: 'fin-break' }, rows.map((c) => h('li', {},
         c.children.length
           ? h('details', {},
@@ -2782,6 +2980,46 @@ function categoryBreakdown(title, rows, total) {
                 line(null, c.amount - c.children.reduce((x, k) => x + k.amount, 0), true)))
           : line(c.id, c.amount)))),
     ]);
+}
+
+// What investments are made of today: a donut by holding (the biggest seven, the rest as Other) or
+// by currency, over the list with each one's value and share. `holdings` can span several accounts.
+let allocationBy = 'holding'; // or 'currency'; kept while the page is open
+function allocationCard(holdings, key) {
+  const rateOf = (c) => latestRate(c) ?? 1;
+  const priced = holdings.map((x) => ({ x, value: convert(holdingValue(x) ?? 0, rateOf(x.currency)) })).filter((r) => r.value > 0);
+  if (!priced.length) return null;
+  const groups = new Map();
+  for (const { x, value } of priced) {
+    const id = allocationBy === 'currency' ? x.currency : x.id;
+    const g = groups.get(id) ?? { id, label: allocationBy === 'currency' ? x.currency : x.symbol, sub: allocationBy === 'currency' ? '' : x.name ?? '', amount: 0, n: 0 };
+    g.amount += value;
+    g.n += 1;
+    groups.set(id, g);
+  }
+  const rows = [...groups.values()].sort((a, b) => b.amount - a.amount);
+  if (allocationBy === 'currency') rows.forEach((g) => { g.sub = `${g.n} holding${g.n === 1 ? '' : 's'}`; });
+  const total = rows.reduce((sum, g) => sum + g.amount, 0);
+  const share = (amount) => (total > 0 ? `${Math.round((amount / total) * 100)}%` : '');
+  const slices = rows.slice(0, DONUT_SLOTS).map((g, i) => ({ label: g.sub && allocationBy === 'holding' ? `${g.label} · ${g.sub}` : g.label, amount: g.amount, slot: String(i) }));
+  const rest = rows.slice(DONUT_SLOTS).reduce((sum, g) => sum + g.amount, 0);
+  if (rest > 0) slices.push({ label: 'Other', amount: rest, slot: 'other' });
+  const pick = (by) => { allocationBy = by; render(`alloc-${key}-${by}`); };
+  return h('section', { class: 'fin-card fin-pad', 'aria-labelledby': `alloc-${key}-h` },
+    h('div', { class: 'fin-chart-head' },
+      h('h3', { id: `alloc-${key}-h`, class: 'fin-label' }, 'Allocation today'),
+      h('div', { class: 'fin-tabs fin-tabs-sm', role: 'group', 'aria-label': 'Allocation by' },
+        [['holding', 'By holding'], ['currency', 'By currency']].map(([by, label]) => h('button', {
+          type: 'button', class: 'fin-tab', 'aria-pressed': String(allocationBy === by), 'data-key': `alloc-${key}-${by}`, onclick: () => pick(by),
+        }, label)))),
+    donutChart(`Allocation ${allocationBy === 'currency' ? 'by currency' : 'by holding'}`, slices, total, { share }),
+    h('ul', { class: 'fin-break' }, rows.map((g, i) => h('li', {},
+      h('div', { class: 'fin-break-row fin-break-row--dot' },
+        h('span', { class: 'fin-dot', 'data-slot': i < DONUT_SLOTS ? String(i) : 'other', 'aria-hidden': 'true' }),
+        h('span', { class: 'fin-break-name' }, g.label, g.sub && h('span', { class: 'fin-sub' }, g.sub)),
+        h('span', { class: 'fin-num fin-break-amt' }, money(g.amount, 'EUR')),
+        h('span', { class: 'fin-num fin-break-pct fin-muted' }, share(g.amount)))))),
+    h('p', { class: 'fin-hint' }, 'At today’s prices, in EUR. Holdings without a price are left out.'));
 }
 
 // The whole Insights panel for some accounts (a Set of ids) or all of them (null).
@@ -2945,6 +3183,9 @@ function singleColumns(series, unit, range, label) {
   const every = Math.ceil(series.length / 12);
   const multiYear = range.from.slice(0, 4) !== range.to.slice(0, 4);
   const readout = h('p', { class: 'fin-readout fin-muted', 'aria-live': 'polite' }, 'Hover or focus a column for its value.');
+  const chartWrap = h('div', { class: 'fin-chart-wrap' }, svg);
+  const tip = chartTip(chartWrap, svg);
+  svg.addEventListener('pointerleave', () => tip.hide());
   series.forEach((b, i) => {
     const cx = L + slot * i + slot / 2;
     const g = el('g', { class: 'fin-col' });
@@ -2957,13 +3198,16 @@ function singleColumns(series, unit, range, label) {
       const x = cx - barW / 2;
       g.append(el('path', { class: 'fin-mark-out', d: `M${x},${y0}V${yv + rr}Q${x},${yv} ${x + rr},${yv}H${x + barW - rr}Q${x + barW},${yv} ${x + barW},${yv + rr}V${y0}Z` }));
     }
+    const info = () => [h('strong', {}, bucketTitle(b.key, unit)), ' ', h('strong', { class: 'fin-num' }, money(b.value, 'EUR'))];
     const show = () => {
       svg.querySelectorAll('.fin-col.is-active').forEach((n) => n.classList.remove('is-active'));
       g.classList.add('is-active');
-      readout.replaceChildren(h('strong', {}, bucketTitle(b.key, unit)), ' ', h('strong', { class: 'fin-num' }, money(b.value, 'EUR')));
+      readout.replaceChildren(...info());
+      tip.show(info(), cx / W, yv / H);
     };
     hit.addEventListener('pointerenter', show);
     hit.addEventListener('focus', show);
+    hit.addEventListener('blur', () => tip.hide());
     svg.append(g);
     if (i % every === 0) {
       const t = el('text', { x: cx, y: H - 8, class: 'fin-tick', 'text-anchor': 'middle' });
@@ -2973,7 +3217,7 @@ function singleColumns(series, unit, range, label) {
   });
   return [
     readout,
-    h('div', { class: 'fin-chart-wrap' }, svg),
+    chartWrap,
     h('details', { class: 'fin-chart-table' },
       h('summary', {}, 'Show as a table'),
       h('div', { class: 'fin-scroll' }, h('table', { class: 'fin-table' },
@@ -3029,8 +3273,34 @@ function recordSnapshot() {
 }
 
 
-// Insights for an investment account: its value against what was put in, over the period, and
-// each holding's value, cost and gain today.
+// Transactions a view needs beyond the page's own, fetched once per page (`filter` is a PostgREST
+// filter, e.g. '&kind=eq.dividend'). Whether they're here yet; draws again when they arrive.
+const fetchedSets = new Map(); // key → 'loading' | 'done'
+function transactionsLoaded(key, filter) {
+  if (transactionsComplete() || fetchedSets.get(key) === 'done') return true;
+  if (!fetchedSets.has(key)) {
+    fetchedSets.set(key, 'loading');
+    fetchTransactions(() => selectAll('transactions', 'id', filter))
+      .then(() => { fetchedSets.set(key, 'done'); renderWhenIdle(); })
+      .catch((err) => { fetchedSets.delete(key); say(`Couldn’t load the transactions: ${err.message}`); });
+  }
+  return false;
+}
+
+// A transaction in EUR, at its own rate (today's while it has none).
+const inEur = (t) => convert(t.amount, t.rate ?? latestRate(state.accounts.find((a) => a.id === t.accountId)?.currency ?? 'EUR') ?? 1);
+// Net worth history estimates investments without buys and sells from what was put in (model.js).
+const estimateOpts = { paidIn: (a) => convert(totalsOf(a.id).balance, latestRate(a.currency) ?? 1), first: (a) => totalsOf(a.id).first };
+
+// "+7.2% a year", or the plain return when it's under a year; with a note on what it covers.
+function returnText(sum) {
+  if (sum.annual != null) return { text: `${sum.annual >= 0 ? '+' : ''}${num(sum.annual * 100)}% a year`, value: sum.annual };
+  if (sum.simple != null) return { text: `${sum.simple >= 0 ? '+' : ''}${num(sum.simple * 100)}%`, value: sum.simple, short: true };
+  return null;
+}
+
+// Insights for an investment account: its value against what was put in, over the period, its
+// annual return and dividends, and each holding's value, cost, gain, dividends and return today.
 function investmentInsights(account) {
   const own = state.holdings.filter((x) => x.accountId === account.id);
   const ownLots = state.lots.filter((l) => own.some((x) => x.id === l.holdingId));
@@ -3045,22 +3315,49 @@ function investmentInsights(account) {
   const dates = historyPoints(range.from, to).ends.map((e) => e.date);
   const runs = ask('balances_at', { p_dates: dates, p_rates: ratesArg(), p_accounts: [account.id] });
   const paidIn = ask('balances_at', { p_dates: dates, p_rates: ratesArg(), p_accounts: [account.id], p_skip_opening: true });
-  if (!runs || !paidIn) return h('div', { class: 'fin-insights' }, periodControls(range), loader('Working out the history…'));
-  const hist = netWorthHistory({ ...state, accounts: [account] }, { from: range.from, to, today: today(), holdingsValue: holdingsValueEUR, rateOf, runs: runMap(runs) });
+  const byLots = own.length > 0 && own.every((x) => lotsOfHolding(x.id).length);
+  // Dividends anywhere (they may land in another account), and this account's own transactions
+  // when its return comes from the money moved in.
+  const dividendsReady = transactionsLoaded('dividends', '&kind=eq.dividend');
+  const movesReady = byLots || transactionsLoaded(`account:${account.id}`, `&account_id=eq.${encodeURIComponent(account.id)}`);
+  if (!runs || !paidIn || !dividendsReady || !movesReady) return h('div', { class: 'fin-insights' }, periodControls(range), loader('Working out the history…'));
+  const hist = netWorthHistory({ ...state, accounts: [account] }, { from: range.from, to, today: today(), holdingsValue: holdingsValueEUR, rateOf, runs: runMap(runs), estimate: estimateOpts });
   const invested = investedHistory(account, state, dates, rateOf, runMap(paidIn).get(account.id) ?? { values: [] });
   const pts = hist.points.map((p, i) => ({ key: p.key, date: p.date, total: p.total, investments: invested[i] }));
   const now = pts.at(-1);
   const gain = now.total - now.investments;
   const change = now.total - pts[0].total;
-  const byLots = own.length > 0 && own.every((x) => lotsOfHolding(x.id).length);
+
+  // Dividends: paid by its holdings (wherever they landed) or into this account.
+  const ownIds = new Set(own.map((x) => x.id));
+  const dividends = state.transactions.filter((t) => t.kind === 'dividend' && t.date <= today() && (ownIds.has(t.holdingId) || t.accountId === account.id));
+  const divInRange = dividends.filter((t) => t.date >= range.from && t.date <= to).reduce((sum, t) => sum + inEur(t), 0);
+  const divAll = dividends.reduce((sum, t) => sum + inEur(t), 0);
+  const divFlows = (list) => list.map((t) => ({ date: t.date, amount: inEur(t) }));
 
   const rows = own.map((x) => {
     const value = convert(holdingValue(x) ?? 0, rateOf(x.currency));
     const lotsX = lotsOfHolding(x.id);
     const cost = lotsX.length ? convert(lotSummary(lotsX).cost, rateOf(x.currency)) : null;
-    return { x, value, cost, gain: cost == null ? null : value - cost };
+    const divs = dividends.filter((t) => t.holdingId === x.id);
+    // Its return: buys, sells and dividends, with today's value as if sold today.
+    const ret = lotsX.length ? returnSummary([
+      ...lotFlows(lotsX).map((f) => ({ date: f.date, amount: convert(f.amount, rateOf(x.currency)) })),
+      ...divFlows(divs), { date: today(), amount: value },
+    ]) : null;
+    return { x, value, cost, gain: cost == null ? null : value - cost, dividends: divs.reduce((sum, t) => sum + inEur(t), 0), ret };
   }).sort((a, b) => b.value - a.value);
   const totalValue = rows.reduce((s, r) => s + r.value, 0);
+  // The account's return: from its holdings' buys and sells when every one has them, otherwise from
+  // the money moved in and out of it; dividends and today's value count as money back.
+  const flows = byLots
+    ? [...own.flatMap((x) => lotFlows(lotsOfHolding(x.id)).map((f) => ({ date: f.date, amount: convert(f.amount, rateOf(x.currency)) }))),
+      ...divFlows(dividends), { date: today(), amount: totalValue }]
+    : [...state.transactions.filter((t) => t.accountId === account.id && t.date <= today() && t.kind !== 'dividend').map((t) => ({ date: t.date, amount: -inEur(t) })),
+      ...divFlows(dividends.filter((t) => t.accountId !== account.id)), { date: today(), amount: convert(accountValue(account), rateOf(account.currency)) }];
+  const accountReturn = returnSummary(flows);
+  const yearly = returnText(accountReturn);
+  const since = flows.map((f) => f.date).sort()[0];
 
   return h('div', { class: 'fin-insights' },
     periodControls(range),
@@ -3072,7 +3369,15 @@ function investmentInsights(account) {
         now.investments > 0 && h('p', { class: 'fin-stat-note' }, `${gain >= 0 ? '+' : ''}${num((gain / now.investments) * 100)}%`)),
       h('div', {}, h('dt', {}, `Change since ${shortDate(pts[0].date)}${pts[0].date.slice(0, 4) != thisYear ? ` ${pts[0].date.slice(0, 4)}` : ''}`),
         h('dd', { class: tone(change) }, signed(change, 'EUR')),
-        h('p', { class: 'fin-stat-note' }, 'value, including new money'))),
+        h('p', { class: 'fin-stat-note' }, 'value, including new money')),
+      // Money-weighted (XIRR): money added late counts for less time. Over everything, not the period.
+      yearly && h('div', {}, h('dt', {}, yearly.short ? 'Return' : 'Annual return'),
+        h('dd', { class: yearly.value > 0 ? 'fin-pos' : yearly.value < 0 ? 'fin-neg' : '' }, yearly.text),
+        h('p', { class: 'fin-stat-note' }, yearly.short
+          ? `since ${shortDate(since)}; under a year, so not made yearly`
+          : `money-weighted, since ${shortDate(since)} ${since.slice(0, 4)}${dividends.length ? ', with dividends' : ''}`)),
+      dividends.length > 0 && h('div', {}, h('dt', {}, 'Dividends'), h('dd', { class: 'fin-pos' }, money(divInRange, 'EUR')),
+        h('p', { class: 'fin-stat-note' }, `in this period · ${money(divAll, 'EUR')} in all`))),
     pts.length > 1
       ? h('section', { class: 'fin-card fin-pad' }, timeChart(pts.map((p) => ({ date: p.date, v: p.total })), {
         id: `inv-${account.id}`, title: 'Value over time', unit: 'in EUR', format: (v) => money(v, 'EUR'), wide: true,
@@ -3083,7 +3388,9 @@ function investmentInsights(account) {
       'Value is at market prices today and on days the app has recorded (once a day, when you open it). Before that, ',
       byLots
         ? (own.every((x) => latestClose(x)) ? 'it’s the units held then times that week’s closing price.' : 'it’s the units held then times the latest trade price by then; load the price history for real weekly values.')
-        : 'it’s the money put in, as there’s no record of units held; adding the buys and sells (Lots, or an FT.com import) gives real values over time.'),
+        : hist.estimated
+          ? 'it’s an estimate: the money put in by then, plus today’s gain growing evenly from the first transaction. Adding the buys and sells (Lots, or an FT.com import) gives real values over time.'
+          : 'it’s the money put in, as there’s no record of units held; adding the buys and sells (Lots, or an FT.com import) gives real values over time.'),
     byLots && own.some((x) => !latestClose(x)) && h('div', { class: 'fin-actions fin-mt' },
       button(`Load price history (${own.filter((x) => !latestClose(x)).length} holding${own.filter((x) => !latestClose(x)).length === 1 ? '' : 's'})`,
         async (e) => { e.target.disabled = true; e.target.textContent = 'Loading…'; await loadHistory(own.filter((x) => !latestClose(x))); },
@@ -3093,15 +3400,23 @@ function investmentInsights(account) {
       h('h3', { id: 'inv-h', class: 'fin-label' }, 'Holdings today'),
       h('div', { class: 'fin-scroll' }, h('table', { class: 'fin-table' },
         h('caption', { class: 'fin-sr' }, `Holdings of ${account.name}`),
-        h('thead', {}, h('tr', {}, ['Holding', 'Units', 'Value', 'Cost', 'Gain', 'Share'].map((t, i) => h('th', { scope: 'col', class: i ? 'fin-r' : null }, t)))),
-        h('tbody', {}, rows.map(({ x, value, cost, gain: g }) => h('tr', {},
-          h('td', {}, x.symbol, h('span', { class: 'fin-sub' }, x.name ?? '')),
-          h('td', { class: 'fin-r fin-num' }, shownQty(x.quantity)),
-          h('td', { class: 'fin-r fin-num' }, money(value, 'EUR')),
-          h('td', { class: 'fin-r fin-num fin-muted' }, cost == null ? '—' : money(cost, 'EUR')),
-          h('td', { class: `fin-r fin-num ${g == null ? '' : tone(g)}` }, g == null ? '—' : signed(g, 'EUR'),
-            g != null && cost > 0 && h('span', { class: 'fin-sub' }, `${g >= 0 ? '+' : ''}${num((g / cost) * 100)}%`)),
-          h('td', { class: 'fin-r fin-num fin-muted' }, totalValue ? `${Math.round((value / totalValue) * 100)}%` : ''))))))));
+        h('thead', {}, h('tr', {}, ['Holding', 'Units', 'Value', 'Cost', 'Gain', 'Dividends', 'Return', 'Share'].map((t, i) => h('th', { scope: 'col', class: i ? 'fin-r' : null }, t)))),
+        h('tbody', {}, rows.map(({ x, value, cost, gain: g, dividends: d, ret }) => {
+          const r = ret && returnText(ret);
+          return h('tr', {},
+            h('td', {}, x.symbol, h('span', { class: 'fin-sub' }, x.name ?? '')),
+            h('td', { class: 'fin-r fin-num' }, shownQty(x.quantity)),
+            h('td', { class: 'fin-r fin-num' }, money(value, 'EUR')),
+            h('td', { class: 'fin-r fin-num fin-muted' }, cost == null ? '—' : money(cost, 'EUR')),
+            h('td', { class: `fin-r fin-num ${g == null ? '' : tone(g)}` }, g == null ? '—' : signed(g, 'EUR'),
+              g != null && cost > 0 && h('span', { class: 'fin-sub' }, `${g >= 0 ? '+' : ''}${num((g / cost) * 100)}%`)),
+            h('td', { class: 'fin-r fin-num' }, d ? money(d, 'EUR') : '—'),
+            h('td', { class: `fin-r fin-num ${r ? (r.value > 0 ? 'fin-pos' : r.value < 0 ? 'fin-neg' : '') : ''}` }, r ? r.text : '—',
+              r?.short && h('span', { class: 'fin-sub' }, 'under a year')),
+            h('td', { class: 'fin-r fin-num fin-muted' }, totalValue ? `${Math.round((value / totalValue) * 100)}%` : ''));
+        })))),
+      h('p', { class: 'fin-hint' }, 'Return is money-weighted (XIRR) over each holding’s buys, sells and dividends, with today’s value as if sold today. It needs the holding’s buys and sells.')),
+    allocationCard(own, account.id));
 }
 
 // balances_at's answer as accountRuns gives it: Map(accountId → { last, values }).
@@ -3119,7 +3434,7 @@ function renderNetWorth() {
     return h('div', { class: 'fin-insights' }, periodControls(range), loader('Working out the history…'));
   }
   const hist = netWorthHistory(state, {
-    from: range.from, to, today: today(), holdingsValue: holdingsValueEUR, rateOf: (c) => latestRate(c) ?? 1, runs: runMap(runs),
+    from: range.from, to, today: today(), holdingsValue: holdingsValueEUR, rateOf: (c) => latestRate(c) ?? 1, runs: runMap(runs), estimate: estimateOpts,
   });
   const pts = hist.points;
   const now = pts.at(-1);
@@ -3157,8 +3472,12 @@ function renderNetWorth() {
         : h('p', { class: 'fin-notice' }, 'Pick a longer period to see net worth over time.'),
       h('p', { class: 'fin-hint' },
         hist.firstSnapshot
-          ? `Investments are at market value from ${shortDate(hist.firstSnapshot)} ${hist.firstSnapshot.slice(0, 4)}, recorded once a day when you open the app. Before that, holdings with buys and sells are valued as the units held times the latest trade price; others at what was put in, as there's no price history.`
-          : 'Investments are at market value today. Earlier, holdings with buys and sells are valued as the units held times the latest trade price; others at what was put in, as there\'s no price history. From today the app records market values once a day, so the history fills in.',
+          ? `Investments are at market value from ${shortDate(hist.firstSnapshot)} ${hist.firstSnapshot.slice(0, 4)}, recorded once a day when you open the app. Before that, holdings with buys and sells are valued as the units held times the latest trade price`
+          : 'Investments are at market value today. Earlier, holdings with buys and sells are valued as the units held times the latest trade price',
+        hist.estimated
+          ? '; accounts without them are estimated as what was put in by then plus today’s gain growing evenly from their first transaction.'
+          : '; others at what was put in, as there’s no price history.',
+        !hist.firstSnapshot && ' From today the app records market values once a day, so the history fills in.',
         ' Closed (archived) accounts count until their last transaction.'),
       h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'nw-type-h' },
         h('h3', { id: 'nw-type-h', class: 'fin-label' }, 'By account type, today'),
@@ -3179,7 +3498,9 @@ function renderNetWorth() {
               return svg;
             })(),
             h('span', { class: `fin-num fin-break-amt ${value < 0 ? 'fin-neg' : ''}` }, money(value, 'EUR')),
-            h('span', { class: 'fin-num fin-break-pct fin-muted' }, value > 0 && assets ? `${Math.round((value / assets) * 100)}%` : ''))))))));
+            h('span', { class: 'fin-num fin-break-pct fin-muted' }, value > 0 && assets ? `${Math.round((value / assets) * 100)}%` : '')))))),
+      // Every holding in the open investment accounts.
+      allocationCard(state.holdings.filter((x) => state.accounts.some((a) => a.id === x.accountId && !a.archived)), 'nw')));
 }
 
 // ── scheduled transactions ───────────────────────────────────────────────────
@@ -3348,6 +3669,48 @@ function upcomingRows(account, { cols, inEur, balance }) {
   ];
 }
 
+// Payments that look recurring but have no schedule yet (model.js suggestSchedules), from the
+// database's groups of repeated descriptions over the last 13 months. undefined while it's asked.
+function scheduleSuggestions() {
+  const groups = ask('recurring_candidates', { p_since: daysFromToday(-400), p_today: today() });
+  if (!groups) return undefined;
+  return suggestSchedules(groups, { schedules: state.schedules, today: today(), hidden: state.settings.hiddenSuggestions ?? [] })
+    .filter((x) => state.accounts.some((a) => a.id === x.accountId && !a.archived));
+}
+
+function suggestionsCard() {
+  const list = scheduleSuggestions();
+  if (list === undefined) return h('section', { class: 'fin-card' }, loader('Looking for payments that repeat…'));
+  if (!list.length) return null;
+  const hide = (x) => {
+    state.settings.hiddenSuggestions = [...(state.settings.hiddenSuggestions ?? []), x.id];
+    persist(); render('sched-add');
+    say(`“${x.description}” won’t be suggested again.`);
+  };
+  return h('section', { class: 'fin-card', 'aria-labelledby': 'suggest-h' },
+    h('div', { class: 'fin-card-head' },
+      h('h3', { id: 'suggest-h', class: 'fin-label' }, 'Looks recurring ', h('span', { class: 'fin-count' }, String(list.length)))),
+    h('p', { class: 'fin-hint fin-pad-x' }, 'These came round regularly for about the same amount and have no schedule yet. Schedule one to see it coming, or say it isn’t recurring.'),
+    h('div', { class: 'fin-scroll' }, h('table', { class: 'fin-table' },
+      h('caption', { class: 'fin-sr' }, 'Payments that look recurring'),
+      h('thead', {}, h('tr', {}, ['Description', 'Account', 'Amount', 'Repeats', 'Next date'].map((t, i) =>
+        h('th', { scope: 'col', class: i === 2 ? 'fin-r' : null }, t)), h('th', { scope: 'col' }, h('span', { class: 'fin-sr' }, 'Actions')))),
+      h('tbody', {}, list.map((x) => {
+        const cur = state.accounts.find((a) => a.id === x.accountId)?.currency ?? 'EUR';
+        const shown = x.kind === 'expense' ? -x.amount : x.amount;
+        return h('tr', {},
+          h('td', {}, x.description, x.categoryId && h('span', { class: 'fin-sub' }, catLabel(x.categoryId))),
+          h('td', {}, accountName(x.accountId)),
+          h('td', { class: `fin-r fin-num ${tone(shown)}` }, signed(shown, cur),
+            x.typical !== x.amount && h('span', { class: 'fin-sub' }, `usually ${money(x.typical, cur)}`)),
+          h('td', {}, frequencyLabel(x), h('span', { class: 'fin-sub' }, `${x.count} times, last on ${shortDate(x.lastDate)}`)),
+          h('td', { class: 'fin-nowrap' }, h('time', { datetime: x.nextDate }, shortDate(x.nextDate))),
+          h('td', { class: 'fin-r' }, h('div', { class: 'fin-actions fin-row-actions' },
+            button('Schedule…', () => openScheduleDialog(null, x), 'secondary fin-btn-sm', { 'aria-label': `Schedule ${x.description}`, 'aria-haspopup': 'dialog' }),
+            button('Not recurring', () => hide(x), 'secondary fin-btn-sm', { 'aria-label': `${x.description} isn’t recurring` }))));
+      })))));
+}
+
 function renderSchedules() {
   const list = [...state.schedules].sort((a, b) => a.nextDate.localeCompare(b.nextDate));
   return h('div', {},
@@ -3355,6 +3718,7 @@ function renderSchedules() {
       h('div', {}, h('h2', { class: 'fin-title' }, 'Scheduled'),
         h('p', { class: 'fin-meta' }, 'Recurring transactions. When one is due it shows on its account, where you enter or skip it.')),
       button('Schedule a transaction', () => openScheduleDialog(), 'primary', { 'data-key': 'sched-add', 'aria-haspopup': 'dialog' })),
+    suggestionsCard(),
     h('section', { class: 'fin-card' },
       list.length === 0
         ? h('p', { class: 'fin-empty fin-pad' }, 'Nothing scheduled yet. Add one here, use Repeat when adding a single transaction, or import Buxfer’s reminders.csv.')
@@ -3378,6 +3742,161 @@ function renderSchedules() {
                 button('Edit', () => openScheduleDialog(s), 'secondary fin-btn-sm', { 'aria-label': `Edit ${s.description}`, 'data-key': `sched-edit-${s.id}` }),
                 button('Stop', () => deleteScheduled(s), 'danger fin-btn-sm', { 'aria-label': `Stop ${s.description}` }))));
           }))))));
+}
+
+// ── overview ─────────────────────────────────────────────────────────────────
+
+const OVERVIEW_DAYS = 14;
+// A link to another page (a view). A plain click goes there the app's way (saving first); Ctrl/⌘-click
+// still opens a new tab.
+const pageLink = (label, v, cls) => h('a', {
+  class: cls, href: urlOf(v),
+  onclick: (e) => {
+    if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    e.preventDefault();
+    view = v;
+    render();
+  },
+}, label);
+// The first page: where things stand, this month's spending against last month's, what's coming in
+// the next two weeks, credit cards, and payments that look recurring.
+function renderOverview() {
+  const now = today();
+  const day = Number(now.slice(8, 10));
+  const monthStart = `${now.slice(0, 7)}-01`;
+  // Last month up to the same day (or its last day), so the two compare like for like.
+  const prevStart = new Date(Date.UTC(Number(now.slice(0, 4)), Number(now.slice(5, 7)) - 2, 1)).toISOString().slice(0, 10);
+  const prevLast = new Date(Date.UTC(Number(now.slice(0, 4)), Number(now.slice(5, 7)) - 1, 0)).toISOString().slice(0, 10);
+  const prevEnd = `${prevStart.slice(0, 8)}${String(Math.min(day, Number(prevLast.slice(8, 10)))).padStart(2, '0')}`;
+  const r = insightsFor({ from: monthStart, to: now }, null);
+  const p = insightsFor({ from: prevStart, to: prevEnd }, null);
+  const nw = netWorthNow();
+  const lastMonth = new Date(`${prevStart}T00:00:00`).toLocaleDateString(undefined, { month: 'long' });
+  const sameDays = `${lastMonth} 1–${Number(prevEnd.slice(8, 10))}`;
+  const vsLast = (a, b) => (!b ? `nothing by this day in ${lastMonth}` : (() => {
+    const pct = Math.round(((a - b) / Math.abs(b)) * 100);
+    return pct === 0 ? `same as ${sameDays}` : `${pct > 0 ? '+' : ''}${pct}% vs ${sameDays}`;
+  })());
+
+  return h('div', { class: 'fin-overview' },
+    h('div', { class: 'fin-account-head' },
+      h('div', {}, h('h2', { class: 'fin-title', id: 'overview-h', tabindex: '-1' }, 'Overview'),
+        h('p', { class: 'fin-meta' }, new Date(`${now}T00:00:00`).toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }))),
+      button('Add transactions', quickAdd, 'primary', { 'data-key': 'ov-add', 'aria-haspopup': 'dialog' })),
+    state.accounts.length === 0 ? renderWelcome() : [
+      h('dl', { class: 'fin-stats' },
+        h('div', {}, h('dt', {}, 'Net worth'), h('dd', { class: tone(nw.total) }, money(nw.total, 'EUR')),
+          h('p', { class: 'fin-stat-note' }, nw.unconverted ? `${nw.unconverted} account(s) waiting for exchange rates` : 'across your open accounts, in EUR')),
+        h('div', {}, h('dt', {}, 'Spent this month'), h('dd', { class: 'fin-neg' }, r ? money(r.expenses, 'EUR') : '…'),
+          h('p', { class: 'fin-stat-note' }, r && p ? vsLast(r.expenses, p.expenses) : 'working it out…')),
+        h('div', {}, h('dt', {}, 'Income this month'), h('dd', { class: 'fin-pos' }, r ? money(r.income, 'EUR') : '…'),
+          h('p', { class: 'fin-stat-note' }, r && p ? vsLast(r.income, p.income) : 'working it out…'))),
+      comingUpCard(),
+      h('div', { class: 'fin-overview-grid' },
+        r && p ? monthCategoriesCard(r, p, sameDays) : h('section', { class: 'fin-card' }, loader('Working out this month…')),
+        creditCardsCard()),
+      recurringNotice(),
+    ]);
+}
+
+// Everything due in the next two weeks, across accounts: scheduled dates (with Enter and Skip for
+// the next one of each) and transactions already added with a later date. Overdue ones first.
+function comingUpCard() {
+  const now = today();
+  const until = daysFromToday(OVERVIEW_DAYS);
+  const plannedReady = transactionsLoaded('planned', `&date=gt.${now}`);
+  const items = [
+    ...state.schedules.filter((sc) => state.accounts.some((a) => a.id === sc.accountId && !a.archived))
+      .flatMap((sc) => occurrences(sc, until).map((date, i) => ({ s: sc, date, first: i === 0 }))),
+    // A transfer shows once, from the side the money leaves.
+    ...state.transactions.filter((t) => t.date > now && t.date <= until && !(t.transferId && t.amount > 0)).map((t) => ({ t, date: t.date })),
+  ].sort((a, b) => a.date.localeCompare(b.date));
+  const cur = (id) => state.accounts.find((a) => a.id === id)?.currency ?? 'EUR';
+  const amountOf = (it) => {
+    if (it.t) return h('span', { class: `fin-num ${it.t.transferId ? '' : tone(it.t.amount)}` }, it.t.transferId ? money(-it.t.amount, cur(it.t.accountId)) : signed(it.t.amount, cur(it.t.accountId)));
+    const shown = it.s.kind === 'expense' ? -it.s.amount : it.s.amount;
+    return h('span', { class: `fin-num ${it.s.kind === 'transfer' ? '' : tone(shown)}` }, it.s.kind === 'transfer' ? money(it.s.amount, cur(it.s.accountId)) : signed(shown, cur(it.s.accountId)));
+  };
+  return h('section', { class: 'fin-card', 'aria-labelledby': 'coming-h' },
+    h('div', { class: 'fin-card-head' },
+      h('h3', { id: 'coming-h', class: 'fin-label' }, `Coming up, next ${OVERVIEW_DAYS} days `, h('span', { class: 'fin-count' }, String(items.length))),
+      pageLink('All schedules ›', { name: 'scheduled' }, 'fin-link fin-link-sm')),
+    !plannedReady && items.length === 0 ? loader('Looking ahead…')
+      : items.length === 0 ? h('p', { class: 'fin-empty fin-pad' }, 'Nothing scheduled or dated in the next two weeks.')
+        : h('ul', { class: 'fin-coming' }, items.map((it) => {
+          const due = it.s ? dueLabel(it.date) : null;
+          const t = it.t;
+          const name = t ? t.description : it.s.description;
+          const where = t ? (t.transferId ? `${accountName(t.accountId)} → ${accountName(transferPartner(t)?.accountId)}` : accountName(t.accountId)) : scheduleAccounts(it.s);
+          return h('li', { class: `fin-coming-row${due ? ' fin-due' : ''}` },
+            h('time', { class: 'fin-coming-date fin-nowrap', datetime: it.date }, shortDate(it.date)),
+            h('span', { class: 'fin-coming-what' }, name,
+              h('span', { class: 'fin-sub' }, where, ' · ', t ? 'added ahead' : frequencyLabel(it.s).toLowerCase()),
+              due && h('span', { class: 'fin-chip fin-chip-inline fin-chip-due' }, due)),
+            amountOf(it),
+            h('span', { class: 'fin-actions fin-coming-actions' },
+              it.s && it.first && it.date <= now && button('Enter', () => enterScheduled(it.s, `ov-enter-${it.s.id}`), 'secondary fin-btn-sm',
+                { 'aria-label': `Enter ${name} for ${shortDate(it.date)}`, 'data-key': `ov-enter-${it.s.id}` }),
+              it.s && it.first && it.date <= now && button('Skip', () => skipScheduled(it.s, `ov-skip-${it.s.id}`), 'secondary fin-btn-sm',
+                { 'aria-label': `Skip ${name} on ${shortDate(it.date)}`, 'data-key': `ov-skip-${it.s.id}` })));
+        })));
+}
+
+// This month's spending by top-level category, against last month up to the same day.
+function monthCategoriesCard(r, p, sameDays) {
+  const rows = r.spending.filter((c) => c.amount > 0).slice(0, 6);
+  const top = Math.max(1, ...rows.map((c) => c.amount), ...rows.map((c) => p.spending.find((x) => x.id === c.id)?.amount ?? 0));
+  const name = (id) => (id === REFUNDS_UNMATCHED ? 'Refunds with no expense category' : id ? catLabel(id) || 'Deleted category' : 'Uncategorised');
+  const bar = (amount, cls) => {
+    const el = h('span', { class: `fin-ov-bar ${cls}`, 'aria-hidden': 'true' });
+    el.style.setProperty('--w', `${Math.max(0.5, (amount / top) * 100).toFixed(1)}%`);
+    return el;
+  };
+  return h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'ov-cat-h' },
+    h('div', { class: 'fin-chart-head' },
+      h('h3', { id: 'ov-cat-h', class: 'fin-label' }, 'Spending this month'),
+      h('ul', { class: 'fin-legend', 'aria-label': 'Legend' },
+        h('li', {}, h('span', { class: 'fin-key fin-key-out' }), 'this month'),
+        h('li', {}, h('span', { class: 'fin-key fin-key-prev' }), sameDays))),
+    rows.length === 0 ? h('p', { class: 'fin-empty' }, 'No spending yet this month.')
+      : h('ul', { class: 'fin-ov-cats' }, rows.map((c) => {
+        const before = p.spending.find((x) => x.id === c.id)?.amount ?? 0;
+        return h('li', { class: 'fin-ov-cat' },
+          h('span', { class: 'fin-ov-cat-name' }, name(c.id)),
+          h('span', { class: 'fin-num fin-ov-cat-amt' }, money(c.amount, 'EUR'),
+            h('span', { class: 'fin-sub' }, before ? `${money(before, 'EUR')} by now last month` : 'none by now last month')),
+          h('span', { class: 'fin-ov-bars' }, bar(c.amount, 'fin-ov-bar-now'), bar(before, 'fin-ov-bar-prev')));
+      })),
+    pageLink('More in Insights ›', { name: 'insights' }, 'fin-link fin-link-sm'));
+}
+
+// Each open credit card: what's owed and, with a limit, how much of it is used and what's left.
+function creditCardsCard() {
+  const cards = state.accounts.filter((a) => a.type === 'credit' && !a.archived).sort(byName);
+  if (!cards.length) return null;
+  return h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'ov-cards-h' },
+    h('h3', { id: 'ov-cards-h', class: 'fin-label' }, 'Credit cards'),
+    h('ul', { class: 'fin-ov-cards' }, cards.map((a) => {
+      const value = accountValue(a);
+      const use = limitUse(a, value);
+      return h('li', {},
+        h('button', { type: 'button', class: 'fin-ov-card', onclick: () => selectAccount(a.id) },
+          h('span', { class: 'fin-account-name' }, cardMark(a), a.name),
+          h('span', { class: `fin-num ${value < 0 ? 'fin-neg' : ''}` }, value < 0 ? `${money(-value, a.currency)} owed` : value > 0 ? `${money(value, a.currency)} in your favour` : 'nothing owed'),
+          use && usageBar(use),
+          use && h('span', { class: 'fin-sub' }, use.left < 0
+            ? `${money(-use.left, a.currency)} over the limit`
+            : `${money(use.left, a.currency)} available · ${use.used}% of ${money(a.creditLimit, a.currency)} used`)));
+    })));
+}
+
+// A line pointing to payments that look recurring, when there are any.
+function recurringNotice() {
+  const list = scheduleSuggestions();
+  if (!list?.length) return null;
+  return h('p', { class: 'fin-notice' },
+    `${list.length} payment${list.length === 1 ? '' : 's'} look${list.length === 1 ? 's' : ''} recurring but ${list.length === 1 ? 'has' : 'have'} no schedule: ${list.slice(0, 3).map((x) => x.description).join(', ')}${list.length > 3 ? '…' : ''}. `,
+    pageLink('Review them', { name: 'scheduled' }, 'fin-link'));
 }
 
 // ── main: settings ───────────────────────────────────────────────────────────
@@ -3631,7 +4150,11 @@ function categoriesSection() {
     if (kids.length) lines.push(`Its ${kids.length} subcategor${kids.length === 1 ? 'y moves' : 'ies move'} to the top level.`);
     if (!confirm(lines.join('\n'))) return;
     undoable(`Deleted ${c.name}.`, ['transactions', 'categories', 'rules', 'schedules'], () => {
-      for (const t of state.transactions) if (categoriesOf(t).includes(c.id)) t.categoryIds = categoriesOf(t).filter((id) => id !== c.id);
+      for (const t of state.transactions) {
+        if (categoriesOf(t).includes(c.id)) t.categoryIds = categoriesOf(t).filter((id) => id !== c.id);
+        // A split keeps its parts; the part loses its category.
+        if (splitsOf(t)?.some((p) => p.categoryId === c.id)) t.splits = t.splits.map((p) => (p.categoryId === c.id ? { ...p, categoryId: null } : p));
+      }
       for (const k of state.categories) if (k.parentId === c.id) k.parentId = null;
       state.rules = state.rules.filter((r) => r.categoryId !== c.id);
       for (const x of state.schedules) if (x.categoryId === c.id) x.categoryId = null;
@@ -4029,11 +4552,14 @@ function readableCsvs() {
   const holdingOf = (id) => state.holdings.find((x) => x.id === id);
   return {
     transactions: [
-      ['Date', 'Description', 'Amount', 'Currency', 'Account', 'Category', 'Memo', 'Amount (EUR)', 'Transfer', 'Kind'],
+      ['Date', 'Description', 'Amount', 'Currency', 'Account', 'Category', 'Memo', 'Amount (EUR)', 'Transfer', 'Kind', 'Split', 'Holding'],
       ...[...state.transactions].sort((a, b) => a.date.localeCompare(b.date)).map((t) => [
         t.date, t.description, decimal2(t.amount), accCur(t.accountId), accName(t.accountId),
         t.transferId ? '' : categoriesOf(t).map(catLabel).filter(Boolean).join(', '), t.memo ?? '',
         t.rate == null ? '' : decimal2(convert(t.amount, t.rate)), t.transferId ?? '', t.kind ?? '',
+        // A split's parts, "Food 40.00; Home 20.00"; a dividend's holding.
+        splitsOf(t)?.map((p) => `${catLabel(p.categoryId) || 'No category'} ${decimal2(p.amount)}`).join('; ') ?? '',
+        holdingOf(t.holdingId)?.symbol ?? '',
       ]),
     ],
     accounts: [
@@ -4248,7 +4774,7 @@ function render(focusKey) {
   const current = view.name === 'account' && state.accounts.find((a) => a.id === view.id);
 
   document.querySelectorAll('[data-nav]').forEach((b) => {
-    const on = b.dataset.nav === (view.name === 'account' ? 'overview' : view.name);
+    const on = b.dataset.nav === (view.name === 'account' ? 'accounts' : view.name);
     if (on) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
   });
   const inSettings = view.name === 'settings';
@@ -4261,6 +4787,7 @@ function render(focusKey) {
     legacyBanner() ?? '',
     backupBanner() ?? '',
     view.name === 'settings' ? renderSettings()
+      : view.name === 'overview' ? renderOverview()
       : view.name === 'scheduled' ? renderSchedules()
         : view.name === 'ious' ? renderIous()
           : view.name === 'search' ? renderSearch()
@@ -4313,7 +4840,7 @@ const layout = document.querySelector('.fin-layout');
 function setShell(signedIn) {
   side.hidden = !signedIn;
   layout.classList.toggle('fin-layout--solo', !signedIn);
-  document.querySelectorAll('[data-nav], #sync, #fab, #side-toggle, #hide-amounts').forEach((el) => { el.hidden = !signedIn; });
+  document.querySelectorAll('[data-nav], #sync, #fab, #side-toggle, #hide-amounts, #cmd-open').forEach((el) => { el.hidden = !signedIn; });
 }
 
 function screen(title, ...body) {
@@ -4455,6 +4982,132 @@ document.addEventListener('keydown', (e) => {
   }
 });
 showHidden();
+
+// ── Go to: jump anywhere or start something, from the keyboard (Ctrl/⌘+K) ─────
+
+const cmdDialog = document.getElementById('cmd-dialog');
+const cmdOpen = document.getElementById('cmd-open');
+const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
+cmdOpen.title = `Go to anything (${isMac ? '⌘K' : 'Ctrl+K'})`;
+cmdOpen.querySelector('kbd').textContent = isMac ? '⌘K' : 'Ctrl K';
+
+// Everything the palette offers: pages, accounts, settings pages and actions, plus searching the
+// transactions for what's typed. `words` are extra terms it can be found by.
+function paletteItems(query) {
+  const go = (v) => () => { view = v; render(); };
+  const items = [];
+  const q = query.trim();
+  if (q) items.push({ group: 'Search', label: `Search transactions for “${q}”`, run: go({ name: 'search', q }), always: true });
+  items.push(
+    { group: 'Pages', label: 'Overview', words: 'home start today', run: go({ name: 'overview' }) },
+    { group: 'Pages', label: 'Search transactions', words: 'find filter', run: go({ name: 'search' }) },
+    { group: 'Pages', label: 'Scheduled', words: 'recurring bills reminders', run: go({ name: 'scheduled' }) },
+    { group: 'Pages', label: 'Insights: income and spending', words: 'charts categories budget', run: go({ name: 'insights' }) },
+    { group: 'Pages', label: 'Insights: net worth', words: 'wealth history allocation', run: go({ name: 'insights', tab: 'networth' }) },
+    { group: 'Pages', label: 'IOUs', words: 'loans owe people friends', run: go({ name: 'ious' }) },
+  );
+  for (const a of [...state.accounts].sort((x, y) => (x.archived - y.archived) || byName(x, y))) {
+    items.push({
+      group: 'Accounts', label: a.name, sub: `${ACCOUNT_TYPE_LABELS[a.type]}${a.archived ? ', archived' : ''} · ${money(accountValue(a), a.currency)}`,
+      words: `${ACCOUNT_TYPE_LABELS[a.type]} account`, run: () => selectAccount(a.id),
+    });
+  }
+  items.push(
+    { group: 'Actions', label: 'Add transactions', words: 'new quick entry expense income', run: quickAdd },
+    { group: 'Actions', label: 'Add a single transaction', words: 'new transfer refund dividend split', run: () => {
+      const account = state.accounts.find((a) => a.id === view.id && !a.archived) ?? [...state.accounts].sort(byName).find((a) => !a.archived);
+      if (account) openTxDialog('single', account); else openAccountDialog();
+    } },
+    { group: 'Actions', label: 'Add an account', words: 'new card bank', run: () => openAccountDialog() },
+    { group: 'Actions', label: 'Schedule a transaction', words: 'new recurring repeat', run: () => openScheduleDialog() },
+    { group: 'Actions', label: hideAmounts ? 'Show amounts' : 'Hide amounts', words: 'privacy mask', run: () => setHideAmounts(!hideAmounts) },
+  );
+  for (const page of SETTINGS_PAGES) {
+    items.push({ group: 'Settings', label: `Settings: ${page.label}`, words: page.group, run: go({ name: 'settings', section: page.key }) });
+  }
+  if (!q) return items;
+  // Every word typed must be found; names starting with it come first, then a word starting with it.
+  const words = normalize(q).split(/\s+/);
+  const rank = (it) => {
+    const name = normalize(it.label);
+    return name.startsWith(words[0]) ? 0 : name.split(/[\s:/·(]+/).some((w) => w.startsWith(words[0])) ? 1 : 2;
+  };
+  return items
+    .filter((it) => it.always || words.every((w) => normalize(`${it.label} ${it.sub ?? ''} ${it.words ?? ''} ${it.group}`).includes(w)))
+    .map((it, i) => ({ it, i, r: it.always ? 3 : rank(it) }))
+    .sort((a, b) => a.r - b.r || a.i - b.i)
+    .map(({ it }) => it);
+}
+
+function openPalette() {
+  if (!state || cmdDialog.open || document.querySelector('dialog[open]')) return;
+  const box = input({
+    type: 'text', autocomplete: 'off', spellcheck: 'false', role: 'combobox', 'aria-expanded': 'true',
+    'aria-controls': 'cmd-list', 'aria-autocomplete': 'list', 'aria-label': 'Go to or do',
+    placeholder: 'Go to an account or page, or type to search…',
+  });
+  box.classList.add('fin-cmd-input');
+  const list = h('div', { id: 'cmd-list', role: 'listbox', class: 'fin-cmd-list', 'aria-label': 'Results' });
+  const count = h('p', { class: 'fin-sr', role: 'status' });
+  let shown = [];
+  let active = 0;
+  const highlight = (i) => {
+    active = Math.max(0, Math.min(shown.length - 1, i));
+    list.querySelectorAll('[role="option"]').forEach((o, j) => o.setAttribute('aria-selected', String(j === active)));
+    const el = document.getElementById(`cmd-opt-${active}`);
+    if (el) { box.setAttribute('aria-activedescendant', el.id); el.scrollIntoView({ block: 'nearest' }); } else box.removeAttribute('aria-activedescendant');
+  };
+  const run = (it) => { cmdDialog.close(); it.run(); };
+  const update = () => {
+    shown = paletteItems(box.value);
+    let n = 0;
+    const groups = [...new Set(shown.map((it) => it.group))];
+    list.replaceChildren(...groups.map((g) => h('div', { role: 'group', 'aria-label': g, class: 'fin-cmd-group' },
+      h('div', { class: 'fin-cmd-group-head', 'aria-hidden': 'true' }, g),
+      shown.filter((it) => it.group === g).map((it) => {
+        const i = n;
+        n += 1;
+        return h('div', {
+          id: `cmd-opt-${i}`, role: 'option', class: 'fin-cmd-option', 'aria-selected': 'false',
+          onmousedown: (e) => e.preventDefault(), // keep focus in the box
+          onclick: () => run(it),
+          onpointermove: () => { if (active !== i) highlight(i); },
+        }, h('span', { class: 'fin-cmd-label' }, it.label), it.sub && h('span', { class: 'fin-sub' }, it.sub));
+      }))));
+    // The display order is by group, so put `shown` in that order too (the arrows follow it).
+    shown = groups.flatMap((g) => shown.filter((it) => it.group === g));
+    if (!shown.length) list.replaceChildren(h('p', { class: 'fin-empty fin-pad' }, 'Nothing matches.'));
+    count.textContent = `${shown.length} result${shown.length === 1 ? '' : 's'}`;
+    highlight(0);
+  };
+  box.addEventListener('input', update);
+  box.addEventListener('keydown', (e) => {
+    const step = { ArrowDown: 1, ArrowUp: -1, PageDown: 5, PageUp: -5 }[e.key];
+    if (step) { e.preventDefault(); highlight(active + step); return; }
+    if (e.key === 'Home' && e.ctrlKey) { e.preventDefault(); highlight(0); return; }
+    if (e.key === 'End' && e.ctrlKey) { e.preventDefault(); highlight(shown.length - 1); return; }
+    if (e.key === 'Enter' && shown[active]) { e.preventDefault(); run(shown[active]); }
+  });
+  cmdDialog.replaceChildren(
+    h('div', { class: 'fin-cmd-box' }, box),
+    list, count,
+    h('p', { class: 'fin-keys fin-cmd-keys' },
+      h('span', {}, h('kbd', {}, '↓'), h('kbd', {}, '↑'), ' move'),
+      h('span', {}, h('kbd', {}, 'Enter'), ' go'),
+      h('span', {}, h('kbd', {}, 'Esc'), ' close')));
+  update();
+  cmdDialog.showModal();
+  box.focus();
+}
+cmdOpen.addEventListener('click', openPalette);
+// Clicking the dimmed backdrop (outside the box) closes it.
+cmdDialog.addEventListener('click', (e) => { if (e.target === cmdDialog) cmdDialog.close(); });
+document.addEventListener('keydown', (e) => {
+  if (e.key.toLowerCase() === 'k' && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && !cmdOpen.hidden) {
+    e.preventDefault();
+    if (cmdDialog.open) cmdDialog.close(); else openPalette();
+  }
+});
 
 // ── phone: account panel toggle, floating add button, installable app ────────
 
