@@ -219,6 +219,65 @@ function icon(name) {
 const iconButton = (name, label, onclick, { danger = false, ...attrs } = {}) =>
   h('button', { type: 'button', class: `fin-icon-btn${danger ? ' fin-icon-btn--danger' : ''}`, 'aria-label': label, title: label, onclick, ...attrs }, icon(name));
 
+// Opening a page: a piggy bank swallowing coins in the middle of the screen, with a joke under the
+// message that changes every few seconds. The pig and the jokes are decoration (hidden from screen
+// readers, still when motion is reduced); the message is what's announced.
+const QUIPS = [
+  'Counting the cents…', 'Shaking the piggy bank…', 'Asking the database nicely…', 'Checking under the sofa cushions…',
+  'Converting dollars to euros…', 'Reconciling to the cent…', 'Adding up the coffees…', 'Finding where the money went…',
+];
+function piggy() {
+  const NS = 'http://www.w3.org/2000/svg';
+  const el = (tag, attrs, ...kids) => {
+    const n = document.createElementNS(NS, tag);
+    for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+    n.append(...kids);
+    return n;
+  };
+  return el('svg', { viewBox: '0 0 80 64', class: 'fin-piggy', 'aria-hidden': 'true' },
+    el('g', { class: 'fin-coin-fall' },
+      el('circle', { cx: 40, cy: 10, r: 7, class: 'fin-coin' }),
+      el('path', { d: 'M40 6.5v7', class: 'fin-coin-mark' })),
+    el('g', { class: 'fin-pig-bounce' },
+      el('path', { d: 'M17 37q-7-1-6-6q1-4 5-1', class: 'fin-pig-tail' }),
+      el('rect', { x: 26, y: 50, width: 7, height: 9, rx: 2, class: 'fin-pig' }),
+      el('rect', { x: 46, y: 50, width: 7, height: 9, rx: 2, class: 'fin-pig' }),
+      el('ellipse', { cx: 40, cy: 40, rx: 24, ry: 17, class: 'fin-pig' }),
+      el('path', { d: 'M28 27l3-10l7 8z', class: 'fin-pig' }),
+      el('ellipse', { cx: 64, cy: 41, rx: 5, ry: 6, class: 'fin-pig' }),
+      el('circle', { cx: 63, cy: 39, r: 1.1, class: 'fin-pig-dark' }),
+      el('circle', { cx: 66, cy: 42, r: 1.1, class: 'fin-pig-dark' }),
+      el('circle', { cx: 54, cy: 34, r: 2, class: 'fin-pig-dark' }),
+      el('rect', { x: 34, y: 22.5, width: 12, height: 3, rx: 1.5, class: 'fin-pig-dark' })));
+}
+function pageLoader(text) {
+  let i = Math.floor(Math.random() * QUIPS.length);
+  const quip = h('span', { class: 'fin-loader-quip', 'aria-hidden': 'true' }, QUIPS[i]);
+  const box = h('div', { class: 'fin-page-loader', role: 'status' },
+    piggy(), h('p', { class: 'fin-loader-text' }, text), quip);
+  const timer = setInterval(() => {
+    if (!box.isConnected) { clearInterval(timer); return; }
+    i = (i + 1) % QUIPS.length;
+    quip.textContent = QUIPS[i];
+  }, 2400);
+  return box;
+}
+
+// Inside a page (a table, a chart): a small coin spinning beside the message.
+function loader(text) {
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 20 20');
+  svg.setAttribute('class', 'fin-spin-coin');
+  svg.setAttribute('aria-hidden', 'true');
+  const coin = document.createElementNS(NS, 'circle');
+  for (const [k, v] of Object.entries({ cx: 10, cy: 10, r: 7.5, class: 'fin-coin' })) coin.setAttribute(k, v);
+  const mark = document.createElementNS(NS, 'path');
+  for (const [k, v] of Object.entries({ d: 'M10 6.5v7', class: 'fin-coin-mark' })) mark.setAttribute(k, v);
+  svg.append(coin, mark);
+  return h('div', { class: 'fin-loader', role: 'status' }, svg, h('span', {}, text));
+}
+
 const monthLabel = (ym) => new Date(`${ym}-01T00:00:00`).toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
 
 // ── rates and prices ─────────────────────────────────────────────────────────
@@ -976,7 +1035,7 @@ function transactionsSection(account) {
     selected.size > 0 && bulkBar(rows),
     pages > 1 && pager(txPage, pages, total, 'top'),
     !ready && rows.length === 0
-      ? h('p', { class: 'fin-empty fin-pad', role: 'status' }, 'Loading transactions…')
+      ? loader('Loading transactions…')
       : rows.length === 0 && !hasUpcoming
         ? h('p', { class: 'fin-empty fin-pad' }, filtered ? 'No transactions match these filters.' : 'No transactions yet.')
         : txTable(rows, {
@@ -995,7 +1054,7 @@ function needEverything() {
       .then(() => { everythingLoading = false; renderWhenIdle(); })
       .catch((err) => { everythingLoading = false; say(`Couldn’t load the transactions: ${err.message}`); });
   }
-  return h('p', { class: 'fin-empty fin-pad', role: 'status' }, 'Loading all transactions for this view…');
+  return loader('Loading all your transactions…');
 }
 
 // Earlier descriptions for the suggestions when adding transactions, from the database (one list,
@@ -1051,7 +1110,7 @@ function renderSearch() {
       !active
         ? h('p', { class: 'fin-empty fin-pad' }, 'Type something to search for, or pick a category, type, dates or amounts.')
         : !ready
-          ? h('p', { class: 'fin-empty fin-pad', role: 'status' }, 'Searching…')
+          ? loader('Searching…')
           : rows.length === 0
             ? h('p', { class: 'fin-empty fin-pad' }, 'Nothing matches these filters.')
             : [
@@ -2357,7 +2416,7 @@ function insightsPanel(accountIds) {
   const p = insightsFor(prevRange, accountIds);
   const avgR = whole && whole.months >= 2 ? insightsFor(whole, accountIds) : null;
   if (!r || !p || avgR === undefined) {
-    return h('div', { class: 'fin-insights' }, periodControls(range), h('p', { class: 'fin-empty fin-pad', role: 'status' }, 'Working out Insights…'));
+    return h('div', { class: 'fin-insights' }, periodControls(range), loader('Working out Insights…'));
   }
   const rate = r.savingsRate == null ? '—' : `${Math.round(r.savingsRate * 100)}%`;
   const vs = (now, before) => h('p', { class: 'fin-stat-note' }, versus(now, before, prevRange));
@@ -2417,7 +2476,7 @@ function categoryOverTime(range, prevRange, accountIds, r) {
   if (!id) return null;
   const now = insightsFor(range, accountIds, id);
   const before = insightsFor(prevRange, accountIds, id);
-  if (!now || !before) return h('section', { class: 'fin-card fin-pad' }, h('p', { class: 'fin-empty', role: 'status' }, 'Working out the category over time…'));
+  if (!now || !before) return h('section', { class: 'fin-card' }, loader('Working out the category over time…'));
   const pick = select(options, id, { 'data-key': 'cat-time', 'aria-label': 'Category' });
   pick.addEventListener('change', () => { insightsCategory = pick.value; render('cat-time'); });
   return h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'cat-time-h' },
@@ -2643,7 +2702,7 @@ function investmentInsights(account) {
   const dates = historyPoints(range.from, to).ends.map((e) => e.date);
   const runs = ask('balances_at', { p_dates: dates, p_rates: ratesArg(), p_accounts: [account.id] });
   const paidIn = ask('balances_at', { p_dates: dates, p_rates: ratesArg(), p_accounts: [account.id], p_skip_opening: true });
-  if (!runs || !paidIn) return h('div', { class: 'fin-insights' }, periodControls(range), h('p', { class: 'fin-empty fin-pad', role: 'status' }, 'Working out the history…'));
+  if (!runs || !paidIn) return h('div', { class: 'fin-insights' }, periodControls(range), loader('Working out the history…'));
   const hist = netWorthHistory({ ...state, accounts: [account] }, { from: range.from, to, today: today(), holdingsValue: holdingsValueEUR, rateOf, runs: runMap(runs) });
   const invested = investedHistory(account, state, dates, rateOf, runMap(paidIn).get(account.id) ?? { values: [] });
   const pts = hist.points.map((p, i) => ({ key: p.key, date: p.date, total: p.total, investments: invested[i] }));
@@ -2712,7 +2771,7 @@ function renderNetWorth() {
   if (!runs) {
     return h('div', {},
       h('div', { class: 'fin-account-head' }, h('div', {}, h('h2', { class: 'fin-title', id: 'networth-h', tabindex: '-1' }, 'Net worth'))),
-      periodControls(range), h('p', { class: 'fin-empty fin-pad', role: 'status' }, 'Working out the history…'));
+      periodControls(range), loader('Working out the history…'));
   }
   const hist = netWorthHistory(state, {
     from: range.from, to, today: today(), holdingsValue: holdingsValueEUR, rateOf: (c) => latestRate(c) ?? 1, runs: runMap(runs),
@@ -3647,9 +3706,9 @@ async function downloadBackup() {
   const data = backupData();
   const counts = Object.entries(data.tables).filter(([, rows]) => rows.length).map(([t, rows]) => `${rows.length} ${t}`).join(', ');
   const readme = [
-    `Finance backup, ${new Date().toLocaleString()}`,
+    `Fin backup, ${new Date().toLocaleString()}`,
     '',
-    'backup.json holds everything and restores it exactly: open Finance, Settings → Backup and restore → Restore.',
+    'backup.json holds everything and restores it exactly: open Fin, Settings → Backup and restore → Restore.',
     'The .csv files are the same data to read in Excel, Numbers or Google Sheets.',
     'API keys aren’t included; add them again in Settings → Market data after a restore.',
     '',
@@ -3700,7 +3759,7 @@ async function readRestoreFile(file) {
       text = new TextDecoder().decode(json);
     } else text = await file.text();
     const data = JSON.parse(text);
-    if (data?.format !== 'finance-backup' || !data.tables) throw new Error('This isn’t a Finance backup');
+    if (data?.format !== 'finance-backup' || !data.tables) throw new Error('This isn’t a Fin backup');
     restoreDraft = { name: file.name, data };
     render('restore-confirm');
   } catch (err) {
@@ -3939,7 +3998,8 @@ async function boot() {
   try { await completeSignIn(); } catch (err) { signInError = err.message; }
   if (!currentUser()) { renderSignIn(signInError); return; }
 
-  screen('Loading your data…');
+  setShell(false);
+  main.replaceChildren(pageLoader('Loading your data…'));
   try {
     await loadData();
   } catch (err) {

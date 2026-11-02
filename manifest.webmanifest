@@ -1,7 +1,7 @@
 {
-  "name": "Finance",
-  "short_name": "Finance",
-  "description": "Accounts, transactions, investments and insights.",
+  "name": "Fin",
+  "short_name": "Fin",
+  "description": "Your money: accounts, transactions, investments and insights.",
   "start_url": "/tools/finance/",
   "scope": "/tools/finance/",
   "id": "/tools/finance/",

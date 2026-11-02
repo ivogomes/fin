@@ -394,7 +394,7 @@ export function backupData() {
 // Replaces everything in memory with a backup (from backupData). The caller has already emptied
 // the database tables (clearTables), so the next save sends every row.
 export function restoreData(data) {
-  if (data?.format !== 'finance-backup' || !data.tables) throw new Error('This isn’t a Finance backup');
+  if (data?.format !== 'finance-backup' || !data.tables) throw new Error('This isn’t a Fin backup');
   for (const t of ORDER) {
     const rows = data.tables[t] ?? [];
     state[t] = t === 'rules'
