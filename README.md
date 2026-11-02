@@ -8,6 +8,7 @@ Data is stored in a Supabase project (Postgres) and you sign in with an emailed 
 | --- | --- |
 | `index.html` | The page: tool header, account panel, main area, dialogs. |
 | `app.js` | UI: rendering, forms, dialogs, CSV import and export, start-up and sign-in. |
+| `theme.js` | Applies the picked appearance (light, dark or the system's) before the page is drawn. |
 | `model.js` | Pure logic: money in cents, categories by rule, balances, transfers, net worth, CSV parsing and import mapping. No DOM, no I/O. |
 | `model.test.mjs` | The spec for `model.js`. |
 | `store.js` | Loads the signed-in user's data and saves changes: compares with the last saved copy and sends only added, changed or removed rows. |
@@ -47,6 +48,10 @@ Each section in the header (Overview, Accounts, Search, Scheduled, Insights, IOU
 
 Not every page loads every transaction. Account totals (balances, counts, what's coming in the next 30 days) are worked out by the database (`account_summaries` in `schema.sql`), and a change you make shows in them at once; they're checked against the database again after each save. An account page asks the database for the 100 transactions it shows, with their running balance and filters applied (`account_transactions`), and the suggestions when adding transactions come from `description_index`. Search asks the database for one page of results with their In and Out totals (`search_transactions`), and Insights for the period's sums per day and per category (`insight_totals`, the same rules as `insightTotals` in `model.js`); the app groups those into weeks or months and parent categories. Net worth (and an investment account's Insights tab) asks for each account's running total at the end of each week or month (`balances_at`); investments are then valued from their holdings in the app. No page loads every transaction up front: the IOUs page fetches just the ones its entries are linked to, and the Settings pages that work on all of them (categories, rules, backup, imports, link transfers, export) load them when opened. A backup always has every transaction, wherever it's downloaded from. Anything waiting to be saved is sent first, and leaving with something typed but not saved asks first. Moving between accounts, account tabs and settings pages stays instant, and the address follows, so reloading or bookmarking keeps you there.
 
+## Appearance
+
+Settings → **Display** → Appearance picks light, dark, or the same as your device (the default), saved in this browser. `theme.js` applies it in the page's `<head>`, before anything is drawn, by setting `data-theme` on `<html>`; every dark style in `finance.css` answers to that as well as to the system setting.
+
 ## Overview
 
 The first page. It shows net worth, what you've spent and earned this month against last month up to the same day, everything coming up in the next two weeks across accounts (scheduled dates, with **Enter** and **Skip** for the ones due, and transactions added with a later date), this month's spending by category against the same days last month, and each credit card with what's owed and how much of its limit is left. When some payments look recurring but have no schedule, a line points to them.
@@ -66,6 +71,8 @@ A row can be a transfer: pick **⇄ Transfer** as its type and the category cell
 Click a transaction's date, amount or description (or Tab to it and press Enter) to change just that, in place: Enter or clicking away saves, Esc cancels, and Undo puts it back. A transfer's other side follows.
 
 Each account's transactions have a filter bar: text (description, memo, or an amount such as `12.99`), category (a parent includes its children; "Uncategorized" too), type, dates and amount range. **Search** in the header does the same across every account, archived ones included, with totals in and out. Rows have checkboxes (and one for the whole page); with any selected, a bar sets, adds or removes categories, or deletes them. Deletes and bulk changes show a message with **Undo** (also Ctrl/⌘+Z while it shows): account, transaction, holding, lot, IOU entry, schedule and category deletes.
+
+**Rules from your transactions:** Settings → Import → **Category rules** looks at how you've already categorized things and offers the rules that would do it for you: a description seen at least three times that goes in the same category at least 9 times in 10 (`rulesFromHistory` in `model.js`). Descriptions that differ only in numbers (card or reference numbers) are taken together, and the rule then looks for the words they all share ("contains Green Grocer"); otherwise it matches the whole description. A rule is only offered if it's right about at least 9 in 10 of all the categorized transactions it would match, and not if your rules already do the same. Tick the ones you want: they go to the top of the rules, and can also categorize the uncategorized transactions they match. Undo takes them back.
 
 When you categorize a transaction by hand and no rule would already do that, the app offers "Always put … in …?". The rule matches the whole description, goes to the top of the list (the first match wins), and can fill in the other uncategorized transactions with that description at the same time.
 
@@ -99,9 +106,9 @@ What counts: transfers between your accounts and opening balances don't. A trans
 
 A holding can have lots: its buys and sells, each with a date, units, price and fees. With lots, its units come from them, and the holdings table shows what it cost (and the average price) and the gain. Open a holding's **Lots** to see them, add a buy or sell, or delete one.
 
-Settings → **Import holdings (FT.com)** reads an FT.com portfolio transactions export (`Date,Name,Symbol,Type,Quantity,Price,…`, symbols like `VWCE:FRA:EUR`). Pick the investment account it belongs to; holdings are matched by ticker or created, the preview compares the units with what the holdings have now, and importing the same file again adds nothing. Dividend rows are skipped. Importing from Buxfer leaves the units of holdings with lots alone.
+Settings → **Import** → **Holdings** reads an FT.com portfolio transactions export (`Date,Name,Symbol,Type,Quantity,Price,…`, symbols like `VWCE:FRA:EUR`). Pick the investment account it belongs to; holdings are matched by ticker or created, the preview compares the units with what the holdings have now, and importing the same file again adds nothing. Dividend rows are skipped. Importing from Buxfer leaves the units of holdings with lots alone.
 
-Settings → Import holdings also reads a fund's movements list, as pension funds export it ("ListagemMovimentos.xls": tab-separated text with Data, Fundo, Operação, Nº UPs and Valor UP). Subscriptions become buys, redemptions sells; the fund becomes a holding priced by hand at its latest unit value.
+Import → Holdings also reads a fund's movements list, as pension funds export it ("ListagemMovimentos.xls": tab-separated text with Data, Fundo, Operação, Nº UPs and Valor UP). Subscriptions become buys, redemptions sells; the fund becomes a holding priced by hand at its latest unit value.
 
 Each holding has a **Chart** button: its price over time (weekly closes once its price history is loaded, plus the price of each buy and sell), and the gain or loss on the units held at each point (value less what they cost, sells at average cost), shaded green above zero and red below. Arrow keys step through the points; a table has them all.
 
@@ -149,9 +156,11 @@ Supabase's free plan keeps no backups, so the app makes them. **Settings → Bac
 
 ## Import and export
 
-Settings → **Import transactions (CSV)** reads any CSV with a date, a description and an amount. Columns are matched by name (English and Portuguese) and can be changed; you choose the date order and decimal separator, and see a preview before anything is saved. Account and category names that don't exist yet are created. Rows already in your data (same account, date, amount and description) are skipped, so importing the same file twice is safe. A Type column with "expense" or "income" sets the sign of unsigned amounts.
+Every import is on one page, Settings → **Import**, with the kind picked at the top: Transactions (CSV), From Buxfer, Holdings, or Category rules (`?page=settings&section=import&kind=csv|buxfer|holdings|rules`).
 
-Settings → **Import from Buxfer** takes Buxfer's export files together (accounts, transactions, investments, reminders). Accounts keep their type and currency; accounts only in the transactions file are Buxfer's archived ones and come in archived. Transfer rows sharing an ID are linked. Investment accounts are valued by their holdings, as in Buxfer. Before importing, a table compares every account with its Buxfer balance; where the transactions don't add up (history before the export), an "Opening balance" transaction makes up the difference. Running it again adds nothing new. In reminders, the STOP DATE column is ignored: Buxfer fills it with dates that aren't end dates.
+Import → **Transactions (CSV)** reads any CSV with a date, a description and an amount. Columns are matched by name (English and Portuguese) and can be changed; you choose the date order and decimal separator, and see a preview before anything is saved. Account and category names that don't exist yet are created. Rows already in your data (same account, date, amount and description) are skipped, so importing the same file twice is safe. A Type column with "expense" or "income" sets the sign of unsigned amounts.
+
+Import → **From Buxfer** takes Buxfer's export files together (accounts, transactions, investments, reminders). Accounts keep their type and currency; accounts only in the transactions file are Buxfer's archived ones and come in archived. Transfer rows sharing an ID are linked. Investment accounts are valued by their holdings, as in Buxfer. Before importing, a table compares every account with its Buxfer balance; where the transactions don't add up (history before the export), an "Opening balance" transaction makes up the difference. Running it again adds nothing new. In reminders, the STOP DATE column is ignored: Buxfer fills it with dates that aren't end dates.
 
 Settings → **Export (CSV)** downloads transactions, accounts, holdings and category rules. The transactions file imports back unchanged.
 

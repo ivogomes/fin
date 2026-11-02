@@ -12,7 +12,7 @@ import {
   periodRange, granularity, insights, completeMonths, holdingHistory, accountRuns, historyPoints, incomeCategories, REFUNDS_UNMATCHED, netWorthHistory, isFtExport, ftImport, lotSummary, investedHistory,
   descriptionIndex, suggestDescriptions, filterTransactions, ruleSuggestion,
   parseFrequency, addInterval, occurrences, forecast, scheduledTransactions, advanceSchedule,
-  splitsOf, scaleSplits, DIVIDENDS, recurringGroups, suggestSchedules, xirr, lotFlows, returnSummary,
+  splitsOf, scaleSplits, DIVIDENDS, recurringGroups, suggestSchedules, xirr, lotFlows, returnSummary, rulesFromHistory,
 } from './model.js';
 
 test('periods: presets relative to today, Monday weeks, granularity', () => {
@@ -931,4 +931,27 @@ test('net worth history: an investment without buys and sells climbs to its valu
   assert.equal(totals.at(-1), 120000);
   assert.ok(totals.every((v, i) => i === 0 || v > totals[i - 1])); // rising all the way
   assert.equal(totals[0], Math.round(100000 * (1 + 0.2 * (30 / 150)))); // end of January: 30 of 150 days
+});
+
+test('rules from history: exact names, shared words when numbers vary, only when they are right', () => {
+  let n = 0;
+  const t = (description, cat, extra = {}) => ({ id: String(n += 1), accountId: 'a', date: '2026-01-01', amount: -100, description, categoryIds: cat ? [cat] : [], ...extra });
+  const tx = [
+    t('Netflix', 'fun'), t('NETFLIX', 'fun'), t('netflix', 'fun'), t('Netflix', null),
+    t('CARD 1234 Green Grocer', 'food'), t('CARD 5678 Green Grocer', 'food'), t('CARD 9012 Green Grocer', 'food'), t('CARD 3456 Green Grocer', null),
+    // the same shop in a different category too often: no rule
+    t('Corner shop', 'food'), t('Corner shop', 'food'), t('Corner shop', 'home'), t('Corner shop', 'home'),
+    // too few
+    t('Rare place', 'food'), t('Rare place', 'food'),
+    // already covered by a rule
+    t('Uber trip', 'transport'), t('Uber trip', 'transport'), t('Uber trip', 'transport'),
+    // transfers and splits don't teach rules
+    t('To savings', 'x', { transferId: 'q' }), t('To savings', 'x', { transferId: 'r' }), t('To savings', 'x', { transferId: 's' }),
+  ];
+  const rules = [{ pattern: 'uber', match: 'contains', categoryId: 'transport' }];
+  const list = rulesFromHistory(tx, rules);
+  assert.deepEqual(list.map((r) => [r.pattern, r.match, r.categoryId, r.count, r.total, r.others]), [
+    ['Green Grocer', 'contains', 'food', 3, 3, 1],
+    ['Netflix', 'equals', 'fun', 3, 3, 1],
+  ]);
 });

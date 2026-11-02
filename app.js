@@ -8,7 +8,7 @@ import {
   parseCsv, toCsv, guessDateFormat, guessDecimal, guessMapping, importRows, IMPORT_FIELDS, findTransferPairs,
   detectBuxferFile, buxferImport, isFtExport, ftImport, isFundMovements, fundMovementsToFt, lotSummary,
   UNITS, frequencyLabel, addInterval, occurrences, forecast, scheduledEffect, scheduledTransactions, advanceSchedule,
-  splitsOf, scaleSplits, DIVIDENDS, suggestSchedules, lotFlows, returnSummary,
+  splitsOf, scaleSplits, DIVIDENDS, suggestSchedules, lotFlows, returnSummary, rulesFromHistory,
 } from './model.js';
 import {
   fetchRate, fetchRateRange, fetchQuote, fetchQuoteAV, fetchHistory, alphaVantageCovers, searchSymbols, today,
@@ -40,6 +40,7 @@ function urlOf(v) {
   } else if (v.name !== 'overview') {
     q.set('page', v.name);
     if (v.name === 'settings' && v.section) q.set('section', v.section);
+    if (v.name === 'settings' && v.section === 'import' && v.kind) q.set('kind', v.kind);
     if (v.name === 'insights' && v.tab === 'networth') q.set('tab', 'networth');
     if (v.name === 'ious' && v.personId) q.set('person', v.personId);
     if (v.name === 'search' && v.q) q.set('q', v.q);
@@ -52,8 +53,12 @@ function viewFromUrl() {
   const page = q.get('page');
   // Net worth was its own page; it's now a tab of Insights (old links still land there).
   if (page === 'networth' || (page === 'insights' && q.get('tab') === 'networth')) return { name: 'insights', tab: 'networth' };
+  // The imports were separate settings pages; they're now one, with a kind (old links still work).
+  const oldImport = { buxfer: 'buxfer', ft: 'holdings' }[q.get('section')];
+  if (page === 'settings' && oldImport) return { name: 'settings', section: 'import', kind: oldImport };
   if (PAGES.includes(page)) {
     return {
+      ...(page === 'settings' && q.get('kind') && { kind: q.get('kind') }),
       name: page, ...(q.get('section') && { section: q.get('section') }), ...(q.get('person') && { personId: q.get('person') }),
       ...(page === 'search' && q.get('q') && { q: q.get('q') }),
     };
@@ -3637,7 +3642,9 @@ function upcomingRows(account, { cols, inEur, balance }) {
       balanceCell(b),
       h('td', { class: 'c-desc' }, s.description, h('span', { class: 'fin-sub' },
         `${frequencyLabel(s)}${s.kind === 'transfer' ? ` · ${scheduleAccounts(s)}` : ''}`)),
-      h('td', { class: 'c-cat' }, s.categoryId && h('span', { class: 'fin-muted' }, catLabel(s.categoryId))),
+      // The category as a chip, like the transactions below (changed in the schedule, not here).
+      h('td', { class: 'c-cat' }, s.categoryId && h('div', { class: 'fin-cats fin-cats-compact' },
+        h('span', { class: 'fin-cat-chip', 'data-hue': hueOf(s.categoryId) }, h('span', {}, catLabel(s.categoryId) || 'Deleted category')))),
       inEur && h('td', { class: 'c-eur' }),
       // Only the next date of a schedule can be entered or skipped; later ones follow from it.
       h('td', { class: 'fin-r c-act' }, first && h('div', { class: 'fin-actions fin-row-actions fin-upcoming-actions' },
@@ -3662,12 +3669,29 @@ function upcomingRows(account, { cols, inEur, balance }) {
         iconButton('edit', `Edit ${label}`, () => { editingTxId = t.id; render('tx-desc-edit'); }, { 'data-key': `tx-edit-${t.id}` }),
         iconButton('trash', `Delete ${label}`, () => deleteTransactions(new Set([t.id])), { danger: true }))));
   };
+  // The heading folds the rows away (remembered in this browser, for every account); folded, it
+  // still says how many there are and what they add up to.
+  const net = items.reduce((sum, it) => sum + it.amount, 0);
+  const toggle = () => {
+    upcomingOpen = !upcomingOpen;
+    writePref('finance:upcoming-open', upcomingOpen);
+    render('upcoming-toggle');
+    say(upcomingOpen ? 'Upcoming transactions shown.' : 'Upcoming transactions folded away.');
+  };
   return [
     h('tr', { class: 'fin-month fin-upcoming-head' }, h('th', { colspan: cols, scope: 'colgroup' },
-      'Upcoming ', h('span', { class: 'fin-upcoming-note' }, `· scheduled for the next ${FORECAST_DAYS} days`))),
-    ...items.reverse().map((it) => (it.t ? plannedRow(it) : scheduleRow(it))),
+      h('button', {
+        type: 'button', class: 'fin-upcoming-toggle', 'aria-expanded': String(upcomingOpen), 'data-key': 'upcoming-toggle', onclick: toggle,
+      },
+        h('span', { class: 'fin-upcoming-chevron', 'aria-hidden': 'true' }),
+        'Upcoming ', h('span', { class: 'fin-count' }, String(items.length)),
+        h('span', { class: 'fin-upcoming-note' }, upcomingOpen
+          ? ` · scheduled for the next ${FORECAST_DAYS} days`
+          : [` · next ${FORECAST_DAYS} days, `, h('span', { class: `fin-num ${tone(net)}` }, signed(net, cur)), ' in all'])))),
+    ...(upcomingOpen ? items.reverse().map((it) => (it.t ? plannedRow(it) : scheduleRow(it))) : []),
   ];
 }
+let upcomingOpen = readPref('finance:upcoming-open', true);
 
 // Payments that look recurring but have no schedule yet (model.js suggestSchedules), from the
 // database's groups of repeated descriptions over the last 13 months. undefined while it's asked.
@@ -3907,9 +3931,8 @@ const SETTINGS_PAGES = [
   { key: 'rules', label: 'Category rules', group: 'Organise', needsAll: true, render: () => rulesSection() },
   { key: 'market', label: 'Market data', group: 'Prices', render: () => marketSection() },
   { key: 'backup', label: 'Backup and restore', group: 'Data', needsAll: true, render: () => backupSection() },
-  { key: 'buxfer', label: 'Import from Buxfer', group: 'Data', needsAll: true, render: () => buxferSection() },
-  { key: 'import', label: 'Import CSV', group: 'Data', needsAll: true, render: () => importSection() },
-  { key: 'ft', label: 'Import holdings', group: 'Data', render: () => ftSection() },
+  // One page for every import, with the kind picked at the top (holdings don't need every transaction).
+  { key: 'import', label: 'Import', group: 'Data', needsAll: () => importKind() !== 'holdings', render: () => importPage() },
   { key: 'link', label: 'Link transfers', group: 'Data', needsAll: true, render: () => linkTransfersSection() },
   { key: 'export', label: 'Export', group: 'Data', needsAll: true, render: () => exportSection() },
   { key: 'delete', label: 'Delete all data', group: 'Data', render: () => deleteAllSection() },
@@ -3928,7 +3951,8 @@ function renderSettings() {
     h('p', { class: 'fin-meta' }, `Settings · ${page.group}`),
     h('h2', { class: 'fin-title', id: 'settings-h', tabindex: '-1', 'data-key': 'settings-h' }, page.label),
     // Pages that work on every transaction load them the first time they're opened.
-    page.needsAll && !transactionsComplete() ? needEverything() : page.render());
+    (typeof page.needsAll === 'function' ? page.needsAll() : page.needsAll) && !transactionsComplete()
+      ? [page.key === 'import' && importTabs(), needEverything()] : page.render());
 }
 
 function renderSettingsNav() {
@@ -4042,8 +4066,25 @@ function displaySection() {
         },
       }),
       h('span', {}, key ? f.label : f.label.split(' (')[0], h('span', { class: 'fin-sub' }, key ? sample(key) : `${sample(key)} here`)))));
+  // Appearance: light, dark or the system's (theme.js applies it, before the page is drawn).
+  const THEMES = { system: ['System', 'Follows your device'], light: ['Light', 'Always light'], dark: ['Dark', 'Always dark'] };
+  const current = window.finTheme?.get() ?? 'system';
+  const theme = h('div', { class: 'fin-choices', role: 'radiogroup', 'aria-labelledby': 'theme-h' },
+    Object.entries(THEMES).map(([key, [label, note]]) => h('label', { class: 'fin-choice' },
+      h('input', {
+        type: 'radio', name: 'theme', value: key, checked: key === current, 'data-key': `theme-${key}`,
+        onchange: () => {
+          window.finTheme?.set(key);
+          render(`theme-${key}`);
+          say(key === 'system' ? 'Fin now follows your device’s light or dark setting.' : `Fin is now ${label.toLowerCase()}.`);
+        },
+      }),
+      h('span', {}, label, h('span', { class: 'fin-sub' }, note)))));
   return h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'settings-h' },
-    h('h3', { id: 'fmt-h', class: 'fin-label' }, 'Number format'),
+    h('h3', { id: 'theme-h', class: 'fin-label' }, 'Appearance'),
+    h('p', { class: 'fin-hint' }, 'Light, dark, or the same as your device. Saved in this browser.'),
+    theme,
+    h('h3', { id: 'fmt-h', class: 'fin-label fin-mt' }, 'Number format'),
     h('p', { class: 'fin-hint' }, 'How amounts, units and percentages are written everywhere in Fin. Saved in this browser. Exports keep plain numbers (1234.56) so spreadsheets read them.'),
     fmt,
     h('h3', { class: 'fin-label fin-mt' }, 'Hide amounts'),
@@ -4078,8 +4119,8 @@ function deleteAllSection() {
     }
     state.settings.lastAccountId = undefined;
     editingTxId = null; importDraft = null; buxferDraft = null; txPage = 0;
-    settingsPage = 'buxfer';
-    view = { name: 'settings', section: 'buxfer' };
+    settingsPage = 'import';
+    view = { name: 'settings', section: 'import', kind: 'buxfer' };
     persist(); render('bux-file');
     say('All data deleted. You can import again now.');
   }, 'danger', { disabled: true, 'data-key': 'del-go' });
@@ -4287,6 +4328,83 @@ const buxferCtx = (id) => ({
 function previewBuxfer() {
   let n = 0;
   buxferDraft.preview = buxferImport(buxferDraft.files, buxferCtx(() => `preview-${++n}`), { openingBalances: buxferDraft.openingBalances });
+}
+
+// ── imports: one page, four kinds ────────────────────────────────────────────
+
+const IMPORT_KINDS = [
+  ['csv', 'Transactions (CSV)'], ['buxfer', 'From Buxfer'], ['holdings', 'Holdings'], ['rules', 'Category rules'],
+];
+const importKind = () => (IMPORT_KINDS.some(([k]) => k === view.kind) ? view.kind : 'csv');
+function importTabs() {
+  const current = importKind();
+  return h('div', { class: 'fin-tabs', role: 'group', 'aria-label': 'What to import' },
+    IMPORT_KINDS.map(([k, label]) => h('button', {
+      type: 'button', class: 'fin-tab', 'aria-pressed': String(current === k), 'data-key': `imp-${k}`,
+      onclick: () => { view = { name: 'settings', section: 'import', kind: k }; render(`imp-${k}`); say(`Import ${label.toLowerCase()}.`); },
+    }, label)));
+}
+function importPage() {
+  const kind = importKind();
+  return [
+    importTabs(),
+    kind === 'buxfer' ? buxferSection() : kind === 'holdings' ? ftSection() : kind === 'rules' ? learnRulesSection() : importSection(),
+  ];
+}
+
+// Category rules learnt from how transactions are already categorized (model.js rulesFromHistory):
+// tick the ones to add; they go to the top of the rules, and can fill in uncategorized transactions.
+const learnSkipped = new Set(); // suggestions unticked, while the page is open
+let learnFill = true;
+function learnRulesSection() {
+  const list = rulesFromHistory(state.transactions, state.rules);
+  const idOf = (r) => `${r.match}|${r.pattern}|${r.categoryId}`;
+  const picked = list.filter((r) => !learnSkipped.has(idOf(r)));
+  const matchLabel = { contains: 'contains', starts: 'starts with', equals: 'is exactly' };
+  const tick = (r) => h('input', {
+    type: 'checkbox', class: 'fin-tick', checked: !learnSkipped.has(idOf(r)), 'data-key': `learn-${idOf(r)}`,
+    'aria-label': `Add the rule: description ${matchLabel[r.match]} “${r.pattern}” goes in ${catLabel(r.categoryId)}`,
+    onchange: (e) => { if (e.target.checked) learnSkipped.delete(idOf(r)); else learnSkipped.add(idOf(r)); render(`learn-${idOf(r)}`); },
+  });
+  const fills = picked.reduce((sum, r) => sum + r.others, 0);
+  const add = () => {
+    const fresh = picked.map((r) => ({ id: newId(), pattern: r.pattern, match: r.match, categoryId: r.categoryId }));
+    const fill = learnFill ? state.transactions.filter((t) => !t.transferId && !categoriesOf(t).length && categorize(t.description, fresh)) : [];
+    const plural = (k, word) => `${k} ${word}${k === 1 ? '' : 's'}`;
+    undoable(`${plural(fresh.length, 'rule')} added${fill.length ? `, and ${plural(fill.length, 'transaction')} categorized` : ''}.`, ['rules', 'transactions'], () => {
+      // At the top, in the order shown, so they win over broader rules (the first match decides).
+      state.rules.unshift(...fresh);
+      for (const t of fill) t.categoryIds = [categorize(t.description, fresh)];
+    });
+  };
+  return h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'learn-h' },
+    h('h3', { id: 'learn-h', class: 'fin-label' }, 'Category rules from your transactions'),
+    h('p', { class: 'fin-hint' }, 'Rules learnt from how you’ve already categorized things: a description seen at least three times that goes in the same category at least 9 times in 10. Where the numbers in a description change (card or reference numbers), the rule looks for the words they share. Rules that would change nothing aren’t listed. Tick the ones you want; they go to the top of your rules, where you can reorder or delete them later.'),
+    list.length === 0
+      ? h('p', { class: 'fin-empty' }, 'Nothing to learn right now: your rules already cover the descriptions you categorize the same way every time.')
+      : [
+        h('div', { class: 'fin-actions fin-mb' },
+          button('Tick all', () => { learnSkipped.clear(); render('learn-all'); }, 'secondary fin-btn-sm', { 'data-key': 'learn-all' }),
+          button('Untick all', () => { list.forEach((r) => learnSkipped.add(idOf(r))); render('learn-none'); }, 'secondary fin-btn-sm', { 'data-key': 'learn-none' })),
+        h('div', { class: 'fin-scroll' }, h('table', { class: 'fin-table' },
+          h('caption', { class: 'fin-sr' }, 'Rules that could be added'),
+          h('thead', {}, h('tr', {},
+            h('th', { scope: 'col', class: 'fin-tick-col' }, h('span', { class: 'fin-sr' }, 'Add')),
+            h('th', { scope: 'col' }, 'If the description'), h('th', { scope: 'col' }, 'Category'),
+            h('th', { scope: 'col', class: 'fin-r' }, 'Agrees with'), h('th', { scope: 'col', class: 'fin-r' }, 'Would fill'))),
+          h('tbody', {}, list.map((r) => h('tr', { class: learnSkipped.has(idOf(r)) ? null : 'is-selected' },
+            h('td', { class: 'fin-tick-col' }, tick(r)),
+            h('td', {}, `${matchLabel[r.match]} `, h('strong', {}, `“${r.pattern}”`)),
+            h('td', {}, h('span', { class: 'fin-cat-chip', 'data-hue': hueOf(r.categoryId) }, h('span', {}, catLabel(r.categoryId)))),
+            h('td', { class: 'fin-r fin-num' }, r.count === r.total ? `all ${r.total}` : `${r.count} of ${r.total}`),
+            h('td', { class: 'fin-r fin-num' }, r.others ? `${r.others} uncategorized` : '—')))))),
+        h('label', { class: 'fin-check fin-mt' },
+          h('input', { type: 'checkbox', checked: learnFill, 'data-key': 'learn-fill', onchange: (e) => { learnFill = e.target.checked; render('learn-fill'); } }),
+          ` Also categorize the uncategorized transactions they match${fills ? ` (${fills})` : ''}`),
+        h('div', { class: 'fin-actions fin-mt' },
+          button(picked.length ? `Add ${picked.length} rule${picked.length === 1 ? '' : 's'}` : 'Add rules', add, 'primary', { disabled: !picked.length, 'data-key': 'learn-add' }),
+          pageLink('See your rules ›', { name: 'settings', section: 'rules' }, 'fin-link')),
+      ]);
 }
 
 function buxferSection() {
@@ -5024,6 +5142,9 @@ function paletteItems(query) {
   );
   for (const page of SETTINGS_PAGES) {
     items.push({ group: 'Settings', label: `Settings: ${page.label}`, words: page.group, run: go({ name: 'settings', section: page.key }) });
+  }
+  for (const [kind, label] of IMPORT_KINDS) {
+    items.push({ group: 'Settings', label: `Import: ${label}`, words: 'data file csv learn', run: go({ name: 'settings', section: 'import', kind }) });
   }
   if (!q) return items;
   // Every word typed must be found; names starting with it come first, then a word starting with it.

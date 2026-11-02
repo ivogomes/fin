@@ -184,6 +184,79 @@ export function ruleSuggestion(t, categoryId, rules, transactions) {
   return { pattern: t.description.trim(), match: 'equals', categoryId, others };
 }
 
+// Rules worth adding, learnt from how transactions are already categorized. Transactions (not
+// transfers, openings or splits) are grouped by description with numbers left out, so "CARD 1234
+// GROCER" and "CARD 5678 GROCER" go together. A group whose descriptions are all the same becomes an
+// "is exactly" rule; otherwise a "contains" rule with the longest run of whole words they all share
+// (with four letters at least: "grocer"). A rule is kept when, over every categorized transaction it
+// would match, at least `min` share its category and that's at least `share` of them, and when the
+// existing rules don't already pick that category. Each: { pattern, match, categoryId, count
+// (matching ones in that category), total (matching categorized ones), others (uncategorized ones it
+// would fill) }, most used first.
+export function rulesFromHistory(transactions, rules, { min = 3, share = 0.9 } = {}) {
+  const keyOf = (d) => normalize(d).replace(/\d+/g, ' ').replace(/\s+/g, ' ').trim();
+  const letters = (x) => normalize(x).replace(/[^\p{L}]/gu, '').length;
+  // Distinct descriptions, with how their transactions are categorized.
+  const byText = new Map();
+  for (const t of transactions) {
+    if (t.transferId || t.kind === 'opening' || splitsOf(t) || !t.description?.trim()) continue;
+    const norm = normalize(t.description).replace(/\s+/g, ' ');
+    const e = byText.get(norm) ?? { norm, text: t.description.trim(), cats: new Map(), none: 0 };
+    const first = categoriesOf(t)[0];
+    if (first) e.cats.set(first, (e.cats.get(first) ?? 0) + 1); else e.none += 1;
+    byText.set(norm, e);
+  }
+  const texts = [...byText.values()];
+  const groups = new Map();
+  for (const e of texts) {
+    const key = keyOf(e.norm);
+    if (letters(key) < 3) continue;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(e);
+  }
+  const out = [];
+  const seen = new Set();
+  for (const list of groups.values()) {
+    const cats = new Map();
+    for (const e of list) for (const [c, n] of e.cats) cats.set(c, (cats.get(c) ?? 0) + n);
+    const [categoryId, inGroup] = [...cats].sort((x, y) => y[1] - x[1])[0] ?? [];
+    if (!categoryId || inGroup < min) continue;
+    let rule;
+    if (list.length === 1) rule = { pattern: list[0].text, match: 'equals' };
+    else {
+      // The longest run of whole words that every description has (the first one's spelling).
+      const words = list[0].text.split(/\s+/);
+      const has = (e, run) => ` ${e.norm} `.includes(` ${normalize(run)} `);
+      let best = '';
+      for (let i = 0; i < words.length; i += 1) {
+        for (let j = words.length; j > i; j -= 1) {
+          const run = words.slice(i, j).join(' ');
+          if (letters(run) > letters(best) && list.every((e) => has(e, run))) best = run;
+        }
+      }
+      if (letters(best) < 4) continue;
+      rule = { pattern: best, match: 'contains' };
+    }
+    const id = `${rule.match}|${normalize(rule.pattern)}|${categoryId}`;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    // Every description the rule would match: is it right about them, and what would it fill?
+    let count = 0;
+    let total = 0;
+    let others = 0;
+    let known = true;
+    for (const e of texts) {
+      if (categorize(e.text, [{ ...rule, categoryId }]) !== categoryId) continue;
+      for (const [c, n] of e.cats) { total += n; if (c === categoryId) count += n; }
+      others += e.none;
+      if (e.cats.size && categorize(e.text, rules) !== categoryId) known = false;
+    }
+    if (count < min || count / total < share || known) continue;
+    out.push({ ...rule, categoryId, count, total, others });
+  }
+  return out.sort((a, b) => b.count - a.count || a.pattern.localeCompare(b.pattern));
+}
+
 // ── Description suggestions ──────────────────────────────────────────────────
 
 // One entry per distinct description (case and accents ignored) from past transactions, with how
