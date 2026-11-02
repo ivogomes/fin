@@ -941,14 +941,38 @@ function bucketEnd(key, unit, to) {
 //   with lots (buys and sells) for every holding, the units held then times the latest trade price
 //   by then; without, what was put in (its transactions), as there's no price history.
 // `snapshots` are { date, values: { accountId: EUR minor units } }.
-export function netWorthHistory({ accounts, transactions, snapshots = [], holdings = [], lots = [] }, { from, to, today, holdingsValue, rateOf = () => 1 }) {
+// The points of a history from `from` to `to`: a bucket (day, week, month or year, by the length)
+// and the date it ends, the last one cut at `to`.
+export function historyPoints(from, to) {
   const unit = granularity(from, to);
   const ends = [];
   for (let k = bucketOf(from, unit), guard = 0; k <= bucketOf(to, unit) && guard < 400; k = nextBucket(k, unit), guard += 1) {
     ends.push({ key: k, date: bucketEnd(k, unit, to) });
   }
-  const byAccount = new Map(accounts.map((a) => [a.id, []]));
-  for (const t of transactions) byAccount.get(t.accountId)?.push(t);
+  return { unit, ends };
+}
+
+// Each account's transactions added up in EUR at each of `dates` (sorted), at the transaction's
+// rate or else today's; and the date of its last one. The database's balances_at gives the same.
+// Map(accountId → { last, values }). `skipOpening` leaves opening balances out (money put in).
+export function accountRuns(accounts, transactions, dates, rateOf = () => 1, { skipOpening = false } = {}) {
+  const currency = new Map(accounts.map((a) => [a.id, a.currency]));
+  const out = new Map(accounts.map((a) => [a.id, { last: null, values: dates.map(() => 0) }]));
+  for (const t of transactions) {
+    const run = out.get(t.accountId);
+    if (!run || (skipOpening && t.kind === 'opening')) continue;
+    if (!run.last || t.date > run.last) run.last = t.date;
+    const eur = Math.round(t.amount * (t.rate ?? rateOf(currency.get(t.accountId)) ?? 1));
+    for (let i = 0; i < dates.length; i += 1) if (t.date <= dates[i]) run.values[i] += eur;
+  }
+  return out;
+}
+
+// `runs` (from accountRuns or the database's balances_at, at these points' dates) can stand in for
+// `transactions`.
+export function netWorthHistory({ accounts, transactions = [], snapshots = [], holdings = [], lots = [] }, { from, to, today, holdingsValue, rateOf = () => 1, runs = null }) {
+  const { unit, ends } = historyPoints(from, to);
+  const accountRun = runs ?? accountRuns(accounts, transactions, ends.map((e) => e.date), rateOf);
   const snaps = [...snapshots].sort((a, b) => a.date.localeCompare(b.date));
   const firstSnapshot = snaps[0]?.date ?? null;
   const lotsOf = new Map();
@@ -985,19 +1009,12 @@ export function netWorthHistory({ accounts, transactions, snapshots = [], holdin
 
   const points = ends.map(({ key, date }) => ({ key, date, total: 0, investments: 0, byType: {} }));
   for (const a of accounts) {
-    const txs = byAccount.get(a.id).sort((x, y) => x.date.localeCompare(y.date));
-    const lastDate = txs.at(-1)?.date ?? null;
+    const run = accountRun.get(a.id) ?? { last: null, values: [] };
+    const lastDate = run.last;
     const valuedByHoldings = a.type === 'investment' && holdingsValue(a) != null;
     const lotsFrom = valuedByHoldings ? firstLot(a) : null;
-    let i = 0;
-    let running = 0;
-    for (const p of points) {
-      while (i < txs.length && txs[i].date <= p.date) {
-        const t = txs[i];
-        running += Math.round(t.amount * (t.rate ?? rateOf(a.currency) ?? 1));
-        i += 1;
-      }
-      let value = running;
+    for (const [pi, p] of points.entries()) {
+      let value = Number(run.values[pi] ?? 0);
       if (a.archived && lastDate && p.date >= lastDate) value = 0;
       else if (valuedByHoldings) {
         if (p.date >= today) value = holdingsValue(a);
@@ -1019,16 +1036,18 @@ export function netWorthHistory({ accounts, transactions, snapshots = [], holdin
 // What had been put into an investment account by each date, in EUR minor units: from its holdings'
 // buys and sells when every holding has them (their cost, sells at average cost), otherwise the sum
 // of the money moved into the account (its transactions).
-export function investedHistory(account, { transactions, holdings, lots }, dates, rateOf = () => 1) {
+// `paidIn` (accountRuns with skipOpening, or the database's, at `dates`) can stand in for
+// `transactions`.
+export function investedHistory(account, { transactions = [], holdings, lots }, dates, rateOf = () => 1, paidIn = null) {
   const own = holdings.filter((x) => x.accountId === account.id);
   const lotsOf = (id) => lots.filter((l) => l.holdingId === id);
   const byLots = own.length > 0 && own.every((x) => lotsOf(x.id).length);
-  const txs = transactions.filter((t) => t.accountId === account.id && t.kind !== 'opening');
-  return dates.map((d) => {
+  const run = byLots ? null : paidIn ?? accountRuns([account], transactions, dates, rateOf, { skipOpening: true }).get(account.id);
+  return dates.map((d, i) => {
     if (byLots) {
       return own.reduce((sum, x) => sum + Math.round(lotSummary(lotsOf(x.id).filter((l) => l.date <= d)).cost * (rateOf(x.currency) ?? 1)), 0);
     }
-    return txs.filter((t) => t.date <= d).reduce((sum, t) => sum + Math.round(t.amount * (t.rate ?? rateOf(account.currency) ?? 1)), 0);
+    return Number(run.values[i] ?? 0);
   });
 }
 

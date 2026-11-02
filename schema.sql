@@ -378,6 +378,38 @@ language sql stable as $$
   )
 $$;
 
+-- Net worth over time: each account's transactions added up in EUR (at their rate, else today's from
+-- p_rates) at each of p_dates (sorted), and the date of its last transaction. The app values
+-- investments from their holdings itself (model.js netWorthHistory, accountRuns for the same in JS).
+-- p_skip_opening leaves opening balances out (what was put into an investment account).
+create or replace function balances_at(
+  p_dates date[], p_rates jsonb default '{}'::jsonb, p_accounts text[] default null, p_skip_opening boolean default false
+) returns jsonb
+language sql stable as $$
+  with tx as (
+    select tr.account_id, tr.date,
+      fin_round(tr.amount * coalesce(tr.rate, (p_rates ->> a.currency)::double precision, 1)) as eur
+    from transactions tr
+    join accounts a on a.user_id = tr.user_id and a.id = tr.account_id
+    where tr.user_id = auth.uid() and (p_accounts is null or tr.account_id = any(p_accounts))
+      and not (p_skip_opening and tr.kind is not distinct from 'opening')
+  ),
+  -- Each transaction counts from the first date on or after it: point i (past the last: not at all).
+  per as (
+    select account_id, width_bucket(date - 1, p_dates) + 1 as i, sum(eur) as eur, max(date) as last
+    from tx group by account_id, 2
+  ),
+  vals as (
+    select a.account_id, k, sum(coalesce(p.eur, 0)) over (partition by a.account_id order by k) as v
+    from (select distinct account_id from per) a
+    cross join generate_series(1, cardinality(p_dates)) as k
+    left join per p on p.account_id = a.account_id and p.i = k
+  )
+  select coalesce(jsonb_object_agg(x.account_id, jsonb_build_object(
+    'last', (select max(last) from per where per.account_id = x.account_id), 'values', x.vals)), '{}'::jsonb)
+  from (select account_id, jsonb_agg(v order by k) as vals from vals group by account_id) x
+$$;
+
 -- Earlier descriptions for the suggestions when adding transactions: one entry per description
 -- (normalised), from its latest use, with how often it's used. Transfers are listed from the side
 -- money leaves, with the account it goes to.

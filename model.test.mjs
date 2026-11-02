@@ -9,7 +9,7 @@ import {
   findTransferPairs, detectBuxferFile, buxferImport,
   categoryPath, categoryResolver, categoriesOf, sortedCategories,
   parseBuxferIou, iouSign, iouType, personBalances, personHistory,
-  periodRange, granularity, insights, completeMonths, incomeCategories, REFUNDS_UNMATCHED, netWorthHistory, isFtExport, ftImport, lotSummary, investedHistory,
+  periodRange, granularity, insights, completeMonths, accountRuns, historyPoints, incomeCategories, REFUNDS_UNMATCHED, netWorthHistory, isFtExport, ftImport, lotSummary, investedHistory,
   descriptionIndex, suggestDescriptions, filterTransactions, ruleSuggestion,
   parseFrequency, addInterval, occurrences, forecast, scheduledTransactions, advanceSchedule,
 } from './model.js';
@@ -767,4 +767,22 @@ test('refunds tagged with an income category lower spending in their spending ca
   assert.equal(r.spending.find((c) => c.id === 'trip').amount, 90000 - 40000);
   assert.equal(r.spending.find((c) => c.id === REFUNDS_UNMATCHED).amount, -3000);
   assert.equal(r.spending.find((c) => c.id === 'sal'), undefined); // no negative salary spending
+});
+
+test('account runs: EUR totals at each date and the last date, as the database gives them for net worth', () => {
+  const accounts = [{ id: 'a', currency: 'EUR' }, { id: 'u', currency: 'USD' }];
+  const tx = [
+    { accountId: 'a', date: '2026-01-10', amount: 1000, rate: 1, kind: 'opening' },
+    { accountId: 'a', date: '2026-02-03', amount: -250, rate: 1 },
+    { accountId: 'u', date: '2026-01-31', amount: 1000 }, // no rate: today's
+    { accountId: 'a', date: '2026-04-01', amount: 5 }, // after the last date: only "last"
+  ];
+  const { unit, ends } = historyPoints('2026-01-01', '2026-03-15');
+  assert.equal(unit, 'week');
+  const dates = ['2026-01-31', '2026-02-28', '2026-03-15'];
+  const runs = accountRuns(accounts, tx, dates, (c) => (c === 'USD' ? 0.9 : 1));
+  assert.deepEqual(runs.get('a'), { last: '2026-04-01', values: [1000, 750, 750] });
+  assert.deepEqual(runs.get('u'), { last: '2026-01-31', values: [900, 900, 900] });
+  assert.deepEqual(accountRuns(accounts, tx, dates, () => 1, { skipOpening: true }).get('a').values, [0, -250, -250]);
+  assert.equal(ends.at(-1).date, '2026-03-15');
 });

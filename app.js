@@ -1,7 +1,7 @@
 import {
   CURRENCIES, ACCOUNT_TYPES, ACCOUNT_TYPE_LABELS, toMinor, formatMoney, categorize, convert, rateFor, defaultState,
   normalize, categoryPath, categoriesOf, sortedCategories,
-  IOU_KINDS, IOU_TYPES, personBalances, personHistory, PERIODS, periodRange, insightsFrom, completeMonths, REFUNDS_UNMATCHED, netWorthHistory, investedHistory,
+  IOU_KINDS, IOU_TYPES, personBalances, personHistory, PERIODS, periodRange, insightsFrom, completeMonths, REFUNDS_UNMATCHED, netWorthHistory, investedHistory, historyPoints,
   suggestDescriptions, filterTransactions, ruleSuggestion,
   plannedTransactions, holdingValue, investmentValue, investmentValueFrom, newId,
   crossConvert, batchRow, makeTransfer,
@@ -574,8 +574,7 @@ function renderAccount(account) {
       })()),
     accountTabs(),
     view.tab === 'insights'
-      ? (account.type !== 'investment' ? insightsPanel(new Set([account.id]))
-        : !transactionsComplete() ? needEverything() : investmentInsights(account))
+      ? (account.type === 'investment' ? investmentInsights(account) : insightsPanel(new Set([account.id])))
       : [account.type === 'investment' && holdingsSection(account), transactionsSection(account)]);
 }
 
@@ -2633,14 +2632,20 @@ function netWorthChart(points, unit, from, to, labels = { total: 'Net worth', in
 function investmentInsights(account) {
   const own = state.holdings.filter((x) => x.accountId === account.id);
   const ownLots = state.lots.filter((l) => own.some((x) => x.id === l.holdingId));
-  const first = [...state.transactions.filter((t) => t.accountId === account.id), ...ownLots]
-    .reduce((min, t) => (t.date < min ? t.date : min), today());
+  const first = [totalsOf(account.id).first, ...ownLots.map((l) => l.date)].filter(Boolean)
+    .reduce((min, d) => (d < min ? d : min), today());
   const range = periodRange(insightsPeriod.preset, today(), { from: insightsPeriod.from, to: insightsPeriod.to, first });
   if (range.from > range.to) [range.from, range.to] = [range.to, range.from];
   const to = range.to > today() ? today() : range.to;
   const rateOf = (c) => latestRate(c) ?? 1;
-  const hist = netWorthHistory({ ...state, accounts: [account] }, { from: range.from, to, today: today(), holdingsValue: holdingsValueEUR, rateOf });
-  const invested = investedHistory(account, state, hist.points.map((p) => p.date), rateOf);
+  // The account's totals at each point from the database: all of it, and without opening balances
+  // (what was put in).
+  const dates = historyPoints(range.from, to).ends.map((e) => e.date);
+  const runs = ask('balances_at', { p_dates: dates, p_rates: ratesArg(), p_accounts: [account.id] });
+  const paidIn = ask('balances_at', { p_dates: dates, p_rates: ratesArg(), p_accounts: [account.id], p_skip_opening: true });
+  if (!runs || !paidIn) return h('div', { class: 'fin-insights' }, periodControls(range), h('p', { class: 'fin-empty fin-pad', role: 'status' }, 'Working out the history…'));
+  const hist = netWorthHistory({ ...state, accounts: [account] }, { from: range.from, to, today: today(), holdingsValue: holdingsValueEUR, rateOf, runs: runMap(runs) });
+  const invested = investedHistory(account, state, dates, rateOf, runMap(paidIn).get(account.id) ?? { values: [] });
   const pts = hist.points.map((p, i) => ({ key: p.key, date: p.date, total: p.total, investments: invested[i] }));
   const now = pts.at(-1);
   const gain = now.total - now.investments;
@@ -2694,13 +2699,23 @@ function investmentInsights(account) {
           h('td', { class: 'fin-r fin-num fin-muted' }, totalValue ? `${Math.round((value / totalValue) * 100)}%` : ''))))))));
 }
 
+// balances_at's answer as accountRuns gives it: Map(accountId → { last, values }).
+const runMap = (obj) => new Map(Object.entries(obj ?? {}));
+
 function renderNetWorth() {
-  const first = state.transactions.reduce((min, t) => (t.date < min ? t.date : min), today());
+  const first = state.accounts.map((a) => totalsOf(a.id).first).filter(Boolean).reduce((min, d) => (d < min ? d : min), today());
   const range = periodRange(insightsPeriod.preset, today(), { from: insightsPeriod.from, to: insightsPeriod.to, first });
   if (range.from > range.to) [range.from, range.to] = [range.to, range.from];
   const to = range.to > today() ? today() : range.to; // the future has no balances yet
+  // Each account's running total at each point comes from the database; investments are valued here.
+  const runs = ask('balances_at', { p_dates: historyPoints(range.from, to).ends.map((e) => e.date), p_rates: ratesArg() });
+  if (!runs) {
+    return h('div', {},
+      h('div', { class: 'fin-account-head' }, h('div', {}, h('h2', { class: 'fin-title', id: 'networth-h', tabindex: '-1' }, 'Net worth'))),
+      periodControls(range), h('p', { class: 'fin-empty fin-pad', role: 'status' }, 'Working out the history…'));
+  }
   const hist = netWorthHistory(state, {
-    from: range.from, to, today: today(), holdingsValue: holdingsValueEUR, rateOf: (c) => latestRate(c) ?? 1,
+    from: range.from, to, today: today(), holdingsValue: holdingsValueEUR, rateOf: (c) => latestRate(c) ?? 1, runs: runMap(runs),
   });
   const pts = hist.points;
   const now = pts.at(-1);
@@ -2963,15 +2978,15 @@ function renderSchedules() {
 
 // Settings are split into pages; while in Settings the left panel lists them instead of the accounts.
 const SETTINGS_PAGES = [
-  { key: 'categories', label: 'Categories', group: 'Organise', render: () => categoriesSection() },
-  { key: 'rules', label: 'Category rules', group: 'Organise', render: () => rulesSection() },
+  { key: 'categories', label: 'Categories', group: 'Organise', needsAll: true, render: () => categoriesSection() },
+  { key: 'rules', label: 'Category rules', group: 'Organise', needsAll: true, render: () => rulesSection() },
   { key: 'market', label: 'Market data', group: 'Prices', render: () => marketSection() },
-  { key: 'backup', label: 'Backup and restore', group: 'Data', render: () => backupSection() },
-  { key: 'buxfer', label: 'Import from Buxfer', group: 'Data', render: () => buxferSection() },
-  { key: 'import', label: 'Import CSV', group: 'Data', render: () => importSection() },
+  { key: 'backup', label: 'Backup and restore', group: 'Data', needsAll: true, render: () => backupSection() },
+  { key: 'buxfer', label: 'Import from Buxfer', group: 'Data', needsAll: true, render: () => buxferSection() },
+  { key: 'import', label: 'Import CSV', group: 'Data', needsAll: true, render: () => importSection() },
   { key: 'ft', label: 'Import holdings (FT.com)', group: 'Data', render: () => ftSection() },
-  { key: 'link', label: 'Link transfers', group: 'Data', render: () => linkTransfersSection() },
-  { key: 'export', label: 'Export', group: 'Data', render: () => exportSection() },
+  { key: 'link', label: 'Link transfers', group: 'Data', needsAll: true, render: () => linkTransfersSection() },
+  { key: 'export', label: 'Export', group: 'Data', needsAll: true, render: () => exportSection() },
   { key: 'delete', label: 'Delete all data', group: 'Data', render: () => deleteAllSection() },
   { key: 'account', label: 'Your account', group: 'Account', render: () => accountSection() },
 ];
@@ -2986,7 +3001,8 @@ function renderSettings() {
   return h('div', { class: 'fin-settings-page' },
     h('p', { class: 'fin-meta' }, `Settings · ${page.group}`),
     h('h2', { class: 'fin-title', id: 'settings-h', tabindex: '-1', 'data-key': 'settings-h' }, page.label),
-    page.render());
+    // Pages that work on every transaction load them the first time they're opened.
+    page.needsAll && !transactionsComplete() ? needEverything() : page.render());
 }
 
 function renderSettingsNav() {
@@ -3084,7 +3100,7 @@ function marketSection() {
 
 // Start over: removes the data, keeps the sign-in and API keys. Needs DELETE typed to unlock.
 function deleteAllSection() {
-  const counts = `${state.accounts.length} accounts, ${state.transactions.length} transactions, ${state.holdings.length} holdings, ${state.schedules.length} schedules and ${state.people.length} people with their IOUs`;
+  const counts = `${state.accounts.length} accounts, ${state.accounts.reduce((n, a) => n + totalsOf(a.id).count, 0)} transactions, ${state.holdings.length} holdings, ${state.schedules.length} schedules and ${state.people.length} people with their IOUs`;
   const alsoCats = h('input', { type: 'checkbox', id: 'del-cats' });
   const confirmIn = input({ type: 'text', autocomplete: 'off', spellcheck: 'false', 'aria-describedby': 'del-hint' });
   const go = button('Delete all data', async () => {
@@ -3622,7 +3638,12 @@ function downloadBytes(name, bytes, type) {
 
 // One .zip with everything: backup.json (restores exactly, links included) and the same data as
 // readable CSV files. API keys aren't in it, so the file is safe to keep in cloud storage.
-function downloadBackup() {
+async function downloadBackup() {
+  // A backup has every transaction, wherever it's downloaded from (the reminder shows on any page).
+  if (!transactionsComplete()) {
+    say('Getting all your transactions for the backup…');
+    try { await loadAllTransactions(); } catch (err) { say(`Couldn’t make the backup: ${err.message}`); return; }
+  }
   const data = backupData();
   const counts = Object.entries(data.tables).filter(([, rows]) => rows.length).map(([t, rows]) => `${rows.length} ${t}`).join(', ');
   const readme = [
@@ -3894,11 +3915,11 @@ onStatus((s, err) => {
   syncEl.dataset.state = s;
 });
 
-// Pages that work from every transaction load them all (until those calculations move to the
-// database too); account pages fetch what they show, IOUs the transactions its entries are linked to.
-const NEEDS_EVERY_TRANSACTION = ['networth', 'settings'];
+// No page loads every transaction up front: each asks the database for what it shows, the IOUs
+// page for the transactions its entries are linked to, and the tools that need them all (backup,
+// export, imports, categories, rules) load them when opened.
 async function loadData() {
-  state = await load({ allTransactions: NEEDS_EVERY_TRANSACTION.includes(sectionOf(view)), today: today(), until: daysFromToday(FORECAST_DAYS) });
+  state = await load({ today: today(), until: daysFromToday(FORECAST_DAYS) });
   if (sectionOf(view) === 'ious') {
     const ids = [...new Set(state.ious.map((e) => e.transactionId).filter(Boolean))];
     for (let i = 0; i < ids.length; i += 100) {
