@@ -3919,8 +3919,11 @@ function upcomingRows(account, { cols, inEur, balance }) {
       balanceCell(b),
       h('td', { class: 'c-desc' }, s.description, h('span', { class: 'fin-sub' },
         `${frequencyLabel(s)}${s.kind === 'transfer' ? ` · ${scheduleAccounts(s)}` : ''}`)),
-      // Its categories as chips, like the transactions below (changed in the schedule, not here).
-      h('td', { class: 'c-cat' }, catChips(categoriesOf(s))),
+      // A transfer shows where it goes (or comes from), like an entered one; anything else its
+      // categories as chips (changed in the schedule, not here).
+      h('td', { class: 'c-cat' }, s.kind === 'transfer'
+        ? h('span', { class: 'fin-tag fin-tag--transfer' }, amount < 0 ? 'To ' : 'From ', ...accountBadge(amount < 0 ? s.toAccountId : s.accountId))
+        : catChips(categoriesOf(s))),
       inEur && h('td', { class: 'c-eur' }),
       // Only the next date of a schedule can be entered or skipped; later ones follow from it.
       h('td', { class: 'fin-r c-act' }, first && h('div', { class: 'fin-actions fin-row-actions fin-upcoming-actions' },
