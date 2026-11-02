@@ -8,6 +8,7 @@ import {
   parseCsv, toCsv, guessDateFormat, guessDecimal, guessMapping, importRows, IMPORT_FIELDS, findTransferPairs,
   detectBuxferFile, buxferImport, isFtExport, ftImport, isFundMovements, fundMovementsToFt, lotSummary,
   UNITS, frequencyLabel, addInterval, occurrences, forecast, scheduledEffect, scheduledTransactions, advanceSchedule,
+  INVESTMENT_KINDS, LOCKED_KINDS, lastStatementDate, dueAfter, balanceDip, savingsInterest,
   splitsOf, scaleSplits, DIVIDENDS, suggestSchedules, lotFlows, returnSummary, rulesFromHistory, findSubscriptions, withMarkedSchedules,
 } from './model.js';
 import {
@@ -461,7 +462,7 @@ function accountValue(account) {
 function groupTotal(list) {
   let total = 0;
   let missing = 0;
-  for (const a of list) {
+  for (const a of list.filter(counted)) {
     const rate = latestRate(a.currency);
     if (rate == null) missing += 1;
     else total += convert(accountValue(a), rate);
@@ -478,7 +479,7 @@ const byName = (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 
 function netWorthNow() {
   const nw = { total: 0, unconverted: 0 };
   for (const a of state.accounts) {
-    if (a.archived) continue;
+    if (a.archived || !counted(a)) continue;
     const rate = latestRate(a.currency);
     if (rate == null) nw.unconverted += 1;
     else nw.total += convert(accountValue(a), rate);
@@ -578,9 +579,11 @@ function accountGroup(key, label, total, list) {
           'aria-current': current ? 'page' : null,
           onclick: () => selectAccount(a.id),
         },
-          h('span', { class: 'fin-account-name' }, cardMark(a), a.name),
+          h('span', { class: 'fin-account-name' }, colorDot(a), cardMark(a), a.name,
+            a.isMain && h('span', { class: 'fin-main-mark', title: 'Main account' }, h('span', { 'aria-hidden': 'true' }, '★'), h('span', { class: 'fin-sr' }, ', main account'))),
           // No + on positive balances here: less text, and the negative ones (in red) stand out.
-          h('span', { class: `fin-num ${tone(value)}` }, money(value, a.currency)),
+          h('span', { class: `fin-num ${tone(value)}${counted(a) ? '' : ' fin-uncounted'}`, title: counted(a) ? null : 'Not in totals' }, money(value, a.currency),
+            !counted(a) && h('span', { class: 'fin-sr' }, ', not in totals')),
           // A credit card with a limit: a thin bar of how much is used (said in words for screen readers).
           use && usageBar(use, 'fin-usage-side'),
           use && h('span', { class: 'fin-sr' }, `, ${use.used}% of the credit limit used`)));
@@ -600,34 +603,113 @@ function selectAccount(id) {
 
 // ── account dialog ───────────────────────────────────────────────────────────
 
+// Colours an account can wear (a dot by its name), the same hues as the category chips.
+const ACCOUNT_COLORS = ['Teal', 'Blue', 'Purple', 'Pink', 'Orange', 'Yellow', 'Green', 'Grey'];
+const colorDot = (a) => a.color != null && h('span', { class: 'fin-acc-dot', 'data-hue': a.color, 'aria-hidden': 'true' });
+const mainAccount = () => state.accounts.find((a) => a.isMain && !a.archived);
+// Accounts that count in net worth and the group totals (not the ones left out of totals).
+const counted = (a) => !a.excludeTotals;
+const INTEREST_EVERY = [[1, 'Every month'], [3, 'Every three months'], [12, 'Every year']];
+
 // Add an account, or edit `existing`. The currency is fixed once an account has transactions or
-// holdings, because their amounts are stored in that currency.
+// holdings, because their amounts are stored in that currency. Each type has its own settings (shown
+// for that type only); "More details" has the ones every account can have.
 function openAccountDialog(existing = null) {
+  const a0 = existing ?? {};
   const used = existing && (totalsOf(existing.id).count > 0
     || state.holdings.some((x) => x.accountId === existing.id));
-  const name = input({ type: 'text', required: true, autocomplete: 'off', value: existing?.name });
-  const type = select(ACCOUNT_TYPES.map((t) => [t, ACCOUNT_TYPE_LABELS[t]]), existing?.type ?? 'checking');
-  const cur = select(CURRENCIES.map((c) => [c, c]), existing?.currency ?? 'EUR', { disabled: used });
-  // Credit cards only: the limit, so the account shows what's left to spend.
-  const limit = input({ type: 'number', step: '0.01', min: '0', inputmode: 'decimal', value: existing?.creditLimit != null ? String(existing.creditLimit / 100) : null });
-  const limitField = field('Credit limit', limit, 'Optional. Shows how much is left to spend.');
-  const network = select([['', 'Not set'], ...Object.entries(CARD_NETWORKS)], existing?.cardNetwork ?? '');
-  const networkField = field('Network', network);
-  const syncType = () => { limitField.hidden = networkField.hidden = type.value !== 'credit'; };
+  const name = input({ type: 'text', required: true, autocomplete: 'off', value: a0.name });
+  const type = select(ACCOUNT_TYPES.map((t) => [t, ACCOUNT_TYPE_LABELS[t]]), a0.type ?? 'checking');
+  const cur = select(CURRENCIES.map((c) => [c, c]), a0.currency ?? 'EUR', { disabled: used });
+  const color = select([['', 'No colour'], ...ACCOUNT_COLORS.map((c, i) => [String(i), c])], a0.color ?? '');
+  const money0 = (v) => (v != null ? String(v / 100) : null);
+  const dayIn = (v) => input({ type: 'number', min: '1', max: '31', step: '1', inputmode: 'numeric', value: v != null ? String(v) : null });
+  // Credit cards
+  const network = select([['', 'Not set'], ...Object.entries(CARD_NETWORKS)], a0.cardNetwork ?? '');
+  const limit = input({ type: 'number', step: '0.01', min: '0', inputmode: 'decimal', value: money0(a0.creditLimit) });
+  const statementDay = dayIn(a0.statementDay);
+  const dueDay = dayIn(a0.dueDay);
+  const payOptions = state.accounts.filter((x) => x.type !== 'credit' && !x.archived && x.id !== a0.id).sort(byName);
+  const payFrom = select([['', 'Not set'], ...payOptions.map((x) => [x.id, x.name])], a0.payFrom ?? (existing ? '' : mainAccount()?.id ?? ''));
+  // Checking
+  const isMain = h('input', { type: 'checkbox', checked: Boolean(a0.isMain) });
+  const lowBalance = input({ type: 'number', step: '0.01', inputmode: 'decimal', value: money0(a0.lowBalance) });
+  // Savings
+  const rate = input({ type: 'number', step: '0.01', min: '0', max: '100', inputmode: 'decimal', value: a0.interestRate != null ? String(a0.interestRate) : null });
+  const rateEvery = select(INTEREST_EVERY.map(([m, label]) => [String(m), label]), String(a0.interestEvery ?? 1));
+  // Investments
+  const kind = select([['', 'Not set'], ...Object.entries(INVESTMENT_KINDS)], a0.investmentKind ?? '');
+  // Any account
+  const institution = input({ type: 'text', autocomplete: 'off', value: a0.institution });
+  const lastFour = input({ type: 'text', inputmode: 'numeric', autocomplete: 'off', maxlength: '4', pattern: '\\d{4}', value: a0.lastFour, title: 'Four digits' });
+  const openedOn = input({ type: 'date', value: a0.openedOn ?? null });
+  const closedOn = input({ type: 'date', value: a0.closedOn ?? null });
+  const exclude = h('input', { type: 'checkbox', checked: Boolean(a0.excludeTotals) });
+
+  const group = (legend, ...kids) => h('fieldset', { class: 'fin-fieldset' }, h('legend', { class: 'fin-legend-label' }, legend), h('div', { class: 'fin-grid fin-grid-2' }, ...kids));
+  const sections = {
+    credit: group('Credit card',
+      field('Network', network), field('Credit limit', limit, 'Shows how much is left to spend.'),
+      field('Statement day', statementDay, 'Day of the month the statement closes.'),
+      field('Payment due day', dueDay, 'Day of the month it must be paid by.'),
+      field('Paid from', payFrom, 'The account the card is paid from: the payment shows there as upcoming.')),
+    checking: group('Checking',
+      field('Warn below', lowBalance, `Warns when what’s scheduled or due in the next ${FORECAST_DAYS} days takes the balance below this.`),
+      h('label', { class: 'fin-check fin-check-field' }, isMain, ' Main account (the default for quick entry and for paying cards)')),
+    savings: group('Savings',
+      field('Interest rate (% a year)', rate, 'Before tax. Shows the interest it should earn.'),
+      field('Interest paid', rateEvery)),
+    investment: group('Investment', field('Kind', kind, 'Pensions and retirement savings are shown apart from what’s within reach.')),
+  };
+  const more = h('details', { class: 'fin-more', open: Boolean(a0.institution || a0.lastFour || a0.openedOn || a0.closedOn || a0.excludeTotals) },
+    h('summary', {}, 'More details'),
+    h('div', { class: 'fin-grid fin-grid-2' },
+      field('Bank or institution', institution),
+      field('Last four digits', lastFour, 'Of the card or account number. CSV imports use it to find this account.'),
+      field('Opened on', openedOn), field('Closed on', closedOn, 'Net worth counts it until then.'),
+      h('label', { class: 'fin-check fin-check-field' }, exclude, ' Leave out of totals (net worth and its group)')));
+  const syncType = () => { for (const [t, el] of Object.entries(sections)) el.hidden = type.value !== t; };
   type.addEventListener('change', syncType);
   syncType();
-  const creditLimit = () => (type.value === 'credit' && limit.value !== '' ? toMinor(limit.value) : null);
-  const cardNetwork = () => (type.value === 'credit' && network.value) || null;
+
+  const intOrNull = (el) => (el.value === '' ? null : Math.min(31, Math.max(1, Math.round(Number(el.value)))));
+  const values = () => {
+    const t = type.value;
+    return {
+      name: name.value.trim(), type: t, currency: cur.value, color: color.value || null,
+      creditLimit: t === 'credit' && limit.value !== '' ? toMinor(limit.value) : null,
+      cardNetwork: (t === 'credit' && network.value) || null,
+      statementDay: t === 'credit' ? intOrNull(statementDay) : null,
+      dueDay: t === 'credit' ? intOrNull(dueDay) : null,
+      payFrom: (t === 'credit' && payFrom.value) || null,
+      lowBalance: t === 'checking' && lowBalance.value !== '' ? toMinor(lowBalance.value) : null,
+      isMain: t === 'checking' && isMain.checked,
+      interestRate: t === 'savings' && rate.value !== '' ? Number(rate.value) : null,
+      interestEvery: t === 'savings' && rate.value !== '' ? Number(rateEvery.value) : null,
+      investmentKind: (t === 'investment' && kind.value) || null,
+      institution: institution.value.trim() || null, lastFour: lastFour.value.trim() || null,
+      openedOn: openedOn.value || null, closedOn: closedOn.value || null, excludeTotals: exclude.checked,
+    };
+  };
+  // Settings left empty aren't kept on the account.
+  const apply = (account, v) => {
+    for (const [k, val] of Object.entries(v)) {
+      if (val == null || val === false) delete account[k]; else account[k] = val;
+    }
+    // One main account at most.
+    if (account.isMain) for (const x of state.accounts) if (x !== account) delete x.isMain;
+  };
   const returnKey = existing ? 'edit-account' : document.activeElement?.dataset?.key;
   const close = () => { dialog.close(); render(returnKey); };
   dialog.replaceChildren(h('form', {
     onsubmit: async (e) => {
       e.preventDefault();
       if (existing) {
-        Object.assign(existing, { name: name.value.trim(), type: type.value, currency: cur.value, creditLimit: creditLimit(), cardNetwork: cardNetwork() });
+        apply(existing, values());
         persist(); close(); say(`Saved ${existing.name}.`);
       } else {
-        const account = { id: newId(), name: name.value.trim(), type: type.value, currency: cur.value, creditLimit: creditLimit(), cardNetwork: cardNetwork() };
+        const account = { id: newId() };
+        apply(account, values());
         state.accounts.push(account);
         dialog.close();
         selectAccount(account.id);
@@ -637,10 +719,14 @@ function openAccountDialog(existing = null) {
     },
   },
     h('h2', { id: 'account-dialog-h', class: 'fin-dialog-title' }, existing ? 'Edit account' : 'Add account'),
-    field('Name', name), field('Type', type), networkField, limitField,
-    field('Currency', cur, used
-      ? 'Fixed, because this account already has transactions.'
-      : 'USD amounts are converted to EUR at the daily rate.'),
+    h('div', { class: 'fin-grid fin-grid-2' },
+      field('Name', name), field('Type', type),
+      field('Currency', cur, used
+        ? 'Fixed, because this account already has transactions.'
+        : 'USD amounts are converted to EUR at the daily rate.'),
+      field('Colour', color, 'A dot by its name.')),
+    ...Object.values(sections),
+    more,
     h('div', { class: 'fin-dialog-actions' },
       button('Cancel', close),
       h('button', { type: 'submit', class: 'fin-btn btn-primary' }, existing ? 'Save' : 'Add account'))));
@@ -657,6 +743,104 @@ function setArchived(account, archived) {
   persist();
   render(archived ? 'unarchive-account' : 'archive-account');
   say(archived ? `${account.name} archived. Its transactions are kept.` : `${account.name} restored.`);
+}
+
+// ── credit card statements, upcoming payments and alerts ──────────────────────
+
+// An amount in another currency at today's rates.
+const inCurrency = (minor, from, to) => (from === to ? minor : crossConvert(minor, latestRate(from) ?? 1, latestRate(to) ?? 1));
+
+// A card's latest statement (it has a statement day): its date, what was owed then (from the
+// database), what's been paid into the card since, what's left, and when it's due (with a due day).
+// undefined while it's worked out.
+function statementOf(card) {
+  if (card.type !== 'credit' || !card.statementDay) return null;
+  const close = lastStatementDate(today(), card.statementDay);
+  const runs = ask('balances_at', { p_dates: [close], p_accounts: [card.id], p_native: true });
+  const since = transactionsLoaded(`card:${card.id}:${close}`, `&account_id=eq.${encodeURIComponent(card.id)}&date=gt.${close}`);
+  if (!runs || !since) return undefined;
+  const owed = Math.max(0, -Number(runMap(runs).get(card.id)?.values?.[0] ?? 0));
+  // Transfers into the card since the statement are its payments.
+  const paid = state.transactions.filter((t) => t.accountId === card.id && t.transferId && t.amount > 0 && t.date > close && t.date <= today())
+    .reduce((sum, t) => sum + t.amount, 0);
+  return { close, owed, paid, left: Math.max(0, owed - paid), due: card.dueDay ? dueAfter(close, card.dueDay) : null };
+}
+
+// Card payments still to make: open cards with a statement and due day and something left to pay,
+// each with the account it's paid from (null when not set).
+function cardPayments() {
+  return state.accounts.filter((a) => a.type === 'credit' && !a.archived && a.statementDay && a.dueDay)
+    .map((card) => ({ card, st: statementOf(card) }))
+    .filter(({ st }) => st && st.left > 0)
+    .map(({ card, st }) => ({ card, st, from: state.accounts.find((x) => x.id === card.payFrom && !x.archived) ?? null, date: st.due, amount: st.left }));
+}
+
+// Pays what's left on a card's statement from its "Paid from" account today, as a transfer.
+async function payCard(p) {
+  if (!p.from) { openAccountDialog(p.card); return; }
+  const date = today();
+  const [rf, rt] = [await ensureRate(p.from.currency, date), await ensureRate(p.card.currency, date)];
+  const sent = p.from.currency === p.card.currency || rf == null || rt == null ? p.amount : crossConvert(p.amount, rt, rf);
+  const legs = makeTransfer({ from: p.from, to: p.card, sent, received: p.amount, date, description: `${p.card.name} payment` });
+  legs[0].rate = rf;
+  legs[1].rate = rt;
+  undoable(`Paid ${money(p.amount, p.card.currency)} to ${p.card.name} from ${p.from.name}.`, ['transactions'], () => { state.transactions.push(...legs); });
+}
+
+// What's coming for an account in the next 30 days, as { date, amount } in its currency: scheduled
+// dates, transactions added ahead, and card payments to or from it.
+function upcomingEffects(account) {
+  const until = daysFromToday(FORECAST_DAYS);
+  return [
+    ...state.schedules.filter((sc) => scheduledEffect(sc, account.id) !== 0)
+      .flatMap((sc) => occurrences(sc, until).map((date) => ({ date, amount: scheduledEffect(sc, account.id) }))),
+    ...state.transactions.filter((t) => t.accountId === account.id && t.date > today() && t.date <= until).map((t) => ({ date: t.date, amount: t.amount })),
+    ...cardPayments().flatMap((p) => [
+      p.card.id === account.id && { date: p.date, amount: p.amount },
+      p.from?.id === account.id && { date: p.date, amount: -inCurrency(p.amount, p.card.currency, account.currency) },
+    ]).filter(Boolean),
+  ];
+}
+
+// Things to look at: checking accounts heading below their alert, and card payments due within five
+// days or overdue. Each: { account, text, level ('warn' or 'due') }.
+function accountAlerts(only = null) {
+  const out = [];
+  for (const a of state.accounts) {
+    if (a.archived || (only && a.id !== only.id)) continue;
+    if (a.type === 'checking' && a.lowBalance != null) {
+      const { below, lowest } = balanceDip(totalsOf(a.id).balance, upcomingEffects(a), a.lowBalance);
+      if (below) {
+        out.push({
+          account: a, level: 'warn',
+          text: below.date
+            ? `${a.name} drops to ${money(below.balance, a.currency)} on ${shortDate(below.date)}, below your ${money(a.lowBalance, a.currency)} alert${lowest.balance < below.balance ? `, and to ${money(lowest.balance, a.currency)} on ${shortDate(lowest.date)}` : ''}.`
+            : `${a.name} is at ${money(below.balance, a.currency)}, below your ${money(a.lowBalance, a.currency)} alert.`,
+        });
+      }
+    }
+  }
+  for (const p of cardPayments()) {
+    if (only && p.card.id !== only.id && p.from?.id !== only.id) continue;
+    const days = Math.round((Date.parse(p.date) - Date.parse(today())) / 864e5);
+    if (days > 5) continue;
+    out.push({
+      account: p.card, level: 'due', pay: p,
+      text: `${p.card.name}: ${money(p.amount, p.card.currency)} ${days < 0 ? `was due on ${shortDate(p.date)}` : days === 0 ? 'is due today' : `is due on ${shortDate(p.date)}`}${p.from ? `, from ${p.from.name}` : ''}.`,
+    });
+  }
+  return out;
+}
+
+// A list of alerts, each with its Pay button for a card payment.
+function alertsBox(list, { label = 'Heads up' } = {}) {
+  if (!list.length) return null;
+  return h('section', { class: 'fin-alerts', 'aria-label': label },
+    h('ul', {}, list.map((al) => h('li', { class: `fin-alert fin-alert--${al.level}` },
+      h('span', { class: 'fin-alert-icon', 'aria-hidden': 'true' }, al.level === 'due' ? '⏰' : '⚠'),
+      h('span', {}, al.text),
+      al.pay && button(al.pay.from ? 'Pay now' : 'Set where it’s paid from', () => payCard(al.pay), 'secondary fin-btn-sm',
+        { 'aria-label': al.pay.from ? `Pay ${money(al.pay.amount, al.pay.card.currency)} to ${al.pay.card.name}` : `Set the account ${al.pay.card.name} is paid from` })))));
 }
 
 // ── main: account ────────────────────────────────────────────────────────────
@@ -677,8 +861,17 @@ function renderAccount(account) {
   return h('div', {},
     h('div', { class: 'fin-account-head' },
       h('div', {},
-        h('h2', { class: 'fin-title' }, cardMark(account, 'fin-card-mark--title'), account.name),
-        h('p', { class: 'fin-meta' }, `${ACCOUNT_TYPE_LABELS[account.type]} · ${account.currency}`, account.archived && ' · Archived')),
+        h('h2', { class: 'fin-title' }, colorDot(account), cardMark(account, 'fin-card-mark--title'), account.name),
+        h('p', { class: 'fin-meta' }, [
+          ACCOUNT_TYPE_LABELS[account.type] + (account.investmentKind ? `, ${INVESTMENT_KINDS[account.investmentKind].toLowerCase()}` : ''),
+          account.currency,
+          [account.institution, account.lastFour && `••${account.lastFour}`].filter(Boolean).join(' '),
+          account.isMain && 'Main account',
+          account.openedOn && `Opened ${monthLabel(account.openedOn.slice(0, 7))}`,
+          account.closedOn && `Closed ${shortDate(account.closedOn)} ${account.closedOn.slice(0, 4)}`,
+          account.excludeTotals && 'Not in totals',
+          account.archived && 'Archived',
+        ].filter(Boolean).join(' · '))),
       h('div', { class: 'fin-actions' },
         button('Edit', () => openAccountDialog(account), 'secondary', { 'data-key': 'edit-account' }),
         account.archived
@@ -706,6 +899,7 @@ function renderAccount(account) {
         }, 'danger', { 'aria-label': `Delete account ${account.name}` }))),
     account.archived && h('p', { class: 'fin-notice' },
       'This account is archived. It is hidden from the account groups and left out of net worth. Its transactions are kept.'),
+    !account.archived && alertsBox(accountAlerts(account)),
     // Each card: a label, the figure, and a short note under it (as on the Insights tabs).
     h('dl', { class: 'fin-stats' },
       h('div', {}, h('dt', {}, inv?.hasHoldings ? 'Value' : 'Balance'), h('dd', { class: `fin-num ${tone(value)}` }, signed(value, account.currency)),
@@ -732,10 +926,16 @@ function renderAccount(account) {
         h('p', { class: 'fin-stat-note' }, inv.invested > 0
           ? `${value >= inv.invested ? '+' : ''}${num((value - inv.invested) / inv.invested * 100)}% on what was put in`
           : 'value less what was put in')),
+      // A credit card's latest statement: what it said, what's left to pay and by when.
+      statementCard(account),
+      // Savings with an interest rate: what it should earn.
+      interestCard(account, value),
       // Like Buxfer's forecast: the balance once everything scheduled in the next 30 days happens,
-      // and the transactions already added for those days.
-      (state.schedules.some((s) => scheduledEffect(s, account.id) !== 0) || totalsOf(account.id).plannedCount > 0) && (() => {
-        const next = forecast(account.id, value, state.schedules, daysFromToday(FORECAST_DAYS)) + totalsOf(account.id).planned;
+      // the transactions already added for those days, and card payments.
+      (() => {
+        const coming = upcomingEffects(account);
+        if (!coming.length) return null;
+        const next = coming.reduce((sum, it) => sum + it.amount, value);
         return h('div', {}, h('dt', {}, `Forecast, ${FORECAST_DAYS} days`),
           h('dd', { class: `fin-num ${tone(next)}` }, signed(next, account.currency)),
           h('p', { class: 'fin-stat-note' }, 'with what’s scheduled or dated ahead'));
@@ -745,6 +945,35 @@ function renderAccount(account) {
       ? (account.type === 'investment' ? investmentInsights(account)
         : insightsPanel(new Set([account.id]), { spendingOnly: account.type === 'credit', balanceOf: account }))
       : [account.type === 'investment' && holdingsSection(account), transactionsSection(account)]);
+}
+
+function statementCard(card) {
+  const st = statementOf(card);
+  if (st === null) return null;
+  const cur = card.currency;
+  if (st === undefined) return h('div', {}, h('dt', {}, 'Statement'), h('dd', {}, '…'), h('p', { class: 'fin-stat-note' }, 'working it out…'));
+  const p = cardPayments().find((x) => x.card.id === card.id);
+  return h('div', {}, h('dt', {}, `Statement, ${shortDate(st.close)}`),
+    h('dd', { class: `fin-num ${st.left ? 'fin-neg' : ''}` }, money(st.owed, cur)),
+    h('p', { class: 'fin-stat-note' }, st.owed === 0 ? 'nothing to pay'
+      : st.left === 0 ? 'paid'
+        : [st.paid ? `${money(st.left, cur)} left to pay` : 'to pay', st.due && `, due ${shortDate(st.due)}`].filter(Boolean).join('')),
+    p && h('div', { class: 'fin-stat-action' }, button(p.from ? `Pay from ${p.from.name}` : 'Set where it’s paid from', () => payCard(p), 'secondary fin-btn-sm', { 'data-key': 'pay-card' })));
+}
+
+function interestCard(account, value) {
+  if (account.type !== 'savings' || !account.interestRate) return null;
+  const every = account.interestEvery ?? 1;
+  const est = savingsInterest(value, account.interestRate, every);
+  const label = INTEREST_EVERY.find(([m]) => m === every)?.[1].toLowerCase() ?? '';
+  const scheduled = state.schedules.some((sc) => sc.accountId === account.id && sc.kind === 'income' && /interest|juro/i.test(sc.description));
+  return h('div', {}, h('dt', {}, 'Interest'),
+    h('dd', { class: 'fin-num fin-pos' }, `about ${money(est.perPayment, account.currency)}`),
+    h('p', { class: 'fin-stat-note' }, `${label} at ${num(account.interestRate, 2)}% a year (${money(est.yearly, account.currency)} a year), before tax`),
+    !scheduled && est.perPayment > 0 && h('div', { class: 'fin-stat-action' }, button('Schedule it', () => openScheduleDialog(null, {
+      kind: 'income', description: 'Interest', amount: est.perPayment, accountId: account.id, every, unit: 'month',
+      nextDate: daysFromToday(30 * every).slice(0, 8) + '01',
+    }), 'secondary fin-btn-sm', { 'aria-haspopup': 'dialog' })));
 }
 
 // Transactions or Insights for the selected account.
@@ -904,7 +1133,7 @@ function filterBar(scope, { showAccount = false } = {}) {
     el.addEventListener('input', () => set({ [k]: el.value }, `${scope}-${k}`, 400));
     return el;
   };
-  const acc = showAccount && select([['', 'All accounts'], ...[...state.accounts].sort(byName).map((a) => [a.id, a.archived ? `${a.name} (archived)` : a.name])], f.accountId, { 'data-key': `${scope}-acc`, 'aria-label': 'Account' });
+  const acc = showAccount && select([['', 'All accounts'], ...[...state.accounts].sort(byName).map((a) => [a.id, a.archived ? `${accountLabel(a)}, archived` : accountLabel(a)])], f.accountId, { 'data-key': `${scope}-acc`, 'aria-label': 'Account' });
   acc && acc.addEventListener('change', () => set({ accountId: acc.value }, `${scope}-acc`));
   return h('div', { class: 'fin-filters', role: 'search', 'aria-label': 'Filter transactions' },
     h('div', { class: 'fin-filter-q' }, text),
@@ -1113,7 +1342,7 @@ function txTable(rows, { caption, showBalance = false, showAccount = false, inEu
           t.memo && h('span', { class: 'fin-sub' }, t.memo)),
         showAccount && h('td', { class: 'c-acc' }, h('button', {
           type: 'button', class: 'fin-link fin-link-sm', onclick: () => selectAccount(t.accountId),
-        }, account?.name ?? 'Deleted account')),
+        }, ...(account ? accountBadge(account.id) : ['Deleted account']))),
         h('td', { class: 'c-cat' }, categoryCell(t)),
         inEur && h('td', { class: 'fin-r fin-num fin-muted c-eur' }, cur === 'EUR' ? '' : t.rate == null ? 'pending' : signed(convert(t.amount, t.rate), 'EUR')),
         h('td', { class: 'fin-r c-act' }, h('div', { class: 'fin-row-actions' },
@@ -1227,7 +1456,8 @@ function transactionsSection(account) {
     ? (cols) => upcomingRows(account, { cols, inEur: account.currency !== 'EUR', balance: totals.balance })
     : null;
   const hasUpcoming = Boolean(upcoming) && (plannedTransactions(account.id, state.transactions, now).length > 0
-    || state.schedules.some((s) => scheduledEffect(s, account.id) !== 0 && occurrences(s, daysFromToday(FORECAST_DAYS)).length > 0));
+    || state.schedules.some((s) => scheduledEffect(s, account.id) !== 0 && occurrences(s, daysFromToday(FORECAST_DAYS)).length > 0)
+    || cardPayments().some((p) => p.card.id === account.id || p.from?.id === account.id));
   return h('section', { class: 'fin-card', 'aria-labelledby': 'tx-h' },
     h('div', { class: 'fin-card-head' },
       h('h3', { id: 'tx-h', class: 'fin-label' }, 'Transactions ', h('span', { class: 'fin-count' }, filtered ? (ready ? `${total} of ${totals.past}` : '…') : String(totals.past))),
@@ -1330,7 +1560,22 @@ function renderSearch() {
 
 const transferPartner = (tx) =>
   tx.transferId && state.transactions.find((x) => x.transferId === tx.transferId && x.id !== tx.id);
-const accountName = (id) => state.accounts.find((a) => a.id === id)?.name ?? 'a deleted account';
+// An account as written in text and in menus: a credit card says so, with its network ("Travel card
+// (Visa)"), so it can't be mixed up with another account of the same name; `currency` adds that.
+function accountLabel(a, { currency = false } = {}) {
+  const extra = [a.type === 'credit' && (CARD_NETWORKS[a.cardNetwork] ?? 'credit card'), currency && a.currency].filter(Boolean);
+  return extra.length ? `${a.name} (${extra.join(', ')})` : a.name;
+}
+const accountName = (id) => { const a = state.accounts.find((x) => x.id === id); return a ? accountLabel(a) : 'a deleted account'; };
+// The same in a badge or a table cell: a card's network mark before its name (the mark names the
+// network for screen readers); a card with no network set says "credit card" in words.
+function accountBadge(id) {
+  const a = state.accounts.find((x) => x.id === id);
+  if (!a) return ['a deleted account'];
+  if (a.type !== 'credit') return [a.name];
+  const mark = cardMark(a, 'fin-card-mark--tag');
+  return mark ? [mark, a.name] : [accountLabel(a)];
+}
 // Accounts you can pick in a form: the active ones, plus `keep` even if it is archived.
 const pickableAccounts = (keep) => state.accounts.filter((a) => !a.archived || a.id === keep).sort(byName);
 
@@ -1450,7 +1695,7 @@ function iouLabel(entries) {
 function categoryCell(t) {
   if (t.transferId) {
     const partner = transferPartner(t);
-    return h('span', { class: 'fin-tag fin-tag--transfer' }, `${t.amount < 0 ? 'To' : 'From'} ${accountName(partner?.accountId)}`);
+    return h('span', { class: 'fin-tag fin-tag--transfer' }, `${t.amount < 0 ? 'To' : 'From'} `, ...accountBadge(partner?.accountId));
   }
   // Loans, settlements and paying for a friend are shown by their type instead of categories, like
   // transfers. A shared bill is a real expense: it keeps its categories, with the IOU underneath.
@@ -1739,10 +1984,10 @@ function multiTxForm(account, close, swap) {
       cat: select(categoryOptions(), '', { 'aria-label': `Category, row ${n}` }),
       type: typeSwitch(['expense', 'income', 'refund', 'transfer'], 'expense', { label: `Type, row ${n}`, compact: true, onChange: () => syncType() }),
       // For a transfer, the category cell shows where the money goes instead.
-      to: select([['', 'To account…'], ...accounts.map((a) => [a.id, a.name])], '', { 'aria-label': `Transfer to, row ${n}`, hidden: true }),
+      to: select([['', 'To account…'], ...accounts.map((a) => [a.id, accountLabel(a)])], '', { 'aria-label': `Transfer to, row ${n}`, hidden: true }),
       amount: input({ type: 'number', step: '0.01', min: '0.01', inputmode: 'decimal', 'aria-label': `Amount, row ${n}` }),
       date: input({ type: 'date', value: rows.at(-1)?.date.value || today(), 'aria-label': `Date, row ${n}` }),
-      acc: select(accounts.map((a) => [a.id, a.name]), rows.at(-1)?.acc.value ?? account.id, { 'aria-label': `Account, row ${n}` }),
+      acc: select(accounts.map((a) => [a.id, accountLabel(a)]), rows.at(-1)?.acc.value ?? account.id, { 'aria-label': `Account, row ${n}` }),
     });
     const combo = descriptionCombo(index, {
       label: `Description, row ${n}`,
@@ -1877,7 +2122,7 @@ function multiTxForm(account, close, swap) {
 
 function singleTxForm(account, close, swap) {
   const accounts = pickableAccounts(account.id);
-  const accountOptions = accounts.map((a) => [a.id, `${a.name} (${a.currency})`]);
+  const accountOptions = accounts.map((a) => [a.id, accountLabel(a, { currency: true })]);
   const type = typeSwitch(['expense', 'income', 'refund', 'dividend', 'transfer'], 'expense', { onChange: () => { sync(); suggest(); } });
   // Suggestions fill in the type and categories (or both accounts, for a transfer), not the amount.
   let fillFrom = () => {};
@@ -2608,7 +2853,7 @@ function openIouDialog(preset = {}) {
   const date = input({ type: 'date', required: true, value: today() });
   const desc = input({ type: 'text', autocomplete: 'off' });
   const accounts = pickableAccounts(null).filter((a) => a.currency === 'EUR');
-  const acc = select([['', 'No account (cash, or outside your accounts)'], ...accounts.map((a) => [a.id, a.name])], preset.accountId ?? '');
+  const acc = select([['', 'No account (cash, or outside your accounts)'], ...accounts.map((a) => [a.id, accountLabel(a)])], preset.accountId ?? '');
   const returnKey = document.activeElement?.dataset?.key;
   const close = () => { dialog.close(); render(returnKey); };
 
@@ -3440,7 +3685,7 @@ function renderNetWorth() {
   if (!runs) {
     return h('div', { class: 'fin-insights' }, periodControls(range), loader('Working out the history…'));
   }
-  const hist = netWorthHistory(state, {
+  const hist = netWorthHistory({ ...state, accounts: state.accounts.filter(counted) }, {
     from: range.from, to, today: today(), holdingsValue: holdingsValueEUR, rateOf: (c) => latestRate(c) ?? 1, runs: runMap(runs), estimate: estimateOpts,
   });
   const pts = hist.points;
@@ -3450,7 +3695,7 @@ function renderNetWorth() {
 
   // Today's split by account type (archived accounts are closed, so they're not part of it).
   const byType = ACCOUNT_TYPES.map((type) => {
-    const value = state.accounts.filter((a) => a.type === type && !a.archived)
+    const value = state.accounts.filter((a) => a.type === type && !a.archived && counted(a))
       .reduce((sum, a) => sum + convert(accountValue(a), latestRate(a.currency) ?? 1), 0);
     return { type, value };
   }).filter((x) => x.value !== 0);
@@ -3468,7 +3713,14 @@ function renderNetWorth() {
         h('div', {}, h('dt', {}, 'Investments'), h('dd', {}, money(now.investments, 'EUR')),
           now.total > 0 && h('p', { class: 'fin-stat-note' }, `${Math.round((now.investments / now.total) * 100)}% of net worth`)),
         h('div', {}, h('dt', {}, 'Debts'), h('dd', { class: debts ? 'fin-neg' : '' }, money(debts, 'EUR')),
-          h('p', { class: 'fin-stat-note' }, 'credit cards and other negative balances'))),
+          h('p', { class: 'fin-stat-note' }, 'credit cards and other negative balances')),
+        // Pensions and retirement savings (by their kind) are locked away until later.
+        (() => {
+          const locked = state.accounts.filter((a) => !a.archived && counted(a) && a.type === 'investment' && LOCKED_KINDS.has(a.investmentKind))
+            .reduce((sum, a) => sum + convert(accountValue(a), latestRate(a.currency) ?? 1), 0);
+          return locked > 0 && h('div', {}, h('dt', {}, 'Within reach'), h('dd', {}, money(now.total - locked, 'EUR')),
+            h('p', { class: 'fin-stat-note' }, `without ${money(locked, 'EUR')} in pensions and retirement savings`));
+        })()),
       pts.length > 1
         ? [
           h('section', { class: 'fin-card fin-pad' },
@@ -3507,7 +3759,7 @@ function renderNetWorth() {
             h('span', { class: `fin-num fin-break-amt ${value < 0 ? 'fin-neg' : ''}` }, money(value, 'EUR')),
             h('span', { class: 'fin-num fin-break-pct fin-muted' }, value > 0 && assets ? `${Math.round((value / assets) * 100)}%` : '')))))),
       // Every holding in the open investment accounts.
-      allocationCard(state.holdings.filter((x) => state.accounts.some((a) => a.id === x.accountId && !a.archived)), 'nw')));
+      allocationCard(state.holdings.filter((x) => state.accounts.some((a) => a.id === x.accountId && !a.archived && counted(a))), 'nw')));
 }
 
 // ── scheduled transactions ───────────────────────────────────────────────────
@@ -3550,7 +3802,7 @@ const dueLabel = (date) => (date < today() ? 'Overdue' : date === today() ? 'Due
 function openScheduleDialog(existing = null, preset = {}) {
   const s = existing ?? preset;
   const accounts = pickableAccounts(s.accountId);
-  const accountOptions = accounts.map((a) => [a.id, a.name]);
+  const accountOptions = accounts.map((a) => [a.id, accountLabel(a)]);
   const kind = select([['expense', 'Expense'], ['income', 'Income'], ['transfer', 'Transfer']], s.kind ?? 'expense');
   const desc = input({ type: 'text', required: true, autocomplete: 'off', value: s.description });
   const amount = input({ type: 'number', step: '0.01', min: '0.01', required: true, inputmode: 'decimal', value: s.amount ? String(s.amount / 100) : null });
@@ -3629,6 +3881,11 @@ function upcomingRows(account, { cols, inEur, balance }) {
       .filter((s) => scheduledEffect(s, account.id) !== 0)
       .flatMap((s) => occurrences(s, until).map((date, i) => ({ s, date, first: i === 0, amount: scheduledEffect(s, account.id) }))),
     ...plannedTransactions(account.id, state.transactions, today()).map((t) => ({ t, date: t.date, amount: t.amount })),
+    // A card's statement payment: into the card, out of the account it's paid from.
+    ...cardPayments().flatMap((p) => [
+      p.card.id === account.id && { pay: p, date: p.date, amount: p.amount },
+      p.from?.id === account.id && { pay: p, date: p.date, amount: -inCurrency(p.amount, p.card.currency, account.currency) },
+    ]).filter(Boolean),
   ].sort((a, b) => a.date.localeCompare(b.date));
   if (!items.length) return [];
   let running = balance;
@@ -3660,6 +3917,23 @@ function upcomingRows(account, { cols, inEur, balance }) {
           { 'aria-label': `Enter ${s.description} for ${shortDate(date)}`, 'data-key': `up-enter-${s.id}` }),
         button('Skip', () => skipScheduled(s, `up-skip-${s.id}`), 'secondary fin-btn-sm',
           { 'aria-label': `Skip ${s.description} on ${shortDate(date)}`, 'data-key': `up-skip-${s.id}` }))));
+  };
+  // A card's statement payment, with Pay (a transfer from the account it's paid from, today).
+  const payRow = ({ pay, date, amount, balance: b }) => {
+    const due = dueLabel(date);
+    const toCard = pay.card.id === account.id;
+    return h('tr', { class: `fin-upcoming${due ? ' fin-due' : ''}` },
+      h('td', { class: 'fin-tick-col c-tick' }),
+      dateCell(date, h('span', { class: `fin-chip fin-chip-inline${due ? ' fin-chip-due' : ''}` }, due ?? 'Payment due')),
+      amountCell(amount),
+      balanceCell(b),
+      h('td', { class: 'c-desc' }, `${pay.card.name} payment`, h('span', { class: 'fin-sub' },
+        `Statement of ${shortDate(pay.st.close)}${toCard ? (pay.from ? ` · from ${pay.from.name}` : ' · paid from: not set') : ''}`)),
+      h('td', { class: 'c-cat' }, h('span', { class: 'fin-tag fin-tag--transfer' }, ...(toCard ? ['From ', ...(pay.from ? accountBadge(pay.from.id) : ['…'])] : ['To ', ...accountBadge(pay.card.id)]))),
+      inEur && h('td', { class: 'c-eur' }),
+      h('td', { class: 'fin-r c-act' }, h('div', { class: 'fin-actions fin-row-actions fin-upcoming-actions' },
+        button(pay.from ? 'Pay' : 'Set up', () => payCard(pay), 'secondary fin-btn-sm',
+          { 'aria-label': pay.from ? `Pay ${money(pay.amount, pay.card.currency)} to ${pay.card.name} from ${pay.from.name}` : `Set the account ${pay.card.name} is paid from` }))));
   };
   // A transaction added ahead of time: already saved, so it's edited or deleted like any other.
   const plannedRow = ({ t, balance: b }) => {
@@ -3696,7 +3970,7 @@ function upcomingRows(account, { cols, inEur, balance }) {
         h('span', { class: 'fin-upcoming-note' }, upcomingOpen
           ? ` · scheduled for the next ${FORECAST_DAYS} days`
           : [` · next ${FORECAST_DAYS} days, `, h('span', { class: `fin-num ${tone(net)}` }, signed(net, cur)), ' in all'])))),
-    ...(upcomingOpen ? items.reverse().map((it) => (it.t ? plannedRow(it) : scheduleRow(it))) : []),
+    ...(upcomingOpen ? items.reverse().map((it) => (it.t ? plannedRow(it) : it.pay ? payRow(it) : scheduleRow(it))) : []),
   ];
 }
 let upcomingOpen = readPref('finance:upcoming-open', true);
@@ -3933,6 +4207,7 @@ function renderOverview() {
         h('p', { class: 'fin-meta' }, new Date(`${now}T00:00:00`).toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }))),
       button('Add transactions', quickAdd, 'primary', { 'data-key': 'ov-add', 'aria-haspopup': 'dialog' })),
     state.accounts.length === 0 ? renderWelcome() : [
+      alertsBox(accountAlerts()),
       h('dl', { class: 'fin-stats' },
         h('div', {}, h('dt', {}, 'Net worth'), h('dd', { class: tone(nw.total) }, money(nw.total, 'EUR')),
           h('p', { class: 'fin-stat-note' }, nw.unconverted ? `${nw.unconverted} account(s) waiting for exchange rates` : 'across your open accounts, in EUR')),
@@ -3968,9 +4243,11 @@ function comingUpCard() {
       .flatMap((sc) => occurrences(sc, until).map((date, i) => ({ s: sc, date, first: i === 0 }))),
     // A transfer shows once, from the side the money leaves.
     ...state.transactions.filter((t) => t.date > now && t.date <= until && !(t.transferId && t.amount > 0)).map((t) => ({ t, date: t.date })),
+    ...cardPayments().filter((p) => p.date <= until).map((p) => ({ pay: p, date: p.date })),
   ].sort((a, b) => a.date.localeCompare(b.date));
   const cur = (id) => state.accounts.find((a) => a.id === id)?.currency ?? 'EUR';
   const amountOf = (it) => {
+    if (it.pay) return h('span', { class: 'fin-num' }, money(it.pay.amount, it.pay.card.currency));
     if (it.t) return h('span', { class: `fin-num ${it.t.transferId ? '' : tone(it.t.amount)}` }, it.t.transferId ? money(-it.t.amount, cur(it.t.accountId)) : signed(it.t.amount, cur(it.t.accountId)));
     const shown = it.s.kind === 'expense' ? -it.s.amount : it.s.amount;
     return h('span', { class: `fin-num ${it.s.kind === 'transfer' ? '' : tone(shown)}` }, it.s.kind === 'transfer' ? money(it.s.amount, cur(it.s.accountId)) : signed(shown, cur(it.s.accountId)));
@@ -3982,17 +4259,20 @@ function comingUpCard() {
     !plannedReady && items.length === 0 ? loader('Looking ahead…')
       : items.length === 0 ? h('p', { class: 'fin-empty fin-pad' }, 'Nothing scheduled or dated in the next two weeks.')
         : h('ul', { class: 'fin-coming' }, items.map((it) => {
-          const due = it.s ? dueLabel(it.date) : null;
+          const due = it.s || it.pay ? dueLabel(it.date) : null;
           const t = it.t;
-          const name = t ? t.description : it.s.description;
-          const where = t ? (t.transferId ? `${accountName(t.accountId)} → ${accountName(transferPartner(t)?.accountId)}` : accountName(t.accountId)) : scheduleAccounts(it.s);
+          const name = t ? t.description : it.pay ? `${it.pay.card.name} payment` : it.s.description;
+          const where = it.pay ? `${it.pay.from?.name ?? 'paid from: not set'} → ${it.pay.card.name}`
+            : t ? (t.transferId ? `${accountName(t.accountId)} → ${accountName(transferPartner(t)?.accountId)}` : accountName(t.accountId)) : scheduleAccounts(it.s);
           return h('li', { class: `fin-coming-row${due ? ' fin-due' : ''}` },
             h('time', { class: 'fin-coming-date fin-nowrap', datetime: it.date }, shortDate(it.date)),
             h('span', { class: 'fin-coming-what' }, name,
-              h('span', { class: 'fin-sub' }, where, ' · ', t ? 'added ahead' : frequencyLabel(it.s).toLowerCase()),
+              h('span', { class: 'fin-sub' }, where, ' · ', it.pay ? `statement of ${shortDate(it.pay.st.close)}` : t ? 'added ahead' : frequencyLabel(it.s).toLowerCase()),
               due && h('span', { class: 'fin-chip fin-chip-inline fin-chip-due' }, due)),
             amountOf(it),
             h('span', { class: 'fin-actions fin-coming-actions' },
+              it.pay && button(it.pay.from ? 'Pay' : 'Set up', () => payCard(it.pay), 'secondary fin-btn-sm',
+                { 'aria-label': it.pay.from ? `Pay ${money(it.pay.amount, it.pay.card.currency)} to ${it.pay.card.name}` : `Set the account ${it.pay.card.name} is paid from` }),
               it.s && it.first && it.date <= now && button('Enter', () => enterScheduled(it.s, `ov-enter-${it.s.id}`), 'secondary fin-btn-sm',
                 { 'aria-label': `Enter ${name} for ${shortDate(it.date)}`, 'data-key': `ov-enter-${it.s.id}` }),
               it.s && it.first && it.date <= now && button('Skip', () => skipScheduled(it.s, `ov-skip-${it.s.id}`), 'secondary fin-btn-sm',
@@ -4044,7 +4324,14 @@ function creditCardsCard() {
           use && usageBar(use),
           use && h('span', { class: 'fin-sub' }, use.left < 0
             ? `${money(-use.left, a.currency)} over the limit`
-            : `${money(use.left, a.currency)} available · ${use.used}% of ${money(a.creditLimit, a.currency)} used`)));
+            : `${money(use.left, a.currency)} available · ${use.used}% of ${money(a.creditLimit, a.currency)} used`),
+          (() => {
+            const st = statementOf(a);
+            if (!st) return null;
+            return h('span', { class: 'fin-sub' }, st.owed === 0 ? `Statement of ${shortDate(st.close)}: nothing to pay`
+              : st.left === 0 ? `Statement of ${shortDate(st.close)}: paid`
+                : `${money(st.left, a.currency)} to pay${st.due ? ` by ${shortDate(st.due)}` : ''}`);
+          })()));
     })));
 }
 
@@ -4727,7 +5014,7 @@ function importSection() {
   dateFmt.addEventListener('change', () => update('dateFormat', dateFmt.value, 'imp-date'));
   const dec = select([[',', '1.234,56 (comma)'], ['.', '1,234.56 (point)']], d.decimal, { 'data-key': 'imp-dec' });
   dec.addEventListener('change', () => update('decimal', dec.value, 'imp-dec'));
-  const acc = select([['', 'None'], ...[...state.accounts].sort(byName).map((a) => [a.id, a.name])], d.defaultAccountId, { 'data-key': 'imp-acc' });
+  const acc = select([['', 'None'], ...[...state.accounts].sort(byName).map((a) => [a.id, accountLabel(a)])], d.defaultAccountId, { 'data-key': 'imp-acc' });
   acc.addEventListener('change', () => update('defaultAccountId', acc.value, 'imp-acc'));
 
   const required = ['date', 'description', 'amount'].filter((f) => d.mapping[f] < 0);
@@ -5377,9 +5664,10 @@ function setSideOpen(open) {
 sideToggle.addEventListener('click', () => setSideOpen(!side.classList.contains('is-open')));
 side.addEventListener('click', (e) => { if (e.target.closest('.fin-account, .fin-side-head--link')) setSideOpen(false); });
 
-// Quick entry for the account on screen, or the last one used.
+// Quick entry for the account on screen, else the main account, else the last one used.
 function quickAdd() {
   const account = state.accounts.find((a) => a.id === view.id && !a.archived)
+    ?? mainAccount()
     ?? state.accounts.find((a) => a.id === state.settings.lastAccountId && !a.archived)
     ?? [...state.accounts].sort(byName).find((a) => !a.archived);
   if (!account) { openAccountDialog(); return; }

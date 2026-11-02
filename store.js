@@ -18,8 +18,36 @@ const TABLES = {
     from: (r) => ({ id: r.id, name: r.name, parentId: r.parent_id ?? null }),
   },
   accounts: {
-    to: (a) => ({ id: a.id, name: a.name, type: a.type, currency: a.currency, archived: Boolean(a.archived), credit_limit: a.creditLimit ?? null, card_network: a.cardNetwork ?? null }),
-    from: (r) => ({ id: r.id, name: r.name, type: r.type, currency: r.currency, archived: r.archived, ...(r.credit_limit != null && { creditLimit: Number(r.credit_limit) }), ...(r.card_network && { cardNetwork: r.card_network }) }),
+    to: (a) => ({
+      id: a.id, name: a.name, type: a.type, currency: a.currency, archived: Boolean(a.archived), credit_limit: a.creditLimit ?? null, card_network: a.cardNetwork ?? null,
+      statement_day: a.statementDay ?? null, due_day: a.dueDay ?? null, pay_from: a.payFrom ?? null,
+      low_balance: a.lowBalance ?? null, is_main: Boolean(a.isMain),
+      interest_rate: a.interestRate ?? null, interest_every: a.interestEvery ?? null, investment_kind: a.investmentKind ?? null,
+      opened_on: a.openedOn ?? null, closed_on: a.closedOn ?? null, institution: a.institution ?? null, last_four: a.lastFour ?? null,
+      exclude_totals: Boolean(a.excludeTotals), color: a.color ?? null,
+    }),
+    // Settings that aren't set are left off, so an account only carries what it uses.
+    from: (r) => {
+      const a = { id: r.id, name: r.name, type: r.type, currency: r.currency, archived: r.archived };
+      const set = (k, v) => { if (v != null && v !== false && v !== '') a[k] = v; };
+      set('creditLimit', r.credit_limit != null ? Number(r.credit_limit) : null);
+      set('cardNetwork', r.card_network);
+      set('statementDay', r.statement_day);
+      set('dueDay', r.due_day);
+      set('payFrom', r.pay_from);
+      set('lowBalance', r.low_balance != null ? Number(r.low_balance) : null);
+      set('isMain', r.is_main);
+      set('interestRate', r.interest_rate);
+      set('interestEvery', r.interest_every);
+      set('investmentKind', r.investment_kind);
+      set('openedOn', r.opened_on);
+      set('closedOn', r.closed_on);
+      set('institution', r.institution);
+      set('lastFour', r.last_four);
+      set('excludeTotals', r.exclude_totals);
+      set('color', r.color);
+      return a;
+    },
   },
   rules: {
     to: (x, i) => ({ id: x.id, pattern: x.pattern, match: x.match, category_id: x.categoryId ?? null, position: i }),
@@ -98,7 +126,9 @@ export const missingTables = () => [...missing];
 
 // Columns added after the first release. Saving needs them, so their absence is reported to the
 // app, which asks for schema.sql to be run again.
-const NEW_COLUMNS = { accounts: ['credit_limit', 'card_network'], categories: ['parent_id'], transactions: ['category_ids', 'kind', 'splits', 'holding_id'], settings: ['fx', 'last_backup_at', 'backup_every', 'eodhd_api_key', 'hidden_suggestions'], holdings: ['price_history'], schedules: ['subscription'] };
+const NEW_COLUMNS = {
+  accounts: ['credit_limit', 'card_network', 'statement_day', 'due_day', 'pay_from', 'low_balance', 'is_main', 'interest_rate',
+    'interest_every', 'investment_kind', 'opened_on', 'closed_on', 'institution', 'last_four', 'exclude_totals', 'color'], categories: ['parent_id'], transactions: ['category_ids', 'kind', 'splits', 'holding_id'], settings: ['fx', 'last_backup_at', 'backup_every', 'eodhd_api_key', 'hidden_suggestions'], holdings: ['price_history'], schedules: ['subscription'] };
 let schemaOutdated = false;
 export const needsSchemaUpdate = () => schemaOutdated || missing.size > 0;
 

@@ -981,6 +981,8 @@ textarea.fin-input { resize: vertical; }
 /* Card network marks beside a credit card's name (Visa, Mastercard), in their brand colours. */
 .fin-card-mark { width: 24px; height: 16px; flex: none; margin-right: 8px; vertical-align: -3px; border-radius: 2.5px; }
 .fin-card-mark--title { width: 36px; height: 24px; margin-right: 12px; vertical-align: -2px; }
+/* In a badge or a table cell (a transfer's other account, search results): smaller, beside the name. */
+.fin-card-mark--tag { width: 18px; height: 12px; margin: 0 5px 0 1px; vertical-align: -2px; border-radius: 2px; }
 .fin-visa-bg { fill: #1A1F71; }
 .fin-visa-text { fill: #FFFFFF; font: italic 800 7.5px var(--font-sans); letter-spacing: 0.2px; }
 .fin-mc-bg { fill: #252525; }
@@ -1283,6 +1285,55 @@ textarea.fin-input { resize: vertical; }
   .fin-btn, .fin-group-head::after, .fin-account, .fin-icon-btn, .fin-table tbody tr, .fin-input { transition: none; }
   .fin-sync[data-state="saving"]::before { animation: none; }
 }
+
+/* ── Account settings ─────────────────────────────────── */
+#account-dialog:has(.fin-fieldset) { width: min(40rem, calc(100vw - 32px)); }
+.fin-fieldset { margin: 0; padding: 0; border: 0; min-width: 0; }
+.fin-fieldset[hidden] { display: none; }
+.fin-legend-label { padding: 0; margin: 4px 0 8px; font-size: 13px; font-weight: 600; color: var(--f-text); }
+.fin-check-field { align-self: end; padding-bottom: 8px; }
+.fin-more > summary { cursor: pointer; color: var(--f-accent-strong); font-weight: 500; margin-bottom: 10px; }
+/* An account's colour: a dot by its name (the category hues). */
+.fin-acc-dot { display: inline-block; flex: none; width: 9px; height: 9px; margin-right: 8px; border-radius: 50%; background: var(--dot); vertical-align: 1px; }
+.fin-title .fin-acc-dot { width: 12px; height: 12px; margin-right: 12px; vertical-align: 3px; }
+.fin-acc-dot[data-hue="0"] { --dot: #1F7A8C; } .fin-acc-dot[data-hue="1"] { --dot: #2A78D6; }
+.fin-acc-dot[data-hue="2"] { --dot: #6250D6; } .fin-acc-dot[data-hue="3"] { --dot: #C2417A; }
+.fin-acc-dot[data-hue="4"] { --dot: #D9622B; } .fin-acc-dot[data-hue="5"] { --dot: #C99400; }
+.fin-acc-dot[data-hue="6"] { --dot: #1D8A4E; } .fin-acc-dot[data-hue="7"] { --dot: #7A878E; }
+@media (prefers-color-scheme: dark) {
+  :where(:root:not([data-theme="light"])) .fin-acc-dot[data-hue="0"] { --dot: #5BBFB5; }
+  :where(:root:not([data-theme="light"])) .fin-acc-dot[data-hue="1"] { --dot: #6FA0EE; }
+  :where(:root:not([data-theme="light"])) .fin-acc-dot[data-hue="2"] { --dot: #A895F2; }
+  :where(:root:not([data-theme="light"])) .fin-acc-dot[data-hue="3"] { --dot: #EC8AB5; }
+  :where(:root:not([data-theme="light"])) .fin-acc-dot[data-hue="4"] { --dot: #F29B66; }
+  :where(:root:not([data-theme="light"])) .fin-acc-dot[data-hue="5"] { --dot: #E6C25C; }
+  :where(:root:not([data-theme="light"])) .fin-acc-dot[data-hue="6"] { --dot: #6CCB92; }
+  :where(:root:not([data-theme="light"])) .fin-acc-dot[data-hue="7"] { --dot: #A7B3B9; }
+}
+:where(:root[data-theme="dark"]) .fin-acc-dot[data-hue="0"] { --dot: #5BBFB5; }
+:where(:root[data-theme="dark"]) .fin-acc-dot[data-hue="1"] { --dot: #6FA0EE; }
+:where(:root[data-theme="dark"]) .fin-acc-dot[data-hue="2"] { --dot: #A895F2; }
+:where(:root[data-theme="dark"]) .fin-acc-dot[data-hue="3"] { --dot: #EC8AB5; }
+:where(:root[data-theme="dark"]) .fin-acc-dot[data-hue="4"] { --dot: #F29B66; }
+:where(:root[data-theme="dark"]) .fin-acc-dot[data-hue="5"] { --dot: #E6C25C; }
+:where(:root[data-theme="dark"]) .fin-acc-dot[data-hue="6"] { --dot: #6CCB92; }
+:where(:root[data-theme="dark"]) .fin-acc-dot[data-hue="7"] { --dot: #A7B3B9; }
+.fin-main-mark { margin-left: 6px; color: var(--f-warn); font-size: 11px; }
+.fin-uncounted { color: var(--f-muted) !important; font-style: italic; }
+.fin-stat-action { margin-top: 8px; }
+
+/* Alerts: a balance heading below its limit, a card payment due soon. Icon and words, not colour alone. */
+.fin-alerts ul { display: grid; gap: 8px; margin: 20px 0 0; padding: 0; list-style: none; }
+.fin-alert {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px;
+  padding: 10px 14px; border: 1px solid var(--f-border); border-left-width: 4px; border-radius: var(--f-radius-sm);
+  background: var(--f-surface); font-size: 13px;
+}
+.fin-alert > span:nth-child(2) { flex: 1 1 16rem; }
+.fin-alert--warn { border-left-color: var(--f-warn); }
+.fin-alert--due { border-left-color: var(--f-accent); }
+.fin-alert-icon { flex: none; }
+.fin-account-head + .fin-alerts ul, .fin-overview > .fin-alerts ul { margin-top: 16px; }
 
 /* ── Go to palette ────────────────────────────────────── */
 .fin-dialog.fin-cmd { width: min(36rem, calc(100vw - 32px)); margin-top: 12vh; padding: 0; overflow: hidden; }

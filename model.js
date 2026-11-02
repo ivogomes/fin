@@ -105,6 +105,59 @@ export function sortedCategories(categories) {
   return top.flatMap((p) => [p, ...categories.filter((c) => c.parentId === p.id).sort(byName)]);
 }
 
+// ── Account settings by type ─────────────────────────────────────────────────
+
+// What an investment account is: pensions and retirement savings are locked away until later, so
+// net worth also shows what's within reach without them.
+export const INVESTMENT_KINDS = { brokerage: 'Brokerage', pension: 'Pension', retirement: 'Retirement savings', crypto: 'Crypto', other: 'Other' };
+export const LOCKED_KINDS = new Set(['pension', 'retirement']);
+
+// A day of the month on a given month, or its last day when the month is shorter (the 31st in June
+// is the 30th). `ym` is "YYYY-MM".
+const dayIn = (ym, day) => {
+  const [y, m] = ym.split('-').map(Number);
+  const last = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  return `${ym}-${String(Math.min(day, last)).padStart(2, '0')}`;
+};
+const monthAfter = (ym, n) => {
+  const [y, m] = ym.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1 + n, 1)).toISOString().slice(0, 7);
+};
+
+// A credit card's latest statement: the last statement day on or before `today`.
+export function lastStatementDate(today, statementDay) {
+  const here = dayIn(today.slice(0, 7), statementDay);
+  return here <= today ? here : dayIn(monthAfter(today.slice(0, 7), -1), statementDay);
+}
+
+// The payment due day that follows a statement: the first `dueDay` after it (the same month when it
+// comes later in the month, else the next).
+export function dueAfter(statement, dueDay) {
+  const here = dayIn(statement.slice(0, 7), dueDay);
+  return here > statement ? here : dayIn(monthAfter(statement.slice(0, 7), 1), dueDay);
+}
+
+// A balance going forward: `items` ({ date, amount }) change it in date order. The lowest point it
+// reaches, and the first date it goes below `threshold` (null when it never does).
+export function balanceDip(balance, items, threshold) {
+  let run = balance;
+  let lowest = { date: null, balance };
+  let below = balance < threshold ? { date: null, balance } : null;
+  for (const it of [...items].sort((a, b) => a.date.localeCompare(b.date))) {
+    run += it.amount;
+    if (run < lowest.balance) lowest = { date: it.date, balance: run };
+    if (!below && run < threshold) below = { date: it.date, balance: run };
+  }
+  return { lowest, below };
+}
+
+// Interest a savings balance earns: a month's worth at `rate` percent a year, and each payment's
+// when it's paid every `months` months (simple interest, before tax).
+export function savingsInterest(balance, rate, months = 1) {
+  const monthly = balance > 0 ? Math.round((balance * rate) / 100 / 12) : 0;
+  return { monthly, perPayment: monthly * months, yearly: monthly * 12 };
+}
+
 // Moves an amount between two currencies through the base currency.
 export const crossConvert = (minor, rateFrom, rateTo) => Math.round((minor * rateFrom) / rateTo);
 
@@ -521,7 +574,10 @@ export function importRows(rows, { mapping, dateFormat, decimal, defaultAccountI
     const accountName = cell(r, 'account');
     let accountId = defaultAccountId;
     if (accountName) {
-      const found = accounts.get(normalize(accountName)) ?? newAccounts.get(normalize(accountName));
+      // By name; else by the last four digits of its card or account number ("Card ****1234").
+      const digits = accountName.replace(/\D/g, '');
+      const byDigits = digits.length >= 4 ? ctx.accounts.filter((a) => a.lastFour && digits.endsWith(a.lastFour)) : [];
+      const found = accounts.get(normalize(accountName)) ?? newAccounts.get(normalize(accountName)) ?? (byDigits.length === 1 ? byDigits[0] : null);
       if (found) accountId = found.id;
       else {
         const cur = cell(r, 'currency').toUpperCase();
@@ -1305,8 +1361,8 @@ function bucketEnd(key, unit, to) {
 // Net worth (in EUR minor units) at the end of each bucket between `from` and `to`, with the part
 // in investment accounts. For each account and date:
 // - Ordinary accounts are the sum of their transactions up to that date (each at its own rate).
-// - An archived account counts until its last transaction and as nothing after, since it was
-//   closed; leftovers on closed accounts are usually gains or losses that were never recorded.
+// - An account counts as nothing from its closing date (`closedOn`), or, archived without one, from
+//   its last transaction; leftovers on closed accounts are usually gains or losses never recorded.
 // - An investment account with holdings is worth its holdings today (`holdingsValue(account)`),
 //   its latest daily snapshot (market value) on earlier dates that have one, and before that:
 //   with lots (buys and sells) for every holding, the units held then times the latest trade price
@@ -1403,7 +1459,9 @@ export function netWorthHistory({ accounts, transactions = [], snapshots = [], h
     const grow = valuedByHoldings && !lotsFrom ? growth(a) : null;
     for (const [pi, p] of points.entries()) {
       let value = Number(run.values[pi] ?? 0);
-      if (a.archived && lastDate && p.date >= lastDate) value = 0;
+      // Closed: on its closing date when it has one, else (archived) at its last transaction.
+      const closed = a.closedOn ?? (a.archived ? lastDate : null);
+      if (closed && p.date >= closed) value = 0;
       else if (valuedByHoldings) {
         if (p.date >= today) value = holdingsValue(a);
         else if (firstSnapshot && p.date >= firstSnapshot && snaps.filter((s) => s.date <= p.date).at(-1)?.values?.[a.id] != null) {

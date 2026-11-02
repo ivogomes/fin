@@ -167,6 +167,27 @@ alter table transactions add column if not exists holding_id text;
 alter table settings add column if not exists hidden_suggestions jsonb not null default '[]';
 -- A schedule marked as a subscription (Scheduled → Subscriptions lists it).
 alter table schedules add column if not exists subscription boolean not null default false;
+-- Account settings by type. Credit cards: the statement day and payment due day (of the month), and
+-- the account the card is paid from.
+alter table accounts add column if not exists statement_day integer;
+alter table accounts add column if not exists due_day integer;
+alter table accounts add column if not exists pay_from text;
+-- Checking: warn when the balance is heading below this (cents); the main account (one at most).
+alter table accounts add column if not exists low_balance bigint;
+alter table accounts add column if not exists is_main boolean not null default false;
+-- Savings: the yearly interest rate (percent) and how often it's paid (months).
+alter table accounts add column if not exists interest_rate double precision;
+alter table accounts add column if not exists interest_every integer;
+-- Investments: brokerage, pension, retirement, crypto or other.
+alter table accounts add column if not exists investment_kind text;
+-- Any account: when it was opened and closed, the bank, the last four digits of its number (to
+-- match imports), whether it counts in totals, and a colour (0–7).
+alter table accounts add column if not exists opened_on date;
+alter table accounts add column if not exists closed_on date;
+alter table accounts add column if not exists institution text;
+alter table accounts add column if not exists last_four text;
+alter table accounts add column if not exists exclude_totals boolean not null default false;
+alter table accounts add column if not exists color text;
 
 -- ── Calculations done in the database ─────────────────────────────────────────
 -- The app doesn't load every transaction on every page: these functions return what a page shows.

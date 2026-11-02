@@ -40,7 +40,7 @@ Tests: `node --test tools/finance/model.test.mjs`. On this machine the `node` sh
 
 ### After an update that adds a table
 
-`schema.sql` only creates what's missing, so running the whole file again is safe and keeps your data. Do this when a new feature needs a table or a column (scheduled transactions added `schedules`; splits and dividends added `transactions.splits` and `transactions.holding_id`; marking subscriptions added `schedules.subscription`); until then the app loads normally, says the database needs updating, and doesn't save.
+`schema.sql` only creates what's missing, so running the whole file again is safe and keeps your data. Do this when a new feature needs a table or a column (scheduled transactions added `schedules`; splits and dividends added `transactions.splits` and `transactions.holding_id`; marking subscriptions added `schedules.subscription`; account settings added a dozen `accounts` columns); until then the app loads normally, says the database needs updating, and doesn't save.
 
 ## Pages
 
@@ -88,9 +88,20 @@ A transaction can be split across categories, like a supermarket receipt that's 
 
 Two levels, like Buxfer: a category is top-level or sits under one, and is shown as "Parent / Child". A transaction can have several categories (chips you add and remove in the table or the edit form). Rules add one category when a transaction has none. Settings → Categories lists the tree with how many transactions use each one; deleting a category removes it from those transactions (they stay), deletes rules that set it, and moves its subcategories to the top level. Imports read several categories separated by commas, each possibly a path; Buxfer's `tags.csv` builds the whole tree.
 
+## Account settings
+
+**Edit** on an account has the settings every account can have, and a section for its type.
+
+- **Any account:** a colour (a dot by its name), the bank, the last four digits of its card or account number (a CSV import's Account column like "VISA ****1234" then finds it), when it was opened and closed (net worth counts it until its closing date, archived or not), and **Leave out of totals** (it's still listed, but not in net worth or its group's total).
+- **Checking:** **Warn below** an amount: the account and the Overview warn when what's scheduled, added ahead or due on cards in the next 30 days takes the balance below it, with the date and the lowest point. **Main account** (one at most, starred in the side panel): the default for quick entry away from an account page, and for paying new cards.
+- **Savings:** the interest rate (a year, before tax) and how often it's paid: the account shows about what each payment should be, and **Schedule it** adds an income schedule for it.
+- **Investments:** the kind (brokerage, pension, retirement savings, crypto, other). Net worth then shows what's **Within reach**: without pensions and retirement savings.
+
 ## Credit cards
 
-A credit card account can have a credit limit (Edit account). It then shows what's left to spend, the limit less what's owed, with how much of the limit is used. Its Insights tab is about spending only: no income, net or savings.
+A credit card account can have a credit limit. It then shows what's left to spend, the limit less what's owed, with how much of the limit is used. Its Insights tab is about spending only: no income, net or savings.
+
+With a **statement day**, the card shows its latest statement: what was owed on that day (`balances_at`), less payments into the card since. With a **payment due day** and **Paid from** (the account it's paid from), what's left to pay is an upcoming payment on both accounts (and in the 30-day forecasts, and in the Overview's Coming up), with **Pay**: a transfer of that amount from the Paid from account, today. Five days before it's due, or once it's overdue, it's also an alert on the Overview.
 
 ## Charts over time
 

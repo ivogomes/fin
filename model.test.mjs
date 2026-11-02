@@ -13,6 +13,7 @@ import {
   descriptionIndex, suggestDescriptions, filterTransactions, ruleSuggestion,
   parseFrequency, addInterval, occurrences, forecast, scheduledTransactions, advanceSchedule,
   splitsOf, scaleSplits, DIVIDENDS, recurringGroups, suggestSchedules, xirr, lotFlows, returnSummary, rulesFromHistory, findSubscriptions, withMarkedSchedules, timesAYear,
+  lastStatementDate, dueAfter, balanceDip, savingsInterest,
 } from './model.js';
 
 test('periods: presets relative to today, Monday weeks, granularity', () => {
@@ -998,4 +999,25 @@ test('subscriptions: a yearly plan after two charges; marked schedules join or s
     ['Old box', 'stopped', 900, 900, 's3', null],
   ]);
   assert.ok(Math.abs(timesAYear({ every: 2, unit: 'week' }) - 26.09) < 0.01);
+});
+
+test('account settings: statement and due dates, balance dips, savings interest, closing dates, last four digits', () => {
+  assert.equal(lastStatementDate('2026-11-02', 20), '2026-10-20');
+  assert.equal(lastStatementDate('2026-11-20', 20), '2026-11-20');
+  assert.equal(lastStatementDate('2026-03-05', 31), '2026-02-28'); // a short month
+  assert.equal(dueAfter('2026-10-20', 5), '2026-11-05');
+  assert.equal(dueAfter('2026-10-05', 25), '2026-10-25');
+  assert.equal(dueAfter('2026-01-31', 30), '2026-02-28');
+  const dip = balanceDip(50000, [{ date: '2026-11-10', amount: 100000 }, { date: '2026-11-05', amount: -40000 }, { date: '2026-11-08', amount: -20000 }], 20000);
+  assert.deepEqual(dip, { lowest: { date: '2026-11-08', balance: -10000 }, below: { date: '2026-11-05', balance: 10000 } });
+  assert.equal(balanceDip(50000, [], 20000).below, null);
+  assert.deepEqual(savingsInterest(1200000, 2.5, 3), { monthly: 2500, perPayment: 7500, yearly: 30000 });
+  // A closing date ends an account in the net worth history even when it isn't archived.
+  const { points } = netWorthHistory({ accounts: [{ id: 'x', type: 'savings', currency: 'EUR', closedOn: '2026-02-15' }], transactions: [{ accountId: 'x', date: '2026-01-05', amount: 5000, rate: 1 }] },
+    { from: '2026-01-01', to: '2026-04-30', today: '2026-05-01', holdingsValue: () => null });
+  assert.deepEqual(points.map((p) => p.total), [5000, 0, 0, 0]);
+  // CSV rows find an account by the last four digits of its number.
+  const r = importRows([['2026-01-02', 'Shop', '-5', 'VISA ****4321']], { mapping: { date: 0, description: 1, amount: 2, account: 3, type: -1, category: -1, memo: -1, currency: -1, reference: -1, iou: -1 }, dateFormat: 'ymd', decimal: '.', defaultAccountId: null },
+    { accounts: [{ id: 'card', name: 'Travel card', currency: 'EUR', lastFour: '4321' }], categories: [], rules: [], transactions: [], id: (() => { let i = 0; return () => `n${i += 1}`; })() });
+  assert.deepEqual([r.transactions[0].accountId, r.newAccounts.length], ['card', 0]);
 });
