@@ -412,7 +412,7 @@ test('Buxfer reminders: signs from type, transfers "A > B", missing account skip
   assert.deepEqual([s.Salary.kind, s.Salary.amount], ['income', 488735]);
   const bank = res.newAccounts.find((a) => a.name === 'Bank');
   const ppr = res.newAccounts.find((a) => a.name === 'PPR');
-  assert.deepEqual([s['Reforço PPR'].accountId, s['Reforço PPR'].toAccountId, s['Reforço PPR'].categoryId], [bank.id, ppr.id, null]);
+  assert.deepEqual([s['Reforço PPR'].accountId, s['Reforço PPR'].toAccountId, s['Reforço PPR'].categoryIds], [bank.id, ppr.id, []]);
   assert.deepEqual(res.skippedReminders.map((x) => [x.description, x.reason]), [['Amazon Prime', 'no account in Buxfer']]);
   assert.ok(res.newCategories.some((c) => c.name === 'Vencimento'));
 
@@ -899,7 +899,7 @@ test('recurring: monthly and weekly rhythms are suggested; irregular, stopped, v
     ['Lesson', 1, 'week', '2026-11-03'],
   ]);
   const rent = list.find((s) => s.description === 'Rent');
-  assert.deepEqual([rent.kind, rent.amount, rent.categoryId, rent.count, rent.anchorDay], ['expense', 80000, 'c', 4, 1]);
+  assert.deepEqual([rent.kind, rent.amount, rent.categoryIds, rent.count, rent.anchorDay], ['expense', 80000, ['c'], 4, 1]);
   assert.equal(suggestSchedules(groups, { today: '2026-11-02', hidden: [rent.id] }).some((s) => s.description === 'Rent'), false);
 });
 
@@ -1011,7 +1011,10 @@ test('account settings: statement and due dates, balance dips, savings interest,
   const dip = balanceDip(50000, [{ date: '2026-11-10', amount: 100000 }, { date: '2026-11-05', amount: -40000 }, { date: '2026-11-08', amount: -20000 }], 20000);
   assert.deepEqual(dip, { lowest: { date: '2026-11-08', balance: -10000 }, below: { date: '2026-11-05', balance: 10000 } });
   assert.equal(balanceDip(50000, [], 20000).below, null);
-  assert.deepEqual(savingsInterest(1200000, 2.5, 3), { monthly: 2500, perPayment: 7500, yearly: 30000 });
+  const plain = { monthly: 2500, perPayment: 7500, yearly: 30000 };
+  assert.deepEqual(savingsInterest(1200000, 2.5, 3), { ...plain, gross: plain });
+  // 28% withheld: what arrives is 72% of it.
+  assert.deepEqual(savingsInterest(1200000, 2.5, 3, 28), { monthly: 1800, perPayment: 5400, yearly: 21600, gross: plain });
   // A closing date ends an account in the net worth history even when it isn't archived.
   const { points } = netWorthHistory({ accounts: [{ id: 'x', type: 'savings', currency: 'EUR', closedOn: '2026-02-15' }], transactions: [{ accountId: 'x', date: '2026-01-05', amount: 5000, rate: 1 }] },
     { from: '2026-01-01', to: '2026-04-30', today: '2026-05-01', holdingsValue: () => null });

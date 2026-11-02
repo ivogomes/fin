@@ -22,7 +22,7 @@ const TABLES = {
       id: a.id, name: a.name, type: a.type, currency: a.currency, archived: Boolean(a.archived), credit_limit: a.creditLimit ?? null, card_network: a.cardNetwork ?? null,
       statement_day: a.statementDay ?? null, due_day: a.dueDay ?? null, pay_from: a.payFrom ?? null,
       low_balance: a.lowBalance ?? null, is_main: Boolean(a.isMain),
-      interest_rate: a.interestRate ?? null, interest_every: a.interestEvery ?? null, investment_kind: a.investmentKind ?? null,
+      interest_rate: a.interestRate ?? null, interest_every: a.interestEvery ?? null, interest_tax: a.interestTax ?? null, investment_kind: a.investmentKind ?? null,
       opened_on: a.openedOn ?? null, closed_on: a.closedOn ?? null, institution: a.institution ?? null, last_four: a.lastFour ?? null,
       exclude_totals: Boolean(a.excludeTotals), color: a.color ?? null,
     }),
@@ -39,6 +39,7 @@ const TABLES = {
       set('isMain', r.is_main);
       set('interestRate', r.interest_rate);
       set('interestEvery', r.interest_every);
+      set('interestTax', r.interest_tax);
       set('investmentKind', r.investment_kind);
       set('openedOn', r.opened_on);
       set('closedOn', r.closed_on);
@@ -69,12 +70,13 @@ const TABLES = {
   schedules: {
     to: (s) => ({
       id: s.id, description: s.description, amount: s.amount, kind: s.kind, account_id: s.accountId,
-      to_account_id: s.toAccountId ?? null, category_id: s.categoryId ?? null, every: s.every, unit: s.unit,
+      to_account_id: s.toAccountId ?? null, category_id: categoriesOf(s)[0] ?? null, category_ids: categoriesOf(s), every: s.every, unit: s.unit,
       anchor_day: s.anchorDay ?? null, next_date: s.nextDate, end_date: s.endDate ?? null, subscription: Boolean(s.subscription),
     }),
     from: (r) => ({
       id: r.id, description: r.description, amount: Number(r.amount), kind: r.kind, accountId: r.account_id,
-      toAccountId: r.to_account_id, categoryId: r.category_id, every: r.every, unit: r.unit,
+      // Several categories, like a transaction; rows saved before that have only category_id.
+      toAccountId: r.to_account_id, categoryIds: r.category_ids?.length ? r.category_ids : r.category_id ? [r.category_id] : [], every: r.every, unit: r.unit,
       anchorDay: r.anchor_day, nextDate: r.next_date, endDate: r.end_date, ...(r.subscription && { subscription: true }),
     }),
   },
@@ -128,7 +130,7 @@ export const missingTables = () => [...missing];
 // app, which asks for schema.sql to be run again.
 const NEW_COLUMNS = {
   accounts: ['credit_limit', 'card_network', 'statement_day', 'due_day', 'pay_from', 'low_balance', 'is_main', 'interest_rate',
-    'interest_every', 'investment_kind', 'opened_on', 'closed_on', 'institution', 'last_four', 'exclude_totals', 'color'], categories: ['parent_id'], transactions: ['category_ids', 'kind', 'splits', 'holding_id'], settings: ['fx', 'last_backup_at', 'backup_every', 'eodhd_api_key', 'hidden_suggestions'], holdings: ['price_history'], schedules: ['subscription'] };
+    'interest_every', 'interest_tax', 'investment_kind', 'opened_on', 'closed_on', 'institution', 'last_four', 'exclude_totals', 'color'], categories: ['parent_id'], transactions: ['category_ids', 'kind', 'splits', 'holding_id'], settings: ['fx', 'last_backup_at', 'backup_every', 'eodhd_api_key', 'hidden_suggestions'], holdings: ['price_history'], schedules: ['subscription', 'category_ids'] };
 let schemaOutdated = false;
 export const needsSchemaUpdate = () => schemaOutdated || missing.size > 0;
 

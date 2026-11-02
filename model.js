@@ -152,10 +152,13 @@ export function balanceDip(balance, items, threshold) {
 }
 
 // Interest a savings balance earns: a month's worth at `rate` percent a year, and each payment's
-// when it's paid every `months` months (simple interest, before tax).
-export function savingsInterest(balance, rate, months = 1) {
-  const monthly = balance > 0 ? Math.round((balance * rate) / 100 / 12) : 0;
-  return { monthly, perPayment: monthly * months, yearly: monthly * 12 };
+// when it's paid every `months` months (simple interest). `tax` is the percent withheld from each
+// payment: the amounts are what arrives, after it; `gross` has them before.
+export function savingsInterest(balance, rate, months = 1, tax = 0) {
+  const gross = balance > 0 ? (balance * rate) / 100 / 12 : 0;
+  const net = gross * (1 - (tax || 0) / 100);
+  const amounts = (m) => ({ monthly: Math.round(m), perPayment: Math.round(m * months), yearly: Math.round(m * 12) });
+  return { ...amounts(net), gross: amounts(gross) };
 }
 
 // Moves an amount between two currencies through the base currency.
@@ -683,7 +686,8 @@ export function findTransferPairs(transactions) {
 
 // ── Scheduled (recurring) transactions ───────────────────────────────────────
 // A schedule: { id, description, amount (positive minor units), kind: 'expense'|'income'|'transfer',
-// accountId, toAccountId (transfers), categoryId, every, unit: 'day'|'week'|'month'|'year',
+// accountId, toAccountId (transfers), categoryIds (several, like a transaction's; older ones had a
+// single categoryId, read with categoriesOf), every, unit: 'day'|'week'|'month'|'year',
 // anchorDay (day of month to aim for), nextDate, endDate }. Nothing is added by itself: each due
 // date is entered or skipped by hand, because amounts like a salary change.
 
@@ -752,7 +756,7 @@ export function scheduledTransactions(rec, date, accounts, id = newId) {
   return [{
     id: id(), accountId: rec.accountId, date, description: rec.description,
     amount: rec.kind === 'expense' ? -rec.amount : rec.amount,
-    categoryIds: rec.categoryId ? [rec.categoryId] : [], memo: '',
+    categoryIds: categoriesOf(rec), memo: '',
   }];
 }
 
@@ -833,7 +837,7 @@ export function suggestSchedules(groups, { schedules = [], today, hidden = [] })
     while ((utc(today) - utc(nextDate)) / 864e5 > rhythm.slack) nextDate = addInterval(nextDate, rhythm, anchorDay);
     out.push({
       id, accountId: g.accountId, description: g.description, kind: g.sign < 0 ? 'expense' : 'income',
-      amount: amounts.at(-1), typical, categoryId: g.categoryIds?.[0] ?? null,
+      amount: amounts.at(-1), typical, categoryIds: g.categoryIds ?? [],
       every: rhythm.every, unit: rhythm.unit, anchorDay, nextDate, endDate: null,
       lastDate: last, count: g.dates.length,
     });
@@ -844,7 +848,7 @@ export function suggestSchedules(groups, { schedules = [], today, hidden = [] })
 // Subscriptions among `recurringGroups` (over a few years, with groups of two, so yearly ones show
 // after two charges): money going out at a steady rhythm (see RHYTHMS; two charges only count when
 // they're a year apart) for the same price each time, give or take 5% (a foreign-currency
-// charge), or with one price change. Each: { id, accountId, description, categoryId, amount (the
+// charge), or with one price change. Each: { id, accountId, description, categoryIds, amount (the
 // latest), every, unit, monthly and yearly (what it costs a month and a year, in its currency),
 // firstDate, lastDate, nextDate, count, status ('active', or 'stopped' when the next charge is well
 // overdue), priceChange ({ from, to, date } or null) }. Ones stopped over a year ago and `hidden`
@@ -875,7 +879,7 @@ export function findSubscriptions(groups, { today, hidden = [] }) {
     if (status === 'active') while ((utc(today) - utc(nextDate)) / 864e5 > rhythm.slack) nextDate = addInterval(nextDate, rhythm, anchorDay);
     const perYear = timesAYear(rhythm);
     out.push({
-      id, accountId: g.accountId, description: g.description, categoryId: g.categoryIds?.[0] ?? null,
+      id, accountId: g.accountId, description: g.description, categoryIds: g.categoryIds ?? [],
       amount, every: rhythm.every, unit: rhythm.unit,
       monthly: Math.round((amount * perYear) / 12), yearly: Math.round(amount * perYear),
       firstDate: g.dates[0], lastDate, nextDate, count: g.dates.length, status,
@@ -912,7 +916,7 @@ export function withMarkedSchedules(found, schedules, today) {
     if (hit) Object.assign(hit, fromSchedule);
     else {
       out.push({
-        id: `sched|${sc.id}`, accountId: sc.accountId, description: sc.description, categoryId: sc.categoryId ?? null,
+        id: `sched|${sc.id}`, accountId: sc.accountId, description: sc.description, categoryIds: categoriesOf(sc),
         firstDate: null, lastDate: null, count: 0, priceChange: null, ...fromSchedule,
       });
     }
@@ -1600,7 +1604,7 @@ function buxferReminders(rows, accountByName, resolver, existing, id) {
     const nextDate = parseDate(due, 'ymd');
     schedules.push({
       id: id(), description, amount: Math.abs(parseAmount(amount, '.')), kind,
-      accountId: from.id, toAccountId: to?.id ?? null, categoryId,
+      accountId: from.id, toAccountId: to?.id ?? null, categoryIds: categoryId ? [categoryId] : [],
       every: freq.every, unit: freq.unit, anchorDay: Number(nextDate.slice(8, 10)), nextDate, endDate: null,
     });
   });

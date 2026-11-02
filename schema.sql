@@ -165,6 +165,10 @@ alter table transactions add column if not exists splits jsonb;
 alter table transactions add column if not exists holding_id text;
 -- Suggested schedules turned down ("Not recurring"), so they aren't offered again.
 alter table settings add column if not exists hidden_suggestions jsonb not null default '[]';
+-- A schedule can have several categories, like a transaction. Existing single ones are copied over once.
+alter table schedules add column if not exists category_ids text[] not null default '{}';
+update schedules set category_ids = array[category_id]
+  where category_id is not null and category_ids = '{}';
 -- A schedule marked as a subscription (Scheduled → Subscriptions lists it).
 alter table schedules add column if not exists subscription boolean not null default false;
 -- Account settings by type. Credit cards: the statement day and payment due day (of the month), and
@@ -178,6 +182,8 @@ alter table accounts add column if not exists is_main boolean not null default f
 -- Savings: the yearly interest rate (percent) and how often it's paid (months).
 alter table accounts add column if not exists interest_rate double precision;
 alter table accounts add column if not exists interest_every integer;
+-- Savings: the tax withheld from each interest payment (percent).
+alter table accounts add column if not exists interest_tax double precision;
 -- Investments: brokerage, pension, retirement, crypto or other.
 alter table accounts add column if not exists investment_kind text;
 -- Any account: when it was opened and closed, the bank, the last four digits of its number (to

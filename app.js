@@ -637,6 +637,7 @@ function openAccountDialog(existing = null) {
   // Savings
   const rate = input({ type: 'number', step: '0.01', min: '0', max: '100', inputmode: 'decimal', value: a0.interestRate != null ? String(a0.interestRate) : null });
   const rateEvery = select(INTEREST_EVERY.map(([m, label]) => [String(m), label]), String(a0.interestEvery ?? 1));
+  const rateTax = input({ type: 'number', step: '0.01', min: '0', max: '100', inputmode: 'decimal', value: a0.interestTax != null ? String(a0.interestTax) : null });
   // Investments
   const kind = select([['', 'Not set'], ...Object.entries(INVESTMENT_KINDS)], a0.investmentKind ?? '');
   // Any account
@@ -658,7 +659,8 @@ function openAccountDialog(existing = null) {
       h('label', { class: 'fin-check fin-check-field' }, isMain, ' Main account (the default for quick entry and for paying cards)')),
     savings: group('Savings',
       field('Interest rate (% a year)', rate, 'Before tax. Shows the interest it should earn.'),
-      field('Interest paid', rateEvery)),
+      field('Interest paid', rateEvery),
+      field('Tax on interest (%)', rateTax, 'Withheld from each payment, e.g. 28. The estimate is what arrives after it.')),
     investment: group('Investment', field('Kind', kind, 'Pensions and retirement savings are shown apart from what’s within reach.')),
   };
   const more = h('details', { class: 'fin-more', open: Boolean(a0.institution || a0.lastFour || a0.openedOn || a0.closedOn || a0.excludeTotals) },
@@ -686,6 +688,7 @@ function openAccountDialog(existing = null) {
       isMain: t === 'checking' && isMain.checked,
       interestRate: t === 'savings' && rate.value !== '' ? Number(rate.value) : null,
       interestEvery: t === 'savings' && rate.value !== '' ? Number(rateEvery.value) : null,
+      interestTax: t === 'savings' && rate.value !== '' && rateTax.value !== '' ? Number(rateTax.value) : null,
       investmentKind: (t === 'investment' && kind.value) || null,
       institution: institution.value.trim() || null, lastFour: lastFour.value.trim() || null,
       openedOn: openedOn.value || null, closedOn: closedOn.value || null, excludeTotals: exclude.checked,
@@ -964,12 +967,15 @@ function statementCard(card) {
 function interestCard(account, value) {
   if (account.type !== 'savings' || !account.interestRate) return null;
   const every = account.interestEvery ?? 1;
-  const est = savingsInterest(value, account.interestRate, every);
+  const tax = account.interestTax ?? 0;
+  const est = savingsInterest(value, account.interestRate, every, tax);
   const label = INTEREST_EVERY.find(([m]) => m === every)?.[1].toLowerCase() ?? '';
   const scheduled = state.schedules.some((sc) => sc.accountId === account.id && sc.kind === 'income' && /interest|juro/i.test(sc.description));
   return h('div', {}, h('dt', {}, 'Interest'),
     h('dd', { class: 'fin-num fin-pos' }, `about ${money(est.perPayment, account.currency)}`),
-    h('p', { class: 'fin-stat-note' }, `${label} at ${num(account.interestRate, 2)}% a year (${money(est.yearly, account.currency)} a year), before tax`),
+    h('p', { class: 'fin-stat-note' }, tax
+      ? `${label} at ${num(account.interestRate, 2)}% a year, after ${num(tax, tax % 1 ? 2 : 0)}% tax (${money(est.gross.perPayment, account.currency)} before it; ${money(est.yearly, account.currency)} a year)`
+      : `${label} at ${num(account.interestRate, 2)}% a year (${money(est.yearly, account.currency)} a year), before tax`),
     !scheduled && est.perPayment > 0 && h('div', { class: 'fin-stat-action' }, button('Schedule it', () => openScheduleDialog(null, {
       kind: 'income', description: 'Interest', amount: est.perPayment, accountId: account.id, every, unit: 'month',
       nextDate: daysFromToday(30 * every).slice(0, 8) + '01',
@@ -1765,6 +1771,10 @@ function categoryPicker(selected, { label, compact = false, onChange } = {}) {
   return { el: wrap, value: () => [...ids], set: (next) => { ids.splice(0, ids.length, ...next.filter((id) => category(id))); paint(); onChange?.([...ids], ''); } };
 }
 
+// Categories as chips that only show (no × or menu): a schedule's in a list, a suggestion's.
+const catChips = (ids) => ids.length > 0 && h('div', { class: 'fin-cats' },
+  ids.map((id) => h('span', { class: 'fin-cat-chip', 'data-hue': hueOf(id) }, h('span', {}, catLabel(id) || 'Deleted category'))));
+
 // A labelled form row for a category picker (a group, so the label is its accessible name).
 function pickerField(label, picker) {
   const id = `f-${newId().slice(0, 8)}`;
@@ -2230,7 +2240,7 @@ function singleTxForm(account, close, swap) {
         legs[0].rate = await ensureRate(a.currency, date.value);
         legs[1].rate = await ensureRate(b.currency, date.value);
         state.transactions.push(...legs);
-        const repeats = scheduleFrom({ description: legs[0].description, amount: sent, kind: 'transfer', accountId: a.id, toAccountId: b.id, categoryId: null });
+        const repeats = scheduleFrom({ description: legs[0].description, amount: sent, kind: 'transfer', accountId: a.id, toAccountId: b.id, categoryIds: [] });
         persist(); close(); say(`Transferred from ${a.name} to ${b.name}.${repeats}${laterNote()}`);
         return;
       }
@@ -2248,7 +2258,7 @@ function singleTxForm(account, close, swap) {
         ...(type.value === 'dividend' && holdingPick.value ? { holdingId: holdingPick.value } : {}),
         ...(parts ? { splits: parts.parts.map((p) => ({ categoryId: p.categoryId || null, amount: p.amount * sign })) } : {}),
       });
-      const repeats = scheduleFrom({ description: desc.value.trim(), amount: sent, kind: type.value === 'expense' ? 'expense' : 'income', accountId: a.id, toAccountId: null, categoryId: categoryIds[0] ?? null });
+      const repeats = scheduleFrom({ description: desc.value.trim(), amount: sent, kind: type.value === 'expense' ? 'expense' : 'income', accountId: a.id, toAccountId: null, categoryIds });
       persist(); close(); say(`Transaction added.${repeats}${laterNote()}`);
     },
   },
@@ -3808,7 +3818,8 @@ function openScheduleDialog(existing = null, preset = {}) {
   const amount = input({ type: 'number', step: '0.01', min: '0.01', required: true, inputmode: 'decimal', value: s.amount ? String(s.amount / 100) : null });
   const from = select(accountOptions, s.accountId ?? view.id ?? accounts[0]?.id);
   const to = select([['', 'Choose an account'], ...accountOptions], s.toAccountId ?? '');
-  const cat = select([['', 'None'], ...catOptions()], s.categoryId ?? '');
+  // Several categories, like a transaction (chips, and a menu to add one).
+  const cats = categoryPicker(categoriesOf(s), { label: 'Categories' });
   const every = input({ type: 'number', min: '1', step: '1', required: true, value: String(s.every ?? 1), inputmode: 'numeric' });
   const unit = select(UNITS.map((u) => [u, `${u}(s)`]), s.unit ?? 'month');
   const next = input({ type: 'date', required: true, value: s.nextDate ?? today() });
@@ -3818,7 +3829,7 @@ function openScheduleDialog(existing = null, preset = {}) {
   const subField = h('label', { class: 'fin-check' }, subBox, ' This is a subscription');
   const fromField = field('Account', from);
   const toField = field('To account', to);
-  const catField = field('Category', cat);
+  const catField = pickerField('Categories', cats);
   const sync = () => {
     const transfer = kind.value === 'transfer';
     fromField.querySelector('label').textContent = transfer ? 'From account' : 'Account';
@@ -3840,7 +3851,7 @@ function openScheduleDialog(existing = null, preset = {}) {
       const fields = {
         description: desc.value.trim(), amount: toMinor(amount.value), kind: kind.value,
         accountId: from.value, toAccountId: kind.value === 'transfer' ? to.value : null,
-        categoryId: kind.value === 'transfer' ? null : cat.value || null,
+        categoryIds: kind.value === 'transfer' ? [] : cats.value(), categoryId: undefined,
         every: Math.max(1, Math.round(Number(every.value))), unit: unit.value,
         anchorDay: Number(next.value.slice(8, 10)), nextDate: next.value, endDate: end.value || null,
         subscription: kind.value === 'expense' && subBox.checked,
@@ -3853,8 +3864,9 @@ function openScheduleDialog(existing = null, preset = {}) {
   },
     h('h2', { id: 'account-dialog-h', class: 'fin-dialog-title' }, existing ? 'Edit schedule' : 'Schedule a transaction'),
     h('div', { class: 'fin-grid fin-grid-2' },
-      field('Type', kind), field('Description', desc), field('Amount', amount), catField,
+      field('Type', kind), field('Description', desc), field('Amount', amount),
       fromField, toField,
+      catField,
       h('div', { class: 'fin-field' },
         h('span', { class: 'fin-field-label', id: 'sched-every-l' }, 'Repeats every'),
         h('div', { class: 'fin-inline', role: 'group', 'aria-labelledby': 'sched-every-l' },
@@ -3907,9 +3919,8 @@ function upcomingRows(account, { cols, inEur, balance }) {
       balanceCell(b),
       h('td', { class: 'c-desc' }, s.description, h('span', { class: 'fin-sub' },
         `${frequencyLabel(s)}${s.kind === 'transfer' ? ` · ${scheduleAccounts(s)}` : ''}`)),
-      // The category as a chip, like the transactions below (changed in the schedule, not here).
-      h('td', { class: 'c-cat' }, s.categoryId && h('div', { class: 'fin-cats fin-cats-compact' },
-        h('span', { class: 'fin-cat-chip', 'data-hue': hueOf(s.categoryId) }, h('span', {}, catLabel(s.categoryId) || 'Deleted category')))),
+      // Its categories as chips, like the transactions below (changed in the schedule, not here).
+      h('td', { class: 'c-cat' }, catChips(categoriesOf(s))),
       inEur && h('td', { class: 'c-eur' }),
       // Only the next date of a schedule can be entered or skipped; later ones follow from it.
       h('td', { class: 'fin-r c-act' }, first && h('div', { class: 'fin-actions fin-row-actions fin-upcoming-actions' },
@@ -4005,7 +4016,7 @@ function suggestionsCard() {
         const cur = state.accounts.find((a) => a.id === x.accountId)?.currency ?? 'EUR';
         const shown = x.kind === 'expense' ? -x.amount : x.amount;
         return h('tr', {},
-          h('td', {}, x.description, x.categoryId && h('span', { class: 'fin-sub' }, catLabel(x.categoryId))),
+          h('td', {}, x.description, catChips(categoriesOf(x))),
           h('td', {}, accountName(x.accountId)),
           h('td', { class: `fin-r fin-num ${tone(shown)}` }, signed(shown, cur),
             x.typical !== x.amount && h('span', { class: 'fin-sub' }, `usually ${money(x.typical, cur)}`)),
@@ -4049,7 +4060,7 @@ function subscriptionsPanel() {
     say(`“${x.description}” isn’t treated as a subscription any more.`);
   };
   const name = (x) => h('td', {}, x.description,
-    h('span', { class: 'fin-sub' }, [x.categoryId && catLabel(x.categoryId), accountName(x.accountId)].filter(Boolean).join(' · ')));
+    h('span', { class: 'fin-sub' }, [...categoriesOf(x).map(catLabel), accountName(x.accountId)].filter(Boolean).join(' · ')));
   const find = (x) => pageLink('Find', { name: 'search', q: x.description }, 'fin-link fin-link-sm');
   const year = (d) => (d.slice(0, 4) != thisYear ? ` ${d.slice(0, 4)}` : '');
   return h('div', {},
@@ -4156,7 +4167,7 @@ function renderSchedules() {
               h('td', { class: 'fin-nowrap' }, h('time', { datetime: s.nextDate }, shortDate(s.nextDate)),
                 due && h('span', { class: 'fin-chip fin-chip-inline fin-chip-due' }, due)),
               h('td', {}, s.description, s.subscription && h('span', { class: 'fin-chip fin-chip-inline' }, 'Subscription'),
-                s.categoryId && h('span', { class: 'fin-sub' }, catLabel(s.categoryId))),
+                catChips(categoriesOf(s))),
               h('td', {}, scheduleAccounts(s)),
               h('td', { class: `fin-r fin-num ${s.kind === 'transfer' ? '' : tone(shown)}` }, s.kind === 'transfer' ? money(s.amount, cur) : signed(shown, cur)),
               h('td', { class: 'fin-nowrap' }, frequencyLabel(s), s.endDate && h('span', { class: 'fin-sub' }, `until ${shortDate(s.endDate)}`)),
@@ -4619,7 +4630,7 @@ function categoriesSection() {
       }
       for (const k of state.categories) if (k.parentId === c.id) k.parentId = null;
       state.rules = state.rules.filter((r) => r.categoryId !== c.id);
-      for (const x of state.schedules) if (x.categoryId === c.id) x.categoryId = null;
+      for (const x of state.schedules) if (categoriesOf(x).includes(c.id)) x.categoryIds = categoriesOf(x).filter((id) => id !== c.id);
       state.categories = state.categories.filter((x) => x.id !== c.id);
     });
   };
@@ -5128,7 +5139,7 @@ function readableCsvs() {
     ],
     schedules: [
       ['Next date', 'Description', 'Type', 'Amount', 'Account', 'To account', 'Category', 'Repeats', 'Ends'],
-      ...state.schedules.map((x) => [x.nextDate, x.description, x.kind, decimal2(x.amount), accName(x.accountId), accName(x.toAccountId), catLabel(x.categoryId), frequencyLabel(x), x.endDate ?? '']),
+      ...state.schedules.map((x) => [x.nextDate, x.description, x.kind, decimal2(x.amount), accName(x.accountId), accName(x.toAccountId), categoriesOf(x).map(catLabel).filter(Boolean).join(', '), frequencyLabel(x), x.endDate ?? '']),
     ],
     categories: [
       ['Category', 'Parent'],
