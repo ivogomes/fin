@@ -949,6 +949,93 @@ function bulkBar(pageRows) {
     button('Clear selection', () => { selected.clear(); render(); }, 'secondary fin-btn-sm', { 'data-key': 'bulk-clear' }));
 }
 
+// Opens a date box's calendar, where the browser can (not every browser can; typing still works).
+function openPicker(el) {
+  try { el?.showPicker?.(); } catch { /* not allowed here, or not supported */ }
+}
+// Clicking anywhere in a date box opens its calendar, not just on its small icon. Keyboard focus
+// doesn't, so typing a date stays as it was.
+document.addEventListener('click', (e) => {
+  const el = e.target;
+  if (el instanceof HTMLInputElement && el.type === 'date' && !el.disabled && !el.readOnly) openPicker(el);
+});
+
+// Quick edit: one cell of a transaction (its date, amount or description) turns into a box. Enter or
+// leaving it saves, Esc cancels. A transfer's other side follows (same date and description; its
+// amount scales, so a cross-currency transfer keeps its rate), and Undo puts it back.
+let quickEdit = null; // { id, field }
+const QUICK_NAMES = { date: 'date', amount: 'amount', description: 'description' };
+function quickCell(t, field, label, ...content) {
+  const key = `qe-${t.id}-${field}`;
+  if (quickEdit?.id !== t.id || quickEdit.field !== field) {
+    return h('button', {
+      type: 'button', class: 'fin-cell-btn', 'data-key': key, title: `Change the ${QUICK_NAMES[field]}`,
+      'aria-label': `Change the ${QUICK_NAMES[field]} of ${label}`,
+      onclick: () => {
+        quickEdit = { id: t.id, field };
+        editingTxId = null;
+        render('qe-input');
+        // A date opens straight onto the calendar (still part of the click, so the browser allows it).
+        if (field === 'date') openPicker(document.querySelector('[data-key="qe-input"]'));
+      },
+    }, ...content);
+  }
+  const box = input(field === 'date'
+    ? { type: 'date', value: t.date, required: true }
+    : field === 'amount'
+      ? { type: 'number', step: '0.01', min: '0.01', inputmode: 'decimal', value: String(Math.abs(t.amount) / 100) }
+      : { type: 'text', value: t.description, autocomplete: 'off' });
+  box.classList.add('fin-input-cell');
+  box.dataset.key = 'qe-input';
+  box.setAttribute('aria-label', `New ${QUICK_NAMES[field]} for ${label}`);
+  let done = false;
+  const finish = async (save) => {
+    if (done) return;
+    done = true;
+    quickEdit = null;
+    if (save) await saveQuickEdit(t, field, box.value);
+    else render(key);
+  };
+  box.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); }
+  });
+  box.addEventListener('blur', () => finish(true));
+  return box;
+}
+
+async function saveQuickEdit(t, field, raw) {
+  const key = `qe-${t.id}-${field}`;
+  const tx = state.transactions.find((x) => x.id === t.id);
+  const value = raw.trim();
+  const partner = tx && transferPartner(tx);
+  const unchanged = !tx || (field === 'date' ? value === tx.date : field === 'amount' ? toMinor(value) === Math.abs(tx.amount) : value === tx.description);
+  if (unchanged) { render(key); return; }
+  if (field === 'description' && !value) { render(key); say('A description can’t be empty.'); return; }
+  if (field === 'date' && !/^\d{4}-\d{2}-\d{2}$/.test(value)) { render(key); say('That isn’t a date.'); return; }
+  if (field === 'amount' && !(toMinor(value) > 0)) { render(key); say('The amount must be above zero.'); return; }
+  // A new date needs that day's rates (fetched before the change, so undo stays one step).
+  const cur = (id) => state.accounts.find((a) => a.id === id)?.currency ?? 'EUR';
+  const rates = field === 'date'
+    ? await Promise.all([ensureRate(cur(tx.accountId), value), partner ? ensureRate(cur(partner.accountId), value) : null])
+    : null;
+  undoable(`${field === 'date' ? 'Date' : field === 'amount' ? 'Amount' : 'Description'} changed.`, ['transactions'], () => {
+    const t2 = state.transactions.find((x) => x.id === t.id);
+    const p2 = partner && state.transactions.find((x) => x.id === partner.id);
+    if (field === 'description') { t2.description = value; if (p2) p2.description = value; }
+    if (field === 'date') {
+      t2.date = value; t2.rate = rates[0];
+      if (p2) { p2.date = value; p2.rate = rates[1]; }
+    }
+    if (field === 'amount') {
+      const next = toMinor(value) * (t2.amount < 0 ? -1 : 1);
+      if (p2) p2.amount = Math.round(next * (p2.amount / t2.amount));
+      t2.amount = next;
+    }
+  });
+  document.querySelector(`[data-key="${key}"]`)?.focus();
+}
+
 // The transactions table. `rows` is one page; each may carry `balance` (shown when `showBalance`).
 // With `showAccount` (search), each row names its account and amounts are in that account's currency.
 // `upcoming(cols)` gives greyed rows to show first (an account's future transactions).
@@ -992,13 +1079,14 @@ function txTable(rows, { caption, showBalance = false, showAccount = false, inEu
           type: 'checkbox', class: 'fin-tick', checked: selected.has(t.id), 'aria-label': `Select ${label}`, 'data-key': `sel-${t.id}`,
           onchange: (e) => { if (e.target.checked) selected.add(t.id); else selected.delete(t.id); render(`sel-${t.id}`); },
         })),
-        h('td', { class: 'fin-nowrap c-date' }, h('time', { datetime: t.date }, shortDate(t.date)),
-          showAccount && t.date.slice(0, 4) != thisYear && ` ${t.date.slice(0, 4)}`),
-        h('td', { class: `fin-r fin-num c-amt ${tone(t.amount)}` },
+        // Date, amount and description: click (or Enter) to change just that, in place.
+        h('td', { class: 'fin-nowrap c-date' }, quickCell(t, 'date', label,
+          h('time', { datetime: t.date }, shortDate(t.date)), showAccount && t.date.slice(0, 4) != thisYear && ` ${t.date.slice(0, 4)}`)),
+        h('td', { class: `fin-r fin-num c-amt ${tone(t.amount)}` }, quickCell(t, 'amount', label,
           t.kind === 'refund' && h('span', { class: 'fin-refund', title: 'Refund' }, icon('refund'), h('span', { class: 'fin-sr' }, 'Refund: ')),
-          signed(t.amount, cur)),
+          signed(t.amount, cur))),
         showBalance && h('td', { class: 'fin-r fin-num fin-muted c-bal' }, t.balance == null ? '' : money(t.balance, cur)),
-        h('td', { class: 'c-desc' }, t.description, t.memo && h('span', { class: 'fin-sub' }, t.memo)),
+        h('td', { class: 'c-desc' }, quickCell(t, 'description', label, t.description), t.memo && h('span', { class: 'fin-sub' }, t.memo)),
         showAccount && h('td', { class: 'c-acc' }, h('button', {
           type: 'button', class: 'fin-link fin-link-sm', onclick: () => selectAccount(t.accountId),
         }, account?.name ?? 'Deleted account')),
@@ -1073,7 +1161,7 @@ const ratesArg = () => Object.fromEntries(CURRENCIES.map((c) => [c, latestRate(c
 // Draws again after data arrives, unless that would wipe something being typed or edited; then the
 // next redraw shows it.
 function renderWhenIdle() {
-  if (editingTxId || hasUnsavedInput()) return;
+  if (editingTxId || quickEdit || hasUnsavedInput()) return;
   render();
 }
 

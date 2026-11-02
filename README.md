@@ -55,6 +55,8 @@ A row can be a transfer: pick **⇄ Transfer** as its type and the category cell
 
 ## Search, filters, selecting and undo
 
+Click a transaction's date, amount or description (or Tab to it and press Enter) to change just that, in place: Enter or clicking away saves, Esc cancels, and Undo puts it back. A transfer's other side follows.
+
 Each account's transactions have a filter bar: text (description, memo, or an amount such as `12.99`), category (a parent includes its children; "Uncategorized" too), type, dates and amount range. **Search** in the header does the same across every account, archived ones included, with totals in and out. Rows have checkboxes (and one for the whole page); with any selected, a bar sets, adds or removes categories, or deletes them. Deletes and bulk changes show a message with **Undo** (also Ctrl/⌘+Z while it shows): account, transaction, holding, lot, IOU entry, schedule and category deletes.
 
 When you categorize a transaction by hand and no rule would already do that, the app offers "Always put … in …?". The rule matches the whole description, goes to the top of the list (the first match wins), and can fill in the other uncategorized transactions with that description at the same time.
