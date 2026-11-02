@@ -173,19 +173,55 @@ language sql immutable as $$
   select case when cardinality(ids) > 0 then ids when one is not null then array[one] else '{}'::text[] end
 $$;
 
+-- Rounds the way the app does (Math.round: halves go up).
+create or replace function fin_round(x double precision) returns bigint
+language sql immutable as $$ select floor(x + 0.5)::bigint $$;
+
+-- Whether a transaction matches the filters of a list (the app's filter bar): p_text (normalised)
+-- in the description or memo, or p_amount (cents) as its size; p_wanted, categories any of which it
+-- has (a category and its subcategories); p_uncategorized; p_type expense/income/refund/transfer;
+-- dates; sizes in cents. `cats` is fin_cats of the row.
+create or replace function fin_match(
+  t transactions, cats text[], p_text text, p_amount bigint, p_wanted text[], p_uncategorized boolean,
+  p_type text, p_from date, p_to date, p_min bigint, p_max bigint
+) returns boolean
+language sql stable as $$
+  select (p_from is null or t.date >= p_from) and (p_to is null or t.date <= p_to)
+    and (p_min is null or abs(t.amount) >= p_min) and (p_max is null or abs(t.amount) <= p_max)
+    and (p_type is null
+      or (p_type = 'transfer' and t.transfer_id is not null)
+      or (p_type = 'refund' and t.kind = 'refund')
+      or (p_type = 'expense' and t.transfer_id is null and t.kind is distinct from 'refund' and t.amount < 0)
+      or (p_type = 'income' and t.transfer_id is null and t.kind is distinct from 'refund' and t.amount > 0))
+    and (not coalesce(p_uncategorized, false) or (cardinality(cats) = 0 and t.transfer_id is null))
+    and (p_wanted is null or cats && p_wanted)
+    and (p_text is null or p_text = ''
+      or strpos(fin_norm(t.description), p_text) > 0 or strpos(fin_norm(t.memo), p_text) > 0
+      or abs(t.amount) = p_amount)
+$$;
+
+-- A category with its subcategories, for p_wanted (null when there's no category to filter on).
+create or replace function fin_family(p_category text) returns text[]
+language sql stable as $$
+  select case when p_category is null then null else
+    array(select id from categories where user_id = auth.uid() and (id = p_category or parent_id = p_category)) || array[p_category] end
+$$;
+
 -- One row per account: balance up to `p_today`, how many transactions, and the ones dated after
 -- today (planned: their sum up to `p_until`, and how many there are in all).
 create or replace function account_summaries(p_today date, p_until date) returns jsonb
 language sql stable as $$
   select coalesce(jsonb_agg(jsonb_build_object(
-    'accountId', account_id, 'balance', balance, 'count', n, 'past', past, 'planned', planned, 'plannedCount', planned_n)), '[]'::jsonb)
+    'accountId', account_id, 'balance', balance, 'count', n, 'past', past, 'planned', planned, 'plannedCount', planned_n,
+    'first', first)), '[]'::jsonb)
   from (
     select account_id,
       coalesce(sum(amount) filter (where date <= p_today), 0) as balance,
       count(*) as n,
       count(*) filter (where date <= p_today) as past,
       coalesce(sum(amount) filter (where date > p_today and date <= p_until), 0) as planned,
-      count(*) filter (where date > p_today) as planned_n
+      count(*) filter (where date > p_today) as planned_n,
+      min(date) as first
     from transactions
     where user_id = auth.uid()
     group by account_id
@@ -206,29 +242,14 @@ create or replace function account_transactions(
 ) returns jsonb
 language sql stable as $$
   with t as (
-    select tr.*, fin_cats(tr.category_ids, tr.category_id) as cats,
+    select tr as r0, tr.*, fin_cats(tr.category_ids, tr.category_id) as cats,
       sum(tr.amount) over (order by tr.date, tr.id rows unbounded preceding) as balance
     from transactions tr
     where tr.user_id = auth.uid() and tr.account_id = p_account and tr.date <= p_today
   ),
-  wanted as (
-    select array_agg(id) as ids from categories
-    where user_id = auth.uid() and p_category is not null and (id = p_category or parent_id = p_category)
-  ),
   f as (
     select t.* from t
-    where (p_from is null or date >= p_from) and (p_to is null or date <= p_to)
-      and (p_min is null or abs(amount) >= p_min) and (p_max is null or abs(amount) <= p_max)
-      and (p_type is null
-        or (p_type = 'transfer' and transfer_id is not null)
-        or (p_type = 'refund' and kind = 'refund')
-        or (p_type = 'expense' and transfer_id is null and kind is distinct from 'refund' and amount < 0)
-        or (p_type = 'income' and transfer_id is null and kind is distinct from 'refund' and amount > 0))
-      and (not p_uncategorized or (cardinality(cats) = 0 and transfer_id is null))
-      and (p_category is null or cats && coalesce((select ids from wanted), array[p_category]))
-      and (p_text is null or p_text = ''
-        or strpos(fin_norm(description), p_text) > 0 or strpos(fin_norm(memo), p_text) > 0
-        or abs(amount) = p_amount)
+    where fin_match(t.r0, t.cats, p_text, p_amount, fin_family(p_category), p_uncategorized, p_type, p_from, p_to, p_min, p_max)
   ),
   page as (
     select * from f order by date desc, id desc limit p_limit offset p_offset
@@ -245,9 +266,115 @@ language sql stable as $$
   )
   select jsonb_build_object(
     'total', (select count(*) from f),
-    'rows', coalesce((select jsonb_agg((to_jsonb(page) - 'user_id' - 'cats') order by date desc, id desc) from page), '[]'::jsonb),
+    'rows', coalesce((select jsonb_agg((to_jsonb(page) - 'user_id' - 'cats' - 'r0') order by date desc, id desc) from page), '[]'::jsonb),
     'planned', coalesce((select jsonb_agg(to_jsonb(planned) - 'user_id' order by date, id) from planned), '[]'::jsonb),
     'partners', coalesce((select jsonb_agg(to_jsonb(partners) - 'user_id') from partners), '[]'::jsonb)
+  )
+$$;
+
+-- Search across accounts (p_accounts, or all when null), every date: one page, newest first, how
+-- many match, In and Out in EUR (transfers left out; at each transaction's rate, else today's from
+-- p_rates, { "USD": 0.92 }), and the other side of any transfer on the page.
+create or replace function search_transactions(
+  p_accounts text[] default null, p_limit int default 100, p_offset int default 0,
+  p_text text default null, p_amount bigint default null, p_category text default null,
+  p_uncategorized boolean default false, p_type text default null,
+  p_from date default null, p_to date default null, p_min bigint default null, p_max bigint default null,
+  p_rates jsonb default '{}'::jsonb
+) returns jsonb
+language sql stable as $$
+  with f as (
+    select tr.*, fin_round(tr.amount * coalesce(tr.rate, (p_rates ->> a.currency)::double precision, 1)) as eur
+    from transactions tr
+    join accounts a on a.user_id = tr.user_id and a.id = tr.account_id
+    where tr.user_id = auth.uid() and (p_accounts is null or tr.account_id = any(p_accounts))
+      and fin_match(tr, fin_cats(tr.category_ids, tr.category_id), p_text, p_amount, fin_family(p_category),
+                    p_uncategorized, p_type, p_from, p_to, p_min, p_max)
+  ),
+  page as (
+    select * from f order by date desc, id limit p_limit offset p_offset
+  ),
+  partners as (
+    select tr.* from transactions tr
+    where tr.user_id = auth.uid() and tr.id not in (select id from page)
+      and tr.transfer_id in (select transfer_id from page where transfer_id is not null)
+  )
+  select jsonb_build_object(
+    'total', (select count(*) from f),
+    'in', (select coalesce(sum(eur), 0) from f where transfer_id is null and amount > 0),
+    'out', (select coalesce(-sum(eur), 0) from f where transfer_id is null and amount < 0),
+    'rows', coalesce((select jsonb_agg((to_jsonb(page) - 'user_id' - 'eur') order by date desc, id) from page), '[]'::jsonb),
+    'partners', coalesce((select jsonb_agg(to_jsonb(partners) - 'user_id') from partners), '[]'::jsonb)
+  )
+$$;
+
+-- Insights: income and spending from p_from to p_to, for some accounts (p_accounts) or all, added up
+-- per day and per category; the app groups them into weeks or months and under parent categories.
+-- The rules are the app's (model.js insightTotals): transfers and opening balances don't count; a
+-- transaction counts after its IOU entries; amounts in EUR at the transaction's rate, else today's
+-- (p_rates); a refund lowers spending, in its first category that isn't an income one (more in
+-- than out over all of history), else under 'refunds'; one category per transaction (its first).
+-- p_only keeps transactions in that category or its subcategories.
+create or replace function insight_totals(
+  p_from date, p_to date, p_accounts text[] default null, p_only text default null, p_rates jsonb default '{}'::jsonb
+) returns jsonb
+language sql stable as $$
+  with cats as (
+    select id, parent_id from categories where user_id = auth.uid()
+  ),
+  income_tops as (
+    select coalesce(c.parent_id, x.cat) as top
+    from (
+      select (fin_cats(category_ids, category_id))[1] as cat, amount, rate from transactions
+      where user_id = auth.uid() and transfer_id is null and kind is null
+    ) x
+    left join cats c on c.id = x.cat
+    where x.cat is not null
+    group by 1
+    having sum(fin_round(x.amount * coalesce(x.rate, 1))) > 0
+  ),
+  iou as (
+    select transaction_id, sum(amount) as amount from ious
+    where user_id = auth.uid() and transaction_id is not null
+    group by 1
+  ),
+  t as (
+    select tr.date, tr.kind,
+      fin_round(tr.amount * coalesce(tr.rate, (p_rates ->> a.currency)::double precision, 1)) + coalesce(i.amount, 0) as eur,
+      case
+        when tr.kind is distinct from 'refund' then (fin_cats(tr.category_ids, tr.category_id))[1]
+        when cardinality(fin_cats(tr.category_ids, tr.category_id)) = 0 then null
+        else coalesce((
+          select u.x from unnest(fin_cats(tr.category_ids, tr.category_id)) with ordinality as u(x, n)
+          left join cats c on c.id = u.x
+          where coalesce(c.parent_id, u.x) not in (select top from income_tops)
+          order by u.n limit 1), 'refunds')
+      end as cat
+    from transactions tr
+    join accounts a on a.user_id = tr.user_id and a.id = tr.account_id
+    left join iou i on i.transaction_id = tr.id
+    where tr.user_id = auth.uid() and tr.date between p_from and p_to
+      and (p_accounts is null or tr.account_id = any(p_accounts))
+      and tr.transfer_id is null and tr.kind is distinct from 'opening'
+  ),
+  k as (
+    select date, eur, cat, case when kind = 'refund' then 'refund' when eur < 0 then 'out' else 'in' end as side
+    from t
+    where eur <> 0
+      and (p_only is null or cat in (select id from cats where id = p_only or parent_id = p_only union select p_only))
+  )
+  select jsonb_build_object(
+    'income', (select coalesce(sum(eur), 0) from k where side = 'in'),
+    'expenses', (select coalesce(-sum(eur), 0) from k where side <> 'in'),
+    'refunds', (select coalesce(sum(eur), 0) from k where side = 'refund'),
+    'count', (select count(*) from k),
+    'days', coalesce((select jsonb_agg(jsonb_build_object('date', date, 'income', inc, 'expenses', spent)) from (
+      select date, coalesce(sum(eur) filter (where side = 'in'), 0) as inc, coalesce(-sum(eur) filter (where side <> 'in'), 0) as spent
+      from k group by date) d), '[]'::jsonb),
+    'spend', coalesce((select jsonb_agg(jsonb_build_object('cat', cat, 'amount', amount)) from (
+      select cat, -sum(eur) as amount from k where side <> 'in' group by cat) x), '[]'::jsonb),
+    'earn', coalesce((select jsonb_agg(jsonb_build_object('cat', cat, 'amount', amount)) from (
+      select cat, sum(eur) as amount from k where side = 'in' group by cat) x), '[]'::jsonb)
   )
 $$;
 

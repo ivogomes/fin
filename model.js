@@ -667,16 +667,6 @@ const nextBucket = (key, unit) => {
   return String(Number(key) + 1);
 };
 
-// Income and spending over a period, for some accounts (`accountIds`, a Set) or all (null).
-// What counts:
-// - Transfers between your accounts and opening balances don't count at all.
-// - IOUs are netted out: a transaction counts after its IOU entries, so a loan (money out, they
-//   owe it back) counts as nothing, and a shared bill counts only your share.
-// - A refund lowers spending (and its category's spending) instead of counting as income.
-// - Amounts are in EUR at each transaction's own rate (`rateOf(currency)` when it has none).
-// - In the category breakdown a transaction counts under its first category, so the parts add up
-//   to the total.
-// `onlyCategory` (an id) keeps only transactions whose first category is it or one of its children.
 // The whole calendar months inside a period, up to the last one finished by `today`: what monthly
 // averages are taken over (this year on 2 Nov → January to October, 10 months). null if none.
 export function completeMonths(from, to, today) {
@@ -707,7 +697,28 @@ export function incomeCategories(transactions, categories) {
   return new Set([...net].filter(([, v]) => v > 0).map(([id]) => id));
 }
 
-export function insights(transactions, { from, to, accountIds = null, accounts, categories, ious = [], rateOf = () => 1, onlyCategory = null }) {
+// Income and spending over a period, for some accounts (`accountIds`, a Set) or all (null).
+// What counts:
+// - Transfers between your accounts and opening balances don't count at all.
+// - IOUs are netted out: a transaction counts after its IOU entries, so a loan (money out, they
+//   owe it back) counts as nothing, and a shared bill counts only your share.
+// - A refund lowers spending (and its category's spending) instead of counting as income.
+// - Amounts are in EUR at each transaction's own rate (`rateOf(currency)` when it has none).
+// - In the category breakdown a transaction counts under its first category, so the parts add up
+//   to the total.
+// `onlyCategory` (an id) keeps only transactions whose first category is it or one of its children.
+//
+// Two steps, so the database can do the first (insight_totals in schema.sql) and the app the
+// second: `insightTotals` applies those rules to each transaction and adds up EUR per day and per
+// category; `insightsFrom` groups that into the period's buckets and the categories' parents.
+export function insights(transactions, opts) {
+  return insightsFrom(insightTotals(transactions, opts), opts);
+}
+
+// Sums for `insightsFrom`: totals, per day ({ date, income, expenses }), and per category
+// ({ cat, amount }, cat null for none) for spending and for income. Refunds count as negative
+// spending, in the category `categoryOf` gives them.
+export function insightTotals(transactions, { from, to, accountIds = null, accounts, categories, ious = [], rateOf = () => 1, onlyCategory = null }) {
   const currency = new Map(accounts.map((a) => [a.id, a.currency]));
   const iouByTx = new Map();
   for (const e of ious) if (e.transactionId) iouByTx.set(e.transactionId, (iouByTx.get(e.transactionId) ?? 0) + e.amount);
@@ -721,23 +732,11 @@ export function insights(transactions, { from, to, accountIds = null, accounts, 
     if (!cats.length) return null;
     return cats.find((c) => !incomeTops.has(parentOf.get(c) ?? c)) ?? REFUNDS_UNMATCHED;
   };
-  const unit = granularity(from, to);
   const only = onlyCategory ? new Set([onlyCategory, ...categories.filter((c) => c.parentId === onlyCategory).map((c) => c.id)]) : null;
-
-  const buckets = new Map();
-  for (let k = bucketOf(from, unit), guard = 0; k <= bucketOf(to, unit) && guard < 400; k = nextBucket(k, unit), guard += 1) {
-    buckets.set(k, { key: k, income: 0, expenses: 0 });
-  }
-  const spend = new Map(); // top category id (or '') → { amount, children: Map }
+  const days = new Map();
+  const spend = new Map();
   const earn = new Map();
-  const add = (map, catId, amount) => {
-    const top = catId ? parentOf.get(catId) ?? catId : '';
-    const entry = map.get(top) ?? { id: top, amount: 0, children: new Map() };
-    entry.amount += amount;
-    if (catId && catId !== top) entry.children.set(catId, (entry.children.get(catId) ?? 0) + amount);
-    map.set(top, entry);
-  };
-
+  const add = (map, cat, amount) => map.set(cat, (map.get(cat) ?? 0) + amount);
   let income = 0;
   let expenses = 0;
   let refunds = 0;
@@ -752,34 +751,66 @@ export function insights(transactions, { from, to, accountIds = null, accounts, 
     if (!eur) continue;
     count += 1;
     const cat = categoryOf(t);
-    const bucket = buckets.get(bucketOf(t.date, unit));
+    const day = days.get(t.date) ?? { date: t.date, income: 0, expenses: 0 };
+    days.set(t.date, day);
     // A refund is money back on an expense: it cancels part of the spending in its category (a
     // category can go below zero when more came back than was spent in the period). Not income.
     if (t.kind === 'refund') {
       expenses -= eur;
       refunds += eur;
       add(spend, cat, -eur);
-      if (bucket) bucket.expenses -= eur;
+      day.expenses -= eur;
     } else if (eur < 0) {
       expenses -= eur;
       add(spend, cat, -eur);
-      if (bucket) bucket.expenses -= eur;
+      day.expenses -= eur;
     } else {
       income += eur;
       add(earn, cat, eur);
-      if (bucket) bucket.income += eur;
+      day.income += eur;
     }
   }
-  const ranked = (map) => [...map.values()]
-    .map((e) => ({ id: e.id, amount: e.amount, children: [...e.children].map(([id, amount]) => ({ id, amount })).sort((a, b) => b.amount - a.amount) }))
-    .filter((e) => e.amount !== 0)
-    .sort((a, b) => b.amount - a.amount);
+  const list = (map) => [...map].map(([cat, amount]) => ({ cat, amount }));
+  return { income, expenses, refunds, count, days: [...days.values()], spend: list(spend), earn: list(earn) };
+}
+
+// The Insights figures from `insightTotals` (or the database's insight_totals): buckets over the
+// period (day, week, month or year, by its length), and categories grouped under their parents.
+export function insightsFrom(totals, { from, to, categories }) {
+  const parentOf = new Map(categories.map((c) => [c.id, c.parentId ?? null]));
+  const unit = granularity(from, to);
+  const buckets = new Map();
+  for (let k = bucketOf(from, unit), guard = 0; k <= bucketOf(to, unit) && guard < 400; k = nextBucket(k, unit), guard += 1) {
+    buckets.set(k, { key: k, income: 0, expenses: 0 });
+  }
+  for (const d of totals.days) {
+    const bucket = buckets.get(bucketOf(d.date, unit));
+    if (!bucket) continue;
+    bucket.income += Number(d.income);
+    bucket.expenses += Number(d.expenses);
+  }
+  const ranked = (list) => {
+    const map = new Map(); // top category id (or '') → { amount, children: Map }
+    for (const { cat, amount } of list) {
+      const top = cat ? parentOf.get(cat) ?? cat : '';
+      const entry = map.get(top) ?? { id: top, amount: 0, children: new Map() };
+      entry.amount += Number(amount);
+      if (cat && cat !== top) entry.children.set(cat, (entry.children.get(cat) ?? 0) + Number(amount));
+      map.set(top, entry);
+    }
+    return [...map.values()]
+      .map((e) => ({ id: e.id, amount: e.amount, children: [...e.children].map(([id, amount]) => ({ id, amount })).sort((a, b) => b.amount - a.amount) }))
+      .filter((e) => e.amount !== 0)
+      .sort((a, b) => b.amount - a.amount);
+  };
+  const income = Number(totals.income);
+  const expenses = Number(totals.expenses);
   return {
-    from, to, unit, income, expenses, refunds, net: income - expenses, count,
+    from, to, unit, income, expenses, refunds: Number(totals.refunds), net: income - expenses, count: Number(totals.count),
     savingsRate: income > 0 ? (income - expenses) / income : null,
     series: [...buckets.values()],
-    spending: ranked(spend),
-    earning: ranked(earn),
+    spending: ranked(totals.spend),
+    earning: ranked(totals.earn),
   };
 }
 

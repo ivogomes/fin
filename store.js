@@ -221,6 +221,7 @@ let base = new Map(); // transaction id → brief, as counted in `summaries`
 function setSummaries(list) {
   summaries = new Map(list.map((x) => [x.accountId, {
     balance: Number(x.balance), count: Number(x.count), past: Number(x.past), planned: Number(x.planned), plannedCount: Number(x.plannedCount),
+    first: x.first ?? null, // the date of its first transaction
   }]));
   // What the database had when it counted: the transactions in use as last saved.
   base = new Map([...saved.transactions].map(([id, json]) => {
@@ -246,7 +247,7 @@ export function accountTotals(today, until) {
   const at = (id) => {
     if (!out.has(id)) {
       const s = summaries.get(id);
-      out.set(id, { balance: s?.balance ?? 0, count: s?.count ?? 0, past: s?.past ?? 0, planned: s?.planned ?? 0, plannedCount: s?.plannedCount ?? 0 });
+      out.set(id, { balance: s?.balance ?? 0, count: s?.count ?? 0, past: s?.past ?? 0, planned: s?.planned ?? 0, plannedCount: s?.plannedCount ?? 0, first: s?.first ?? null });
     }
     return out.get(id);
   };
@@ -254,6 +255,7 @@ export function accountTotals(today, until) {
   const apply = (b, sign) => {
     const x = at(b.accountId);
     x.count += sign;
+    if (sign > 0 && (!x.first || b.date < x.first)) x.first = b.date;
     if (b.date <= today) { x.balance += sign * b.amount; x.past += sign; } else {
       x.plannedCount += sign;
       if (b.date <= until) x.planned += sign * b.amount;

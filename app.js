@@ -1,7 +1,7 @@
 import {
   CURRENCIES, ACCOUNT_TYPES, ACCOUNT_TYPE_LABELS, toMinor, formatMoney, categorize, convert, rateFor, defaultState,
   normalize, categoryPath, categoriesOf, sortedCategories,
-  IOU_KINDS, IOU_TYPES, personBalances, personHistory, PERIODS, periodRange, insights, completeMonths, REFUNDS_UNMATCHED, netWorthHistory, investedHistory,
+  IOU_KINDS, IOU_TYPES, personBalances, personHistory, PERIODS, periodRange, insightsFrom, completeMonths, REFUNDS_UNMATCHED, netWorthHistory, investedHistory,
   suggestDescriptions, filterTransactions, ruleSuggestion,
   plannedTransactions, holdingValue, investmentValue, investmentValueFrom, newId,
   crossConvert, batchRow, makeTransfer,
@@ -574,8 +574,8 @@ function renderAccount(account) {
       })()),
     accountTabs(),
     view.tab === 'insights'
-      ? (!transactionsComplete() ? needEverything()
-        : account.type === 'investment' ? investmentInsights(account) : insightsPanel(new Set([account.id])))
+      ? (account.type !== 'investment' ? insightsPanel(new Set([account.id]))
+        : !transactionsComplete() ? needEverything() : investmentInsights(account))
       : [account.type === 'investment' && holdingsSection(account), transactionsSection(account)]);
 }
 
@@ -877,45 +877,49 @@ async function fetchTransactions(get) {
   return null;
 }
 
-// The page of the list on screen, as the database sent it: which rows, their running balances, how
-// many match. `known`: the transactions in use when it was asked for, so one added here since (not
-// on the page yet) still shows.
-let txView = null;
-let txLoading = null;
-const txKey = (account, f) => JSON.stringify([account.id, txPage, f, today()]);
-function requestTxPage(account, f) {
-  const key = txKey(account, f);
-  if (txLoading === key) return;
-  txLoading = key;
-  const text = String(f.text ?? '').trim();
-  const asAmount = /^[\d.,]+$/.test(text) ? Math.abs(toMinor(text.replace(/,(\d{1,2})$/, '.$1').replace(/,/g, ''))) : null;
-  const args = {
-    p_account: account.id, p_today: today(), p_limit: TX_PAGE_SIZE, p_offset: txPage * TX_PAGE_SIZE,
-    p_text: normalize(text) || null, p_amount: asAmount,
-    p_category: f.categoryId || null, p_uncategorized: f.categoryId === '', p_type: f.type || null,
-    p_from: f.from || null, p_to: f.to || null,
-    p_min: f.min === '' || f.min == null ? null : toMinor(f.min), p_max: f.max === '' || f.max == null ? null : toMinor(f.max),
-  };
+// Lists drawn from the database (an account's transactions, search results), per scope: which rows
+// are on the page, their running balances (accounts), how many match, as last sent. `known`: the
+// transactions in use when it was asked for, so one added here since (not in the answer) still shows.
+// After a save each is marked stale and asked for again, and keeps showing meanwhile.
+const listViews = new Map();
+const listLoading = new Map();
+function requestList(scope, key, name, args) {
+  if (listLoading.get(scope) === key) return;
+  listLoading.set(scope, key);
   let page = null;
   let known = null;
   fetchTransactions(async () => {
     known = new Set(state.transactions.map((t) => t.id));
-    page = await rpc('account_transactions', args);
-    return [...page.rows, ...page.planned, ...page.partners];
+    page = await rpc(name, args);
+    return [...page.rows, ...(page.planned ?? []), ...page.partners];
   }).then((added) => {
-    if (txLoading !== key) return;
-    txLoading = null;
+    if (listLoading.get(scope) !== key) return;
+    listLoading.delete(scope);
     if (!added || !page) { say('Couldn’t load the transactions. Try again in a moment.'); return; }
-    txView = {
-      key, total: Number(page.total), ids: page.rows.map((r) => r.id),
-      balances: new Map(page.rows.map((r) => [r.id, Number(r.balance)])), known,
-    };
+    listViews.set(scope, {
+      key, total: Number(page.total), ids: page.rows.map((r) => r.id), known, page,
+      balances: new Map(page.rows.filter((r) => r.balance != null).map((r) => [r.id, Number(r.balance)])),
+    });
     renderWhenIdle();
   }).catch((err) => {
-    if (txLoading === key) txLoading = null;
+    if (listLoading.get(scope) === key) listLoading.delete(scope);
     say(`Couldn’t load the transactions: ${err.message}`);
   });
 }
+
+// A filter bar's filter as arguments for the database's list functions (fin_match).
+function filterArgs(f) {
+  const text = String(f.text ?? '').trim();
+  const asAmount = /^[\d.,]+$/.test(text) ? Math.abs(toMinor(text.replace(/,(\d{1,2})$/, '.$1').replace(/,/g, ''))) : null;
+  return {
+    p_text: normalize(text) || null, p_amount: Number.isFinite(asAmount) ? asAmount : null,
+    p_category: f.categoryId || null, p_uncategorized: f.categoryId === '', p_type: f.type || null,
+    p_from: f.from || null, p_to: f.to || null,
+    p_min: f.min === '' || f.min == null ? null : toMinor(f.min), p_max: f.max === '' || f.max == null ? null : toMinor(f.max),
+  };
+}
+// Today's rates for the database's EUR sums, for transactions that don't have their own.
+const ratesArg = () => Object.fromEntries(CURRENCIES.map((c) => [c, latestRate(c) ?? 1]));
 
 // Draws again after data arrives, unless that would wipe something being typed or edited; then the
 // next redraw shows it.
@@ -929,10 +933,13 @@ function transactionsSection(account) {
   const f = filterOf(scope);
   const filtered = filterActive(f);
   const now = today();
-  // After a save the page is asked for again; meanwhile it keeps showing (`usable`, not `fresh`).
-  const usable = txView?.key === txKey(account, f);
-  if (!usable || txView.stale) requestTxPage(account, f);
-  const ready = usable;
+  const key = JSON.stringify([account.id, txPage, f, now]);
+  const txView = listViews.get(scope);
+  const ready = txView?.key === key;
+  if (!ready || txView.stale) {
+    requestList(scope, key, 'account_transactions',
+      { p_account: account.id, p_today: now, p_limit: TX_PAGE_SIZE, p_offset: txPage * TX_PAGE_SIZE, ...filterArgs(f) });
+  }
   const totals = totalsOf(account.id);
   const byId = new Map(state.transactions.map((t) => [t.id, t]));
   // The page's rows (minus any deleted since), plus transactions added here since it was fetched.
@@ -1013,35 +1020,46 @@ function descIndex() {
 function renderSearch() {
   const f = filterOf('search');
   const active = filterActive(f);
-  const all = active ? filterTransactions(state.transactions, toFilter(f), { categories: state.categories }) : [];
-  const pages = Math.max(1, Math.ceil(all.length / TX_PAGE_SIZE));
-  txPage = Math.min(txPage, pages - 1);
-  const rows = all.slice(txPage * TX_PAGE_SIZE, (txPage + 1) * TX_PAGE_SIZE);
-  for (const id of selected) if (!all.some((t) => t.id === id)) selected.delete(id);
+  const key = JSON.stringify([txPage, f]);
+  const view0 = listViews.get('search');
+  const ready = active && view0?.key === key;
+  if (active && (!ready || view0.stale)) {
+    requestList('search', key, 'search_transactions', {
+      p_accounts: f.accountId ? [f.accountId] : null, p_limit: TX_PAGE_SIZE, p_offset: txPage * TX_PAGE_SIZE,
+      ...filterArgs(f), p_rates: ratesArg(),
+    });
+  }
+  const byId = new Map(state.transactions.map((t) => [t.id, t]));
+  const rows = ready ? view0.ids.map((id) => byId.get(id)).filter(Boolean) : [];
+  const total = ready ? view0.total : 0;
+  const pages = Math.max(1, Math.ceil(total / TX_PAGE_SIZE));
+  if (ready && txPage > pages - 1) { txPage = pages - 1; return renderSearch(); }
+  for (const id of selected) if (!rows.some((t) => t.id === id)) selected.delete(id);
   // Totals of what's found, in EUR (transfers left out, as they only move money around).
-  const total = (sign) => all.filter((t) => !t.transferId && Math.sign(t.amount) === sign)
-    .reduce((sum, t) => sum + convert(t.amount, t.rate ?? latestRate(state.accounts.find((a) => a.id === t.accountId)?.currency) ?? 1), 0);
+  const sums = ready ? view0.page : null;
   return h('div', {},
     h('div', { class: 'fin-account-head' },
       h('div', {}, h('h2', { class: 'fin-title', id: 'search-h', tabindex: '-1' }, 'Search'),
         h('p', { class: 'fin-meta' }, 'Find transactions across all your accounts, archived ones included.'))),
     h('section', { class: 'fin-card', 'aria-labelledby': 'search-res-h' },
       h('div', { class: 'fin-card-head' },
-        h('h3', { id: 'search-res-h', class: 'fin-label' }, 'Results ', active && h('span', { class: 'fin-count' }, String(all.length))),
-        active && all.length > 0 && h('p', { class: 'fin-search-totals' },
-          h('span', {}, 'In ', h('strong', { class: 'fin-num fin-pos' }, money(total(1), 'EUR'))),
-          h('span', {}, 'Out ', h('strong', { class: 'fin-num fin-neg' }, money(-total(-1), 'EUR'))))),
+        h('h3', { id: 'search-res-h', class: 'fin-label' }, 'Results ', ready && h('span', { class: 'fin-count' }, String(total))),
+        ready && total > 0 && h('p', { class: 'fin-search-totals' },
+          h('span', {}, 'In ', h('strong', { class: 'fin-num fin-pos' }, money(Number(sums.in), 'EUR'))),
+          h('span', {}, 'Out ', h('strong', { class: 'fin-num fin-neg' }, money(Number(sums.out), 'EUR'))))),
       filterBar('search', { showAccount: true }),
       selected.size > 0 && bulkBar(rows),
       !active
         ? h('p', { class: 'fin-empty fin-pad' }, 'Type something to search for, or pick a category, type, dates or amounts.')
-        : rows.length === 0
-          ? h('p', { class: 'fin-empty fin-pad' }, 'Nothing matches these filters.')
-          : [
-            pages > 1 && pager(txPage, pages, all.length, 'top', 'search-res-h'),
-            txTable(rows, { caption: `Search results, newest first, page ${txPage + 1} of ${pages}`, showAccount: true }),
-            pages > 1 && pager(txPage, pages, all.length, 'bottom', 'search-res-h'),
-          ]));
+        : !ready
+          ? h('p', { class: 'fin-empty fin-pad', role: 'status' }, 'Searching…')
+          : rows.length === 0
+            ? h('p', { class: 'fin-empty fin-pad' }, 'Nothing matches these filters.')
+            : [
+              pages > 1 && pager(txPage, pages, total, 'top', 'search-res-h'),
+              txTable(rows, { caption: `Search results, newest first, page ${txPage + 1} of ${pages}`, showAccount: true }),
+              pages > 1 && pager(txPage, pages, total, 'bottom', 'search-res-h'),
+            ]));
 }
 
 const transferPartner = (tx) =>
@@ -2305,30 +2323,48 @@ function categoryBreakdown(title, rows, total) {
 }
 
 // The whole Insights panel for some accounts (a Set of ids) or all of them (null).
+// Answers from the database's insight functions, by question, kept until something they depend on
+// is saved. `ask` returns undefined while one is on its way, and draws again when it arrives.
+const answers = new Map();
+function ask(name, args) {
+  const key = `${name}:${JSON.stringify(args)}`;
+  const hit = answers.get(key);
+  if (hit) return hit.value;
+  const entry = {};
+  answers.set(key, entry);
+  rpc(name, args)
+    .then((value) => { entry.value = value; renderWhenIdle(); })
+    .catch((err) => { answers.delete(key); say(`Couldn’t load Insights: ${err.message}`); });
+  return undefined;
+}
+// Insights for a period (see model.js insightsFrom), or undefined while the database works it out.
+function insightsFor(range, accountIds, onlyCategory = null) {
+  const totals = ask('insight_totals', {
+    p_from: range.from, p_to: range.to, p_accounts: accountIds ? [...accountIds] : null, p_only: onlyCategory, p_rates: ratesArg(),
+  });
+  return totals && insightsFrom(totals, { ...range, categories: state.categories });
+}
+
 function insightsPanel(accountIds) {
-  const scope = accountIds ? state.transactions.filter((t) => accountIds.has(t.accountId)) : state.transactions;
-  const first = scope.reduce((min, t) => (t.date < min ? t.date : min), today());
+  // "All time" starts at the first transaction of these accounts (from the account totals).
+  const firsts = state.accounts.filter((a) => !accountIds || accountIds.has(a.id)).map((a) => totalsOf(a.id).first).filter(Boolean);
+  const first = firsts.reduce((min, d) => (d < min ? d : min), today());
   const range = periodRange(insightsPeriod.preset, today(), { from: insightsPeriod.from, to: insightsPeriod.to, first });
   if (range.from > range.to) [range.from, range.to] = [range.to, range.from];
-  const r = insights(state.transactions, {
-    ...range, accountIds, accounts: state.accounts, categories: state.categories, ious: state.ious,
-    rateOf: (c) => latestRate(c) ?? 1,
-  });
-  const rate = r.savingsRate == null ? '—' : `${Math.round(r.savingsRate * 100)}%`;
   // The same length of time just before, to compare with (this year → last year).
   const prevRange = previousRange(range);
-  const p = insights(state.transactions, {
-    ...prevRange, accountIds, accounts: state.accounts, categories: state.categories, ious: state.ious,
-    rateOf: (c) => latestRate(c) ?? 1,
-  });
-  const vs = (now, before) => h('p', { class: 'fin-stat-note' }, versus(now, before, prevRange));
   const whole = completeMonths(range.from, range.to, today());
-  const avg = whole && whole.months >= 2 ? {
+  const r = insightsFor(range, accountIds);
+  const p = insightsFor(prevRange, accountIds);
+  const avgR = whole && whole.months >= 2 ? insightsFor(whole, accountIds) : null;
+  if (!r || !p || avgR === undefined) {
+    return h('div', { class: 'fin-insights' }, periodControls(range), h('p', { class: 'fin-empty fin-pad', role: 'status' }, 'Working out Insights…'));
+  }
+  const rate = r.savingsRate == null ? '—' : `${Math.round(r.savingsRate * 100)}%`;
+  const vs = (now, before) => h('p', { class: 'fin-stat-note' }, versus(now, before, prevRange));
+  const avg = avgR ? {
     months: whole.months,
-    r: insights(state.transactions, {
-      ...whole, accountIds, accounts: state.accounts, categories: state.categories, ious: state.ious,
-      rateOf: (c) => latestRate(c) ?? 1,
-    }),
+    r: avgR,
     note: `over ${whole.months} months, ${monthLabel(whole.from.slice(0, 7))} – ${monthLabel(whole.to.slice(0, 7))}`,
   } : null;
   return h('div', { class: 'fin-insights' },
@@ -2380,9 +2416,9 @@ function categoryOverTime(range, prevRange, accountIds, r) {
   const options = catOptions();
   const id = options.some(([x]) => x === insightsCategory) ? insightsCategory : r.spending.find((c) => c.id)?.id ?? options[0]?.[0];
   if (!id) return null;
-  const opts = { accountIds, accounts: state.accounts, categories: state.categories, ious: state.ious, rateOf: (c) => latestRate(c) ?? 1, onlyCategory: id };
-  const now = insights(state.transactions, { ...range, ...opts });
-  const before = insights(state.transactions, { ...prevRange, ...opts });
+  const now = insightsFor(range, accountIds, id);
+  const before = insightsFor(prevRange, accountIds, id);
+  if (!now || !before) return h('section', { class: 'fin-card fin-pad' }, h('p', { class: 'fin-empty', role: 'status' }, 'Working out the category over time…'));
   const pick = select(options, id, { 'data-key': 'cat-time', 'aria-label': 'Category' });
   pick.addEventListener('change', () => { insightsCategory = pick.value; render('cat-time'); });
   return h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'cat-time-h' },
@@ -3860,7 +3896,7 @@ onStatus((s, err) => {
 
 // Pages that work from every transaction load them all (until those calculations move to the
 // database too); account pages fetch what they show, IOUs the transactions its entries are linked to.
-const NEEDS_EVERY_TRANSACTION = ['search', 'insights', 'networth', 'settings'];
+const NEEDS_EVERY_TRANSACTION = ['networth', 'settings'];
 async function loadData() {
   state = await load({ allTransactions: NEEDS_EVERY_TRANSACTION.includes(sectionOf(view)), today: today(), until: daysFromToday(FORECAST_DAYS) });
   if (sectionOf(view) === 'ious') {
@@ -3908,11 +3944,13 @@ async function boot() {
 // After transactions are saved: the totals are asked for again (they already showed the change; this
 // confirms it), and so are the list page and the description suggestions.
 onSaved(async (tables) => {
-  if (!tables.has('transactions')) return;
-  if (txView) txView.stale = true; // refetched on the next draw; its rows stay on screen until then
+  const touched = ['transactions', 'ious', 'categories', 'accounts'].some((t) => tables.has(t));
+  if (touched) answers.clear();
+  if (!tables.has('transactions')) { if (touched && view.name === 'insights') renderWhenIdle(); return; }
+  for (const v of listViews.values()) v.stale = true; // asked for again on the next draw; shown until then
   descCache = null;
   try { await refreshSummaries(today(), daysFromToday(FORECAST_DAYS)); } catch { /* the next save tries again */ }
-  if (view.name === 'account') renderWhenIdle();
+  renderWhenIdle();
 });
 
 // The header tabs are links to the sections' pages. A plain click first sends unsaved changes
