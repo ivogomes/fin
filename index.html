@@ -4,13 +4,20 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Finance</title>
-<meta name="theme-color" content="#EEECE9" />
+<meta name="theme-color" content="#A4D5CF" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#1B3836" media="(prefers-color-scheme: dark)">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/src/tokens.css">
 <link rel="stylesheet" href="/src/tools.css">
 <link rel="stylesheet" href="/tools/finance/finance.css">
+<link rel="manifest" href="/tools/finance/manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="32x32" href="/tools/finance/favicon-32.png">
+<link rel="apple-touch-icon" href="/tools/finance/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Finance">
 </head>
 <body>
 
@@ -26,6 +33,7 @@
   <span id="sync" class="fin-sync" role="status" hidden></span>
   <nav aria-label="Sections" class="fin-nav">
     <button type="button" class="fin-btn secondary" data-nav="overview" hidden>Accounts</button>
+    <button type="button" class="fin-btn secondary" data-nav="search" hidden>Search</button>
     <button type="button" class="fin-btn secondary" data-nav="scheduled" hidden>Scheduled</button>
     <button type="button" class="fin-btn secondary" data-nav="insights" hidden>Insights</button>
     <button type="button" class="fin-btn secondary" data-nav="ious" hidden>IOUs</button>
@@ -34,6 +42,7 @@
 </header>
 
 <div class="fin-layout">
+  <button type="button" id="side-toggle" class="fin-side-toggle" aria-expanded="false" aria-controls="side" hidden>Accounts</button>
   <aside id="side" class="fin-side" aria-label="Accounts" hidden></aside>
   <main id="app" class="fin-main"></main>
 </div>
@@ -42,6 +51,8 @@
 <dialog id="tx-dialog" class="fin-dialog fin-dialog-wide" aria-labelledby="tx-dialog-h"></dialog>
 
 <p id="status" class="fin-sr" role="status" aria-live="polite"></p>
+<div id="toast" class="fin-toast" role="status" hidden></div>
+<button type="button" id="fab" class="fin-fab" aria-label="Add transactions" hidden>+</button>
 
 <script type="module" src="/tools/finance/app.js"></script>
 </body>

@@ -770,6 +770,86 @@ textarea.fin-input { resize: vertical; }
 .fin-mark-net { fill: var(--f-chart-net); }
 .fin-type-row .fin-break-name { display: inline-flex; align-items: center; gap: 10px; }
 
+/* ── Filters, selection and bulk actions ──────────────── */
+.fin-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--f-border);
+  background: var(--f-surface-2);
+}
+.fin-filters .fin-input { width: auto; padding: 6px 9px; font-size: 13px; }
+.fin-filter-q { flex: 1 1 14rem; }
+.fin-filter-q .fin-input { width: 100%; }
+.fin-filter-pair { display: inline-flex; align-items: center; gap: 4px; }
+.fin-filter-pair input[type="number"] { width: 6.5rem; }
+.fin-search-totals { display: flex; gap: 16px; margin: 0; font-size: 13px; color: var(--f-muted); }
+
+.fin-tick-col { width: 36px; padding-right: 0 !important; }
+.fin-tick { width: 16px; height: 16px; margin: 0; accent-color: var(--f-accent); cursor: pointer; vertical-align: middle; }
+.fin-table tbody tr.is-selected { background: var(--f-accent-soft); }
+/* Row checkboxes stay quiet until the row is hovered or focused, or something is selected. */
+@media (hover: hover) {
+  .fin-tx-table tbody tr:not(.is-selected) .fin-tick { opacity: 0.35; transition: opacity 0.12s ease; }
+  .fin-tx-table tbody tr:hover .fin-tick, .fin-tx-table tbody tr:focus-within .fin-tick { opacity: 1; }
+}
+
+.fin-bulk {
+  position: sticky;
+  top: 64px;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 20px;
+  background: var(--f-accent-soft);
+  border-top: 1px solid color-mix(in srgb, var(--f-accent) 30%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--f-accent) 30%, transparent);
+}
+.fin-bulk strong { margin-right: 4px; color: var(--f-accent-strong); }
+.fin-bulk .fin-input-sm { max-width: 13rem; }
+
+/* ── Messages with actions (Undo, rule offers) ────────── */
+.fin-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(40rem, calc(100vw - 32px));
+  padding: 10px 10px 10px 16px;
+  border-radius: 12px;
+  background: #1C2422;
+  color: #F1F5F4;
+  box-shadow: var(--f-shadow-lg);
+  font-size: 14px;
+  transform: translateX(-50%);
+}
+.fin-toast[hidden] { display: none; }
+.fin-toast-msg { flex: 1 1 auto; }
+.fin-toast-btn {
+  flex: none;
+  padding: 6px 12px;
+  border: 1px solid rgb(255 255 255 / 0.25);
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: 500 13px var(--font-sans);
+  cursor: pointer;
+}
+.fin-toast-btn:hover { background: rgb(255 255 255 / 0.1); }
+.fin-toast-btn--primary { border-color: transparent; background: #5BBFB5; color: #0E1312; }
+.fin-toast-btn--primary:hover { background: #7FD2C9; }
+.fin-toast-close { flex: none; width: 28px; height: 28px; border: 0; border-radius: 50%; background: transparent; color: inherit; font-size: 18px; opacity: 0.7; cursor: pointer; }
+.fin-toast-close:hover { opacity: 1; background: rgb(255 255 255 / 0.1); }
+.fin-toast :focus-visible { outline-color: #5BBFB5; }
+@media (prefers-color-scheme: dark) { .fin-toast { background: #E6EEEB; color: #0E1312; } .fin-toast-btn { border-color: rgb(0 0 0 / 0.25); } .fin-toast-btn:hover, .fin-toast-close:hover { background: rgb(0 0 0 / 0.08); } .fin-toast-btn--primary { background: #1F7A8C; color: #fff; } .fin-toast :focus-visible { outline-color: #1F7A8C; } }
+
 /* ── Pager ────────────────────────────────────────────── */
 .fin-pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; padding: 10px 20px; font-size: 12px; color: var(--f-muted); }
 .fin-pager > .fin-num { margin-right: auto; }
@@ -795,6 +875,26 @@ textarea.fin-input { resize: vertical; }
 .fin-dialog-head .fin-dialog-title { margin: 0; }
 .fin-dialog-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 8px; }
 
+/* Quick entry: no scrolling wrapper, so a row's suggestion list isn't clipped. */
+.fin-batch-wrap { position: relative; }
+.fin-options--up { top: auto; bottom: calc(100% + 4px); }
+.fin-options--inline { position: static; margin-top: 4px; box-shadow: var(--f-shadow); }
+.fin-option-desc .fin-option-main { display: flex; justify-content: space-between; gap: 12px; }
+.fin-option-amt { flex: none; font-size: 13px; }
+.fin-keys { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 0 0 4px; font-size: 12px; color: var(--f-muted); }
+.fin-keys kbd {
+  display: inline-block;
+  min-width: 20px;
+  margin-right: 3px;
+  padding: 1px 6px;
+  border: 1px solid var(--f-border-strong);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  background: var(--f-surface);
+  color: var(--f-text);
+  font: 500 11px var(--font-sans);
+  text-align: center;
+}
 .fin-batch { width: 100%; border-collapse: collapse; }
 .fin-batch th { padding: 6px; font-size: 12px; font-weight: 500; color: var(--f-muted); text-align: left; }
 .fin-batch td { padding: 4px 6px; }
@@ -895,4 +995,113 @@ textarea.fin-input { resize: vertical; }
 @media (prefers-reduced-motion: reduce) {
   .fin-btn, .fin-group-head::after, .fin-account, .fin-icon-btn, .fin-table tbody tr, .fin-input { transition: none; }
   .fin-sync[data-state="saving"]::before { animation: none; }
+}
+
+/* ── Phone and small screens ──────────────────────────── */
+.fin-side-toggle, .fin-fab { display: none; }
+.fin-cat-time-pick .fin-input { width: auto; max-width: 16rem; }
+
+@media (max-width: 52rem) {
+  /* The header: logo and save status on one line, the section tabs scrolling sideways below. */
+  .tool-header { position: sticky; flex-wrap: wrap; gap: 6px 10px; padding: 8px 12px; min-height: 0; }
+  .tool-logo { flex: 1 1 auto; }
+  .tool-logo-text { font-size: 19px; }
+  .fin-sync { margin: 0; }
+  .fin-nav { order: 3; flex: 1 1 100%; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  .fin-nav::-webkit-scrollbar { display: none; }
+  .tool-header .fin-nav .fin-btn { flex: none; padding: 7px 12px; }
+
+  /* The account panel folds away behind a button and opens over the page. */
+  .fin-side-toggle[hidden] { display: none; }
+  .fin-side-toggle:not([hidden]) {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 12px 16px 0;
+    padding: 10px 14px;
+    border: 1px solid var(--f-border-strong);
+    border-radius: var(--f-radius-sm);
+    background: var(--f-surface);
+    color: var(--f-text);
+    font: 500 14px var(--font-sans);
+    cursor: pointer;
+  }
+  .fin-side-toggle::after { content: '▾'; margin-left: auto; color: var(--f-muted); }
+  .fin-side-toggle[aria-expanded="true"]::after { content: '▴'; }
+  .fin-side { display: none; position: static; height: auto; margin: 8px 16px 0; border: 1px solid var(--f-border); border-radius: var(--f-radius); }
+  .fin-side.is-open:not([hidden]) { display: block; }
+  .fin-main { padding: 16px 16px 96px; }
+  .fin-title { font-size: 24px; }
+  .fin-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .fin-stats > div { padding: 12px 14px; }
+  .fin-stats dd { font-size: 20px; }
+  .fin-bulk { top: 0; }
+
+  /* Floating add button: quick entry for the account on screen. */
+  .fin-fab:not([hidden]) {
+    display: grid;
+    place-items: center;
+    position: fixed;
+    right: 18px;
+    bottom: 18px;
+    z-index: 40;
+    width: 56px;
+    height: 56px;
+    border: 0;
+    border-radius: 50%;
+    background: var(--f-accent);
+    color: var(--f-accent-ink);
+    font: 400 30px/1 var(--font-sans);
+    box-shadow: 0 6px 20px rgb(16 24 20 / 0.3);
+    cursor: pointer;
+  }
+  .fin-toast { bottom: 88px; }
+
+  /* Dialogs take the whole screen. */
+  .fin-dialog, .fin-dialog-wide { width: 100vw; max-width: 100vw; height: 100dvh; max-height: 100dvh; margin: 0; border-radius: 0; padding: 16px; }
+}
+
+@media (max-width: 40rem) {
+  /* Transactions as stacked rows: date and amount on top, then description, categories, actions. */
+  .fin-tx-table thead { display: none; }
+  .fin-tx-table, .fin-tx-table tbody { display: block; }
+  .fin-tx-table tbody tr:not(.fin-month):not(.fin-edit-row) {
+    display: grid;
+    grid-template-columns: 28px 1fr auto;
+    grid-template-areas: "tick desc amt" "tick date bal" "tick cat cat" "tick acc act";
+    gap: 2px 8px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--f-border);
+  }
+  .fin-tx-table td { padding: 0; border: 0; }
+  .fin-tx-table .c-tick { grid-area: tick; padding-top: 2px; }
+  .fin-tx-table .c-desc { grid-area: desc; font-weight: 500; }
+  .fin-tx-table .c-amt { grid-area: amt; }
+  .fin-tx-table .c-date { grid-area: date; font-size: 12px; }
+  .fin-tx-table .c-bal { grid-area: bal; font-size: 12px; }
+  .fin-tx-table .c-eur { grid-area: bal; font-size: 12px; }
+  .fin-tx-table .c-cat { grid-area: cat; padding-top: 4px; }
+  .fin-tx-table .c-acc { grid-area: acc; }
+  .fin-tx-table .c-act { grid-area: act; }
+  .fin-tx-table tr.fin-month, .fin-tx-table tr.fin-edit-row { display: block; }
+  .fin-tx-table tr.fin-month th, .fin-tx-table tr.fin-edit-row td { display: block; }
+  .fin-tx-table .fin-tick, .fin-table .fin-row-actions .fin-icon-btn, .fin-table .fin-cats-compact .fin-cat-x, .fin-table .fin-cat-add { opacity: 1 !important; }
+  .fin-cats-compact { min-width: 0; }
+
+  /* Quick entry: each row stacks its fields. */
+  .fin-batch thead { display: none; }
+  .fin-batch, .fin-batch tbody { display: block; }
+  .fin-batch tr { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 10px 0; border-bottom: 1px solid var(--f-border); }
+  .fin-batch td { padding: 0; }
+  .fin-batch td:first-child { grid-column: 1 / -1; min-width: 0; }
+  .fin-batch .fin-input { min-width: 0; }
+  .fin-keys { display: none; } /* keyboard shortcuts don't apply on a touch screen */
+
+  .fin-filters { padding: 10px 12px; }
+  .fin-filters .fin-input { flex: 1 1 8rem; }
+  .fin-filter-pair { flex: 1 1 100%; }
+  .fin-filter-pair .fin-input { flex: 1 1 0; width: auto; }
+  .fin-break-row { grid-template-columns: minmax(6rem, 1fr) minmax(3rem, 0.8fr) auto 2.5rem; gap: 8px; }
+  .fin-card-head { padding: 14px 14px; }
+  .fin-pad { padding: 14px; }
 }

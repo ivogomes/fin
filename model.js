@@ -100,18 +100,121 @@ export function batchRow(row, rules) {
   if (!description) return { error: 'needs a description' };
   if (!(Number(raw) > 0)) return { error: 'needs an amount above zero' };
   if (!row.date) return { error: 'needs a date' };
+  if (row.sign === 't') {
+    if (!row.toAccountId) return { error: 'needs an account to transfer to' };
+    if (row.toAccountId === row.accountId) return { error: 'transfers to the same account' };
+    return { transfer: { fromId: row.accountId, toId: row.toAccountId, date: row.date, description, sent: toMinor(raw) } };
+  }
   return {
     tx: {
       accountId: row.accountId,
       date: row.date,
       description,
-      // sign: '-' expense, '+' income, 'r' refund (money back that cancels part of an expense)
+      // sign: '-' expense, '+' income, 'r' refund (money back that cancels part of an expense);
+      // 't' is a transfer, returned as { transfer } above
       amount: toMinor(raw) * (row.sign === '-' ? -1 : 1),
       categoryIds: [row.categoryId || categorize(description, rules)].filter(Boolean),
       memo: '',
       ...(row.sign === 'r' ? { kind: 'refund' } : {}),
     },
   };
+}
+
+// ── Search and filters ───────────────────────────────────────────────────────
+
+// Transactions matching a filter, newest first. Every field is optional:
+// - text: in the description or memo (case and accents ignored); a number like "12.99" or "12,99"
+//   also matches that amount, in or out
+// - categoryId: that category, or any of its children when it's a parent; '' (empty) = uncategorized
+// - type: 'expense' | 'income' | 'refund' | 'transfer'
+// - min / max: the amount's size (ignoring its sign), in the account's currency
+// - from / to: dates; accountIds: a Set, or null for all
+export function filterTransactions(transactions, filter, { categories = [] } = {}) {
+  const { text = '', categoryId = null, type = null, min = null, max = null, from = null, to = null, accountIds = null } = filter;
+  const q = normalize(text);
+  const asAmount = /^[\d.,]+$/.test(String(text).trim()) ? Math.abs(parseAmount(text, /,\d{1,2}$/.test(text.trim()) ? ',' : '.')) : NaN;
+  const wanted = categoryId ? new Set([categoryId, ...categories.filter((c) => c.parentId === categoryId).map((c) => c.id)]) : null;
+  const minMinor = min == null || min === '' ? null : toMinor(min);
+  const maxMinor = max == null || max === '' ? null : toMinor(max);
+  return transactions.filter((t) => {
+    if (accountIds && !accountIds.has(t.accountId)) return false;
+    if (from && t.date < from) return false;
+    if (to && t.date > to) return false;
+    const size = Math.abs(t.amount);
+    if (minMinor != null && size < minMinor) return false;
+    if (maxMinor != null && size > maxMinor) return false;
+    if (type === 'transfer' && !t.transferId) return false;
+    if (type === 'refund' && t.kind !== 'refund') return false;
+    if (type === 'expense' && (t.transferId || t.kind === 'refund' || t.amount >= 0)) return false;
+    if (type === 'income' && (t.transferId || t.kind === 'refund' || t.amount <= 0)) return false;
+    const cats = categoriesOf(t);
+    if (categoryId === '' && (cats.length || t.transferId)) return false;
+    if (wanted && !cats.some((id) => wanted.has(id))) return false;
+    if (q && !normalize(t.description).includes(q) && !normalize(t.memo ?? '').includes(q) && size !== asAmount) return false;
+    return true;
+  }).sort((a, b) => b.date.localeCompare(a.date));
+}
+
+// After a transaction is categorized by hand: a rule worth offering ("always put X in Y"), or null
+// when the rules would already pick that category. The rule matches the whole description; `others`
+// counts uncategorized transactions with the same description that it would fill in too.
+export function ruleSuggestion(t, categoryId, rules, transactions) {
+  if (!categoryId || t.transferId || !t.description?.trim()) return null;
+  if (categorize(t.description, rules) === categoryId) return null;
+  const key = normalize(t.description);
+  const others = transactions.filter((x) => x.id !== t.id && !x.transferId && normalize(x.description) === key && !categoriesOf(x).length).length;
+  return { pattern: t.description.trim(), match: 'equals', categoryId, others };
+}
+
+// ── Description suggestions ──────────────────────────────────────────────────
+
+// One entry per distinct description (case and accents ignored) from past transactions, with how
+// often it was used and what its latest use looked like: amount (signed), kind, categories, account.
+// A transfer counts once, from its outgoing side, as kind 'transfer' with both accounts and the
+// amount sent (negative). Opening balances are left out.
+export function descriptionIndex(transactions) {
+  const partner = new Map();
+  for (const t of transactions) {
+    if (t.transferId && t.amount > 0) partner.set(t.transferId, t);
+  }
+  const map = new Map();
+  for (const t of transactions) {
+    if (t.kind === 'opening' || !t.description) continue;
+    let use;
+    if (t.transferId) {
+      const to = t.amount < 0 && partner.get(t.transferId);
+      if (!to) continue; // the incoming side, or a transfer missing its other side
+      use = { description: t.description, lastDate: t.date, amount: t.amount, kind: 'transfer', categoryIds: [], accountId: t.accountId, toAccountId: to.accountId };
+    } else {
+      use = { description: t.description, lastDate: t.date, amount: t.amount, kind: t.kind, categoryIds: categoriesOf(t), accountId: t.accountId, toAccountId: null };
+    }
+    const key = normalize(t.description);
+    const e = map.get(key);
+    if (!e) map.set(key, { key, count: 1, ...use });
+    else {
+      e.count += 1;
+      if (use.lastDate >= e.lastDate) Object.assign(e, use);
+    }
+  }
+  return [...map.values()];
+}
+
+// The best matches for what's typed: names starting with it first, then names with a word starting
+// with it, then names containing it; within each, ones used in `accountId` first, then the most used,
+// then the most recent.
+export function suggestDescriptions(index, query, { limit = 8, accountId = null } = {}) {
+  const q = normalize(query);
+  if (!q) return [];
+  const rank = (e) => (e.key.startsWith(q) ? 0 : e.key.split(/[\s/\-–(]+/).some((w) => w.startsWith(q)) ? 1 : e.key.includes(q) ? 2 : -1);
+  return index
+    .map((e) => ({ e, r: rank(e) }))
+    .filter(({ r }) => r >= 0)
+    .sort((a, b) => a.r - b.r
+      || (b.e.accountId === accountId) - (a.e.accountId === accountId)
+      || b.e.count - a.e.count
+      || b.e.lastDate.localeCompare(a.e.lastDate))
+    .slice(0, limit)
+    .map(({ e }) => e);
 }
 
 // A transfer is two linked transactions: money out of `from`, money into `to`. `sent` and `received`
@@ -560,12 +663,14 @@ const nextBucket = (key, unit) => {
 // - Amounts are in EUR at each transaction's own rate (`rateOf(currency)` when it has none).
 // - In the category breakdown a transaction counts under its first category, so the parts add up
 //   to the total.
-export function insights(transactions, { from, to, accountIds = null, accounts, categories, ious = [], rateOf = () => 1 }) {
+// `onlyCategory` (an id) keeps only transactions whose first category is it or one of its children.
+export function insights(transactions, { from, to, accountIds = null, accounts, categories, ious = [], rateOf = () => 1, onlyCategory = null }) {
   const currency = new Map(accounts.map((a) => [a.id, a.currency]));
   const iouByTx = new Map();
   for (const e of ious) if (e.transactionId) iouByTx.set(e.transactionId, (iouByTx.get(e.transactionId) ?? 0) + e.amount);
   const parentOf = new Map(categories.map((c) => [c.id, c.parentId ?? null]));
   const unit = granularity(from, to);
+  const only = onlyCategory ? new Set([onlyCategory, ...categories.filter((c) => c.parentId === onlyCategory).map((c) => c.id)]) : null;
 
   const buckets = new Map();
   for (let k = bucketOf(from, unit), guard = 0; k <= bucketOf(to, unit) && guard < 400; k = nextBucket(k, unit), guard += 1) {
@@ -589,6 +694,7 @@ export function insights(transactions, { from, to, accountIds = null, accounts, 
     if (t.date < from || t.date > to) continue;
     if (accountIds && !accountIds.has(t.accountId)) continue;
     if (t.transferId || t.kind === 'opening') continue;
+    if (only && !only.has(categoriesOf(t)[0])) continue;
     const rate = t.rate ?? rateOf(currency.get(t.accountId) ?? 'EUR') ?? 1;
     const eur = Math.round(t.amount * rate) + (iouByTx.get(t.id) ?? 0);
     if (!eur) continue;
@@ -765,14 +871,27 @@ export function netWorthHistory({ accounts, transactions, snapshots = [], holdin
     if (!lotsOf.has(l.holdingId)) lotsOf.set(l.holdingId, []);
     lotsOf.get(l.holdingId).push(l);
   }
+  // Weekly closing prices per holding (`priceHistory`, { date: price }), sorted, when it has them.
+  const history = new Map(holdings.filter((x) => x.priceHistory && Object.keys(x.priceHistory).length)
+    .map((x) => [x.id, Object.entries(x.priceHistory).sort(([a], [b]) => a.localeCompare(b))]));
+  const closeAt = (id, date) => {
+    const rows = history.get(id);
+    if (!rows || rows[0][0] > date) return null;
+    let lo = 0;
+    let hi = rows.length - 1;
+    while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (rows[mid][0] <= date) lo = mid; else hi = mid - 1; }
+    return rows[lo][1];
+  };
   // The value of an account's holdings on a date from their lots, or null when any holding has none.
+  // Each is priced at its closing price that week when there's price history, else its last trade.
   const lotValue = (a, date) => {
     const own = holdings.filter((x) => x.accountId === a.id);
     if (!own.length || own.some((x) => !lotsOf.has(x.id))) return null;
     let total = 0;
     for (const x of own) {
       const { quantity, price } = lotsAt(lotsOf.get(x.id), date);
-      if (quantity && price != null) total += Math.round(quantity * price * 100 * (rateOf(x.currency) ?? 1));
+      const close = closeAt(x.id, date) ?? price;
+      if (quantity && close != null) total += Math.round(quantity * close * 100 * (rateOf(x.currency) ?? 1));
     }
     return total;
   };

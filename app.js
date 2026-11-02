@@ -2,14 +2,19 @@ import {
   CURRENCIES, ACCOUNT_TYPES, ACCOUNT_TYPE_LABELS, toMinor, formatMoney, categorize, convert, rateFor, defaultState,
   normalize, categoryPath, categoriesOf, sortedCategories,
   IOU_KINDS, IOU_TYPES, personBalances, personHistory, PERIODS, periodRange, insights, netWorthHistory, investedHistory,
+  descriptionIndex, suggestDescriptions, filterTransactions, ruleSuggestion,
   accountBalance, holdingValue, investmentValue, netWorth, withRunningBalance, newId,
   crossConvert, batchRow, makeTransfer,
   parseCsv, toCsv, guessDateFormat, guessDecimal, guessMapping, importRows, IMPORT_FIELDS, findTransferPairs,
   detectBuxferFile, buxferImport, isFtExport, ftImport, lotSummary,
   UNITS, frequencyLabel, addInterval, occurrences, forecast, scheduledEffect, scheduledTransactions, advanceSchedule,
 } from './model.js';
-import { fetchRate, fetchRateRange, fetchQuote, fetchQuoteAV, alphaVantageCovers, searchSymbols, today } from './market.js';
-import { load, persist, onStatus, hasPendingChanges, legacyData, forgetLegacyData, missingTables, clearTables, needsSchemaUpdate } from './store.js';
+import { fetchRate, fetchRateRange, fetchQuote, fetchQuoteAV, fetchHistory, alphaVantageCovers, searchSymbols, today } from './market.js';
+import {
+  load, persist, onStatus, hasPendingChanges, legacyData, forgetLegacyData, missingTables, clearTables, needsSchemaUpdate,
+  backupData, restoreData, BACKUP_TABLES,
+} from './store.js';
+import { makeZip, readZip } from './zip.js';
 import { configured, currentUser, completeSignIn, sendSignInLink, signOut, SignedOut } from './cloud.js';
 
 // Set once the signed-in user's data has loaded (see boot() at the bottom).
@@ -230,6 +235,28 @@ async function refreshPrices(only) {
 }
 
 // Prices from an earlier day are refreshed when the page opens (needs the API key).
+// Weekly price history: loaded on request per holding, then kept up to date once a week.
+const latestClose = (x) => Object.keys(x.priceHistory ?? {}).sort().at(-1) ?? null;
+const historyStale = (x) => latestClose(x) && latestClose(x) < new Date(Date.now() - 7 * 864e5).toISOString().slice(0, 10);
+
+async function loadHistory(list) {
+  const keys = { avKey: state.settings.avApiKey, tdKey: state.settings.quoteApiKey };
+  const failed = [];
+  let done = 0;
+  for (const x of list) {
+    if (!x.symbol || !x.mic) { failed.push(`${x.symbol}: no exchange set (Edit the holding)`); continue; }
+    try {
+      x.priceHistory = { ...(x.priceHistory ?? {}), ...(await fetchHistory(x.symbol, x.mic, keys)) };
+      done += 1;
+    } catch (err) {
+      failed.push(`${x.symbol}: ${err.message.replace(/\s*Consider upgrading.*$/i, '')}`);
+    }
+  }
+  if (done) { persist(); render(); }
+  if (failed.length) showToast(`Price history: ${failed.join(' · ')}`, [], { timeout: 20000 });
+  else if (done) say(`Price history loaded for ${done} holding${done === 1 ? '' : 's'}.`);
+}
+
 function stalePrices() {
   if (!state.settings.quoteApiKey && !state.settings.avApiKey) return [];
   return state.holdings.filter((x) => !x.manual && (!x.priceAt || x.priceAt.slice(0, 10) !== today() || x.priceError));
@@ -317,7 +344,7 @@ function accountGroup(key, label, total, list) {
 }
 
 function selectAccount(id) {
-  if (view.id !== id) txPage = 0;
+  if (view.id !== id) { txPage = 0; selected.clear(); }
   // Stay on Insights when moving between accounts, so they're easy to compare.
   view = { name: 'account', id, tab: view.name === 'account' ? view.tab : undefined };
   editingTxId = null;
@@ -405,16 +432,18 @@ function renderAccount(account) {
           : button('Archive', () => setArchived(account, true), 'secondary', { 'data-key': 'archive-account' }),
         button('Delete', () => {
           if (!confirm(`Delete "${account.name}" and everything in it?`)) return;
-          state.accounts = state.accounts.filter((a) => a.id !== account.id);
-          const gone = new Set(state.transactions.filter((t) => t.accountId === account.id).map((t) => t.id));
-          state.ious = state.ious.filter((e) => !gone.has(e.transactionId));
-          state.transactions = state.transactions.filter((t) => t.accountId !== account.id);
-          const goneHoldings = new Set(state.holdings.filter((x) => x.accountId === account.id).map((x) => x.id));
-          state.lots = state.lots.filter((l) => !goneHoldings.has(l.holdingId));
-          state.holdings = state.holdings.filter((x) => x.accountId !== account.id);
-          state.schedules = state.schedules.filter((s) => s.accountId !== account.id && s.toAccountId !== account.id);
-          view = { name: 'account', id: state.accounts[0]?.id };
-          persist(); render(); say('Account deleted.');
+          undoable(`${account.name} deleted.`, ['accounts', 'transactions', 'ious', 'holdings', 'lots', 'schedules'], () => {
+            state.accounts = state.accounts.filter((a) => a.id !== account.id);
+            const gone = new Set(state.transactions.filter((t) => t.accountId === account.id).map((t) => t.id));
+            state.ious = state.ious.filter((e) => !gone.has(e.transactionId));
+            state.transactions = state.transactions.filter((t) => t.accountId !== account.id);
+            const goneHoldings = new Set(state.holdings.filter((x) => x.accountId === account.id).map((x) => x.id));
+            state.lots = state.lots.filter((l) => !goneHoldings.has(l.holdingId));
+            state.holdings = state.holdings.filter((x) => x.accountId !== account.id);
+            state.schedules = state.schedules.filter((x) => x.accountId !== account.id && x.toAccountId !== account.id);
+            view = { name: 'account', id: [...state.accounts].sort(byName).find((a) => !a.archived)?.id };
+          });
+
         }, 'danger', { 'aria-label': `Delete account ${account.name}` }))),
     account.archived && h('p', { class: 'fin-notice' },
       'This account is archived. It is hidden from the account groups and left out of net worth. Its transactions are kept.'),
@@ -451,13 +480,152 @@ function accountTabs() {
 
 // Only one page of rows is put in the DOM. The running balance is still worked out over all of the
 // account's transactions, so every page shows the true balance after each row.
-function pager(page, pages, total, where) {
+// ── messages with actions (Undo, rule offers) ────────────────────────────────
+
+let toastTimer = null;
+let toastUndo = null;
+// One message at a time at the bottom of the screen, with optional buttons. It stays ~10 s, or
+// until replaced. Undo is also on Ctrl/⌘+Z while the message shows.
+function showToast(message, actions = [], { timeout = 10000, undo = null } = {}) {
+  const el = document.getElementById('toast');
+  clearTimeout(toastTimer);
+  toastUndo = undo;
+  const hide = () => { el.hidden = true; toastUndo = null; };
+  el.replaceChildren(
+    h('span', { class: 'fin-toast-msg' }, message),
+    ...actions.map((a) => h('button', {
+      type: 'button', class: `fin-toast-btn${a.primary ? ' fin-toast-btn--primary' : ''}`,
+      onclick: () => { hide(); a.run(); },
+    }, a.label)),
+    h('button', { type: 'button', class: 'fin-toast-close', 'aria-label': 'Dismiss', onclick: hide }, '×'));
+  el.hidden = false;
+  toastTimer = setTimeout(hide, timeout);
+}
+
+// Runs a change that can be taken back: the named tables are copied first, and the message offers
+// Undo, which puts the copies back (the save then sends the difference).
+function undoable(message, tables, change) {
+  const before = structuredClone(Object.fromEntries(tables.map((t) => [t, state[t]])));
+  change();
+  persist();
+  render();
+  const undo = () => {
+    Object.assign(state, before);
+    persist();
+    render();
+    say('Undone.');
+  };
+  showToast(message, [{ label: 'Undo', primary: true, run: undo }], { undo });
+  say(`${message} Undo is available.`);
+}
+
+document.addEventListener('keydown', (e) => {
+  if (toastUndo && e.key === 'z' && (e.metaKey || e.ctrlKey) && !e.shiftKey
+    && !['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) {
+    e.preventDefault();
+    const undo = toastUndo;
+    document.getElementById('toast').hidden = true;
+    toastUndo = null;
+    undo();
+  }
+});
+
+// Deleting transactions: a transfer's other side and any IOU entries go too.
+function deleteTransactions(ids) {
+  const picked = state.transactions.filter((t) => ids.has(t.id));
+  const transfers = new Set(picked.map((t) => t.transferId).filter(Boolean));
+  const n = picked.length;
+  undoable(n === 1 ? (picked[0].transferId ? 'Transfer deleted from both accounts.' : 'Transaction deleted.') : `${n} transactions deleted.`,
+    ['transactions', 'ious'], () => {
+      state.transactions = state.transactions.filter((t) => !ids.has(t.id) && !(t.transferId && transfers.has(t.transferId)));
+      state.ious = state.ious.filter((e) => !ids.has(e.transactionId));
+      selected.clear();
+    });
+}
+
+// ── learning rules from manual categories ────────────────────────────────────
+
+const ruleDeclined = new Set(); // "description|category" offers turned down, for this visit
+function offerRule(t, categoryId) {
+  const s = ruleSuggestion(t, categoryId, state.rules, state.transactions);
+  if (!s) return;
+  const key = `${normalize(s.pattern)}|${categoryId}`;
+  if (ruleDeclined.has(key)) return;
+  const add = (fill) => {
+    // At the top, so it wins over broader rules (the first match decides).
+    state.rules.unshift({ id: newId(), pattern: s.pattern, match: s.match, categoryId });
+    let n = 0;
+    if (fill) {
+      for (const x of state.transactions) {
+        if (x.id === t.id || x.transferId || categoriesOf(x).length || normalize(x.description) !== normalize(s.pattern)) continue;
+        x.categoryIds = [categoryId];
+        n += 1;
+      }
+    }
+    persist(); render();
+    say(`Rule added${n ? `, and ${n} more transaction${n === 1 ? '' : 's'} categorized` : ''}.`);
+  };
+  showToast(`Always put “${s.pattern}” in ${catLabel(categoryId)}?`, [
+    ...(s.others ? [{ label: `Add rule and fill ${s.others} more`, primary: true, run: () => add(true) }] : []),
+    { label: 'Add rule', primary: !s.others, run: () => add(false) },
+    { label: 'No', run: () => ruleDeclined.add(key) },
+  ], { timeout: 15000 });
+}
+
+// ── transaction lists: filters, selection, the table ─────────────────────────
+
+const selected = new Set(); // ids of selected transactions, in the list on screen
+const txFilters = new Map(); // scope ('acc:<id>' or 'search') → filter
+const EMPTY_FILTER = { text: '', categoryId: null, type: null, from: '', to: '', min: '', max: '', accountId: '' };
+const filterOf = (scope) => txFilters.get(scope) ?? EMPTY_FILTER;
+const filterActive = (f) => Boolean(f.text || f.categoryId != null || f.type || f.from || f.to || f.min || f.max || f.accountId);
+let filterTimer = null;
+
+function filterBar(scope, { showAccount = false } = {}) {
+  const f = filterOf(scope);
+  const set = (patch, focusKey, wait = 0) => {
+    txFilters.set(scope, { ...filterOf(scope), ...patch });
+    txPage = 0;
+    selected.clear();
+    clearTimeout(filterTimer);
+    filterTimer = setTimeout(() => render(focusKey), wait);
+  };
+  const text = input({ type: 'search', value: f.text, placeholder: 'Search description, memo or amount', 'data-key': `${scope}-q`, 'aria-label': 'Search transactions' });
+  text.addEventListener('input', () => set({ text: text.value }, `${scope}-q`, 250));
+  const cat = select([['*', 'All categories'], ['', 'Uncategorized'], ...catOptions()], f.categoryId == null ? '*' : f.categoryId, { 'data-key': `${scope}-cat`, 'aria-label': 'Category' });
+  cat.addEventListener('change', () => set({ categoryId: cat.value === '*' ? null : cat.value }, `${scope}-cat`));
+  const type = select([['', 'All types'], ['expense', 'Expenses'], ['income', 'Income'], ['refund', 'Refunds'], ['transfer', 'Transfers']], f.type ?? '', { 'data-key': `${scope}-type`, 'aria-label': 'Type' });
+  type.addEventListener('change', () => set({ type: type.value || null }, `${scope}-type`));
+  const dateIn = (k, label) => {
+    const el = input({ type: 'date', value: f[k], 'data-key': `${scope}-${k}`, 'aria-label': label });
+    el.addEventListener('change', () => set({ [k]: el.value }, `${scope}-${k}`));
+    return el;
+  };
+  const amountIn = (k, label) => {
+    const el = input({ type: 'number', step: 'any', min: '0', inputmode: 'decimal', value: f[k], placeholder: label, 'data-key': `${scope}-${k}`, 'aria-label': `${label} amount` });
+    el.addEventListener('input', () => set({ [k]: el.value }, `${scope}-${k}`, 400));
+    return el;
+  };
+  const acc = showAccount && select([['', 'All accounts'], ...[...state.accounts].sort(byName).map((a) => [a.id, a.archived ? `${a.name} (archived)` : a.name])], f.accountId, { 'data-key': `${scope}-acc`, 'aria-label': 'Account' });
+  acc && acc.addEventListener('change', () => set({ accountId: acc.value }, `${scope}-acc`));
+  return h('div', { class: 'fin-filters', role: 'search', 'aria-label': 'Filter transactions' },
+    h('div', { class: 'fin-filter-q' }, text),
+    acc, cat, type,
+    h('div', { class: 'fin-filter-pair' }, dateIn('from', 'From date'), h('span', { class: 'fin-muted' }, '–'), dateIn('to', 'To date')),
+    h('div', { class: 'fin-filter-pair' }, amountIn('min', 'Min'), h('span', { class: 'fin-muted' }, '–'), amountIn('max', 'Max')),
+    filterActive(f) && button('Clear', () => { txFilters.delete(scope); txPage = 0; selected.clear(); render(`${scope}-q`); }, 'secondary fin-btn-sm', { 'data-key': `${scope}-clear` }));
+}
+
+const toFilter = (f) => ({ ...f, accountIds: f.accountId ? new Set([f.accountId]) : null });
+
+function pager(page, pages, total, where, headingId = 'tx-h') {
   const go = (p, key) => {
     txPage = Math.min(Math.max(p, 0), pages - 1);
+    selected.clear();
     render(key);
     const first = txPage * TX_PAGE_SIZE + 1;
     say(`Showing transactions ${first} to ${Math.min(first + TX_PAGE_SIZE - 1, total)} of ${total}.`);
-    if (where === 'bottom') document.getElementById('tx-h')?.scrollIntoView({ block: 'start' });
+    if (where === 'bottom') document.getElementById(headingId)?.scrollIntoView({ block: 'start' });
   };
   const first = page * TX_PAGE_SIZE + 1;
   const last = Math.min(first + TX_PAGE_SIZE - 1, total);
@@ -470,65 +638,158 @@ function pager(page, pages, total, where) {
     button('Last »', () => go(pages - 1, `pg-last-${where}`), 'secondary fin-btn-sm', { disabled: page === pages - 1, 'data-key': `pg-last-${where}` }));
 }
 
+// Acting on the selection: categories (transfers are left as they are) and delete.
+function bulkBar(pageRows) {
+  const picked = state.transactions.filter((t) => selected.has(t.id));
+  const categorizable = picked.filter((t) => !t.transferId);
+  const setCat = select([['', 'Set category…'], ...catOptions()], '', { 'aria-label': 'Set the category of the selected transactions', class: 'fin-input fin-input-sm' });
+  setCat.addEventListener('change', () => {
+    if (!setCat.value) return;
+    const id = setCat.value;
+    undoable(`${catLabel(id)} set on ${categorizable.length} transaction${categorizable.length === 1 ? '' : 's'}.`, ['transactions'], () => {
+      for (const t of categorizable) t.categoryIds = [id];
+    });
+  });
+  const addCat = select([['', 'Add category…'], ...catOptions()], '', { 'aria-label': 'Add a category to the selected transactions', class: 'fin-input fin-input-sm' });
+  addCat.addEventListener('change', () => {
+    if (!addCat.value) return;
+    const id = addCat.value;
+    undoable(`${catLabel(id)} added to ${categorizable.length} transaction${categorizable.length === 1 ? '' : 's'}.`, ['transactions'], () => {
+      for (const t of categorizable) if (!categoriesOf(t).includes(id)) t.categoryIds = [...categoriesOf(t), id];
+    });
+  });
+  return h('div', { class: 'fin-bulk', role: 'region', 'aria-label': 'Selected transactions' },
+    h('strong', {}, `${picked.length} selected`),
+    picked.length < pageRows.length && button(`Select all ${pageRows.length} on this page`, () => { pageRows.forEach((t) => selected.add(t.id)); render('bulk-clear'); }, 'secondary fin-btn-sm'),
+    categorizable.length > 0 && setCat,
+    categorizable.length > 0 && addCat,
+    categorizable.length > 0 && button('Remove categories', () => undoable(`Categories removed from ${categorizable.length} transaction${categorizable.length === 1 ? '' : 's'}.`, ['transactions'], () => {
+      for (const t of categorizable) t.categoryIds = [];
+    }), 'secondary fin-btn-sm'),
+    button('Delete', () => deleteTransactions(new Set(selected)), 'danger fin-btn-sm'),
+    button('Clear selection', () => { selected.clear(); render(); }, 'secondary fin-btn-sm', { 'data-key': 'bulk-clear' }));
+}
+
+// The transactions table. `rows` is one page; each may carry `balance` (shown when `showBalance`).
+// With `showAccount` (search), each row names its account and amounts are in that account's currency.
+function txTable(rows, { caption, showBalance = false, showAccount = false, inEur = false }) {
+  const accOf = (t) => state.accounts.find((a) => a.id === t.accountId);
+  const cols = 6 + (showBalance ? 1 : 0) + (showAccount ? 1 : 0) + (inEur ? 1 : 0);
+  const allOnPage = rows.length > 0 && rows.every((t) => selected.has(t.id));
+  const someOnPage = rows.some((t) => selected.has(t.id));
+  const pageBox = h('input', {
+    type: 'checkbox', class: 'fin-tick', checked: allOnPage, 'aria-label': 'Select all on this page', 'data-key': 'select-page',
+    onchange: (e) => { rows.forEach((t) => (e.target.checked ? selected.add(t.id) : selected.delete(t.id))); render('select-page'); },
+  });
+  pageBox.indeterminate = someOnPage && !allOnPage;
+  return h('div', { class: 'fin-scroll' }, h('table', { class: 'fin-table fin-tx-table' },
+    h('caption', { class: 'fin-sr' }, caption),
+    h('thead', {}, h('tr', {},
+      h('th', { scope: 'col', class: 'fin-tick-col' }, pageBox),
+      h('th', { scope: 'col' }, 'Date'),
+      h('th', { scope: 'col', class: 'fin-r' }, 'Amount'),
+      showBalance && h('th', { scope: 'col', class: 'fin-r' }, 'Balance'),
+      h('th', { scope: 'col' }, 'Description'),
+      showAccount && h('th', { scope: 'col' }, 'Account'),
+      h('th', { scope: 'col' }, 'Categories'),
+      inEur && h('th', { scope: 'col', class: 'fin-r' }, 'In EUR'),
+      h('th', { scope: 'col' }, h('span', { class: 'fin-sr' }, 'Actions')))),
+    h('tbody', {}, rows.flatMap((t, i) => {
+      const account = accOf(t);
+      const cur = account?.currency ?? 'EUR';
+      // A heading row at the start of each month makes a long list easier to scan.
+      const month = t.date.slice(0, 7);
+      const heading = (i === 0 || rows[i - 1].date.slice(0, 7) !== month) && h('tr', { class: 'fin-month' },
+        h('th', { colspan: cols, scope: 'colgroup' }, monthLabel(month)));
+      // The row being edited turns into a full-width form, so the edit happens in place.
+      if (t.id === editingTxId && account) {
+        return [heading, h('tr', { class: 'fin-edit-row' },
+          h('td', { colspan: cols }, transactionForm(account, state.transactions.find((x) => x.id === t.id))))];
+      }
+      const label = `${t.description}, ${shortDate(t.date)}`;
+      return [heading, h('tr', { class: selected.has(t.id) ? 'is-selected' : null },
+        h('td', { class: 'fin-tick-col c-tick' }, h('input', {
+          type: 'checkbox', class: 'fin-tick', checked: selected.has(t.id), 'aria-label': `Select ${label}`, 'data-key': `sel-${t.id}`,
+          onchange: (e) => { if (e.target.checked) selected.add(t.id); else selected.delete(t.id); render(`sel-${t.id}`); },
+        })),
+        h('td', { class: 'fin-nowrap c-date' }, h('time', { datetime: t.date }, shortDate(t.date)),
+          showAccount && t.date.slice(0, 4) != thisYear && ` ${t.date.slice(0, 4)}`),
+        h('td', { class: `fin-r fin-num c-amt ${tone(t.amount)}` },
+          t.kind === 'refund' && h('span', { class: 'fin-refund', title: 'Refund' }, icon('refund'), h('span', { class: 'fin-sr' }, 'Refund: ')),
+          signed(t.amount, cur)),
+        showBalance && h('td', { class: 'fin-r fin-num fin-muted c-bal' }, money(t.balance, cur)),
+        h('td', { class: 'c-desc' }, t.description, t.memo && h('span', { class: 'fin-sub' }, t.memo)),
+        showAccount && h('td', { class: 'c-acc' }, h('button', {
+          type: 'button', class: 'fin-link fin-link-sm', onclick: () => selectAccount(t.accountId),
+        }, account?.name ?? 'Deleted account')),
+        h('td', { class: 'c-cat' }, categoryCell(t)),
+        inEur && h('td', { class: 'fin-r fin-num fin-muted c-eur' }, cur === 'EUR' ? '' : t.rate == null ? 'pending' : signed(convert(t.amount, t.rate), 'EUR')),
+        h('td', { class: 'fin-r c-act' }, h('div', { class: 'fin-row-actions' },
+          iconButton('edit', `Edit ${label}`, () => { editingTxId = t.id; render('tx-desc-edit'); }, { 'data-key': `tx-edit-${t.id}` }),
+          iconButton('trash', `Delete ${label}`, () => deleteTransactions(new Set([t.id])), { danger: true }))))];
+    }))));
+}
+
 function transactionsSection(account) {
-  const all = withRunningBalance(account.id, state.transactions);
+  const scope = `acc:${account.id}`;
+  const f = filterOf(scope);
+  const withBalance = withRunningBalance(account.id, state.transactions);
+  // Filtering keeps each row's running balance: it's still the balance right after that row.
+  const keep = filterActive(f) ? new Set(filterTransactions(withBalance, f, { categories: state.categories }).map((t) => t.id)) : null;
+  const all = keep ? withBalance.filter((t) => keep.has(t.id)) : withBalance;
   const pages = Math.max(1, Math.ceil(all.length / TX_PAGE_SIZE));
   txPage = Math.min(txPage, pages - 1); // e.g. after deleting the last row of the last page
   const rows = all.slice(txPage * TX_PAGE_SIZE, (txPage + 1) * TX_PAGE_SIZE);
-  const foreign = account.currency !== 'EUR';
+  for (const id of selected) if (!all.some((t) => t.id === id)) selected.delete(id);
   return h('section', { class: 'fin-card', 'aria-labelledby': 'tx-h' },
     h('div', { class: 'fin-card-head' },
-      h('h3', { id: 'tx-h', class: 'fin-label' }, 'Transactions ', h('span', { class: 'fin-count' }, String(all.length))),
+      h('h3', { id: 'tx-h', class: 'fin-label' }, 'Transactions ', h('span', { class: 'fin-count' }, keep ? `${all.length} of ${withBalance.length}` : String(all.length))),
       button('Add transactions', () => openTxDialog('multi', account), 'primary', { 'data-key': 'tx-add', 'aria-haspopup': 'dialog' })),
+    filterBar(scope),
+    selected.size > 0 && bulkBar(rows),
     pages > 1 && pager(txPage, pages, all.length, 'top'),
     rows.length === 0
-      ? h('p', { class: 'fin-empty fin-pad' }, 'No transactions yet.')
-      : h('div', { class: 'fin-scroll' }, h('table', { class: 'fin-table' },
-        h('caption', { class: 'fin-sr' }, `Transactions for ${account.name}, newest first, page ${txPage + 1} of ${pages}`),
-        h('thead', {}, h('tr', {},
-          h('th', { scope: 'col' }, 'Date'),
-          h('th', { scope: 'col', class: 'fin-r' }, 'Amount'),
-          h('th', { scope: 'col', class: 'fin-r' }, 'Balance'),
-          h('th', { scope: 'col' }, 'Description'),
-          h('th', { scope: 'col' }, 'Categories'),
-          foreign && h('th', { scope: 'col', class: 'fin-r' }, 'In EUR'),
-          h('th', { scope: 'col' }, h('span', { class: 'fin-sr' }, 'Actions')))),
-        h('tbody', {}, rows.flatMap((t, i) => {
-          // A heading row at the start of each month makes a long list easier to scan.
-          const month = t.date.slice(0, 7);
-          const heading = (i === 0 || rows[i - 1].date.slice(0, 7) !== month) && h('tr', { class: 'fin-month' },
-            h('th', { colspan: foreign ? 7 : 6, scope: 'colgroup' }, monthLabel(month)));
-          // The row being edited turns into a full-width form, so the edit happens in place.
-          if (t.id === editingTxId) {
-            return [heading, h('tr', { class: 'fin-edit-row' },
-              h('td', { colspan: foreign ? 7 : 6 }, transactionForm(account, state.transactions.find((x) => x.id === t.id))))];
-          }
-          const label = `${t.description}, ${shortDate(t.date)}`;
-          return [heading, h('tr', {},
-            h('td', { class: 'fin-nowrap' }, h('time', { datetime: t.date }, shortDate(t.date))),
-            h('td', { class: `fin-r fin-num ${tone(t.amount)}` },
-              t.kind === 'refund' && h('span', { class: 'fin-refund', title: 'Refund' }, icon('refund'), h('span', { class: 'fin-sr' }, 'Refund: ')),
-              signed(t.amount, account.currency)),
-            h('td', { class: 'fin-r fin-num fin-muted' }, money(t.balance, account.currency)),
-            h('td', {},
-              t.description,
-              t.memo && h('span', { class: 'fin-sub' }, t.memo)),
-            h('td', {}, categoryCell(t)),
-            foreign && h('td', { class: 'fin-r fin-num fin-muted' }, t.rate == null ? 'pending' : signed(convert(t.amount, t.rate), 'EUR')),
-            h('td', { class: 'fin-r' }, h('div', { class: 'fin-row-actions' },
-              iconButton('edit', `Edit ${label}`, () => {
-                editingTxId = t.id;
-                render('tx-desc-edit');
-              }, { 'data-key': `tx-edit-${t.id}` }),
-              iconButton('trash', `Delete ${label}`, () => {
-                // Deleting either side of a transfer deletes both, so the accounts stay balanced.
-                state.transactions = state.transactions.filter((x) => x.id !== t.id && (!t.transferId || x.transferId !== t.transferId));
-                // Its IOU entries go with it: the loan or repayment didn't happen after all.
-                state.ious = state.ious.filter((e) => e.transactionId !== t.id);
-                persist(); render(); say(t.transferId ? 'Transfer deleted from both accounts.' : 'Transaction deleted.');
-              }, { danger: true }))))];
-        })))),
+      ? h('p', { class: 'fin-empty fin-pad' }, keep ? 'No transactions match these filters.' : 'No transactions yet.')
+      : txTable(rows, {
+        caption: `Transactions for ${account.name}, newest first, page ${txPage + 1} of ${pages}`,
+        showBalance: true, inEur: account.currency !== 'EUR',
+      }),
     pages > 1 && pager(txPage, pages, all.length, 'bottom'));
+}
+
+// Search across every account (archived ones too).
+function renderSearch() {
+  const f = filterOf('search');
+  const active = filterActive(f);
+  const all = active ? filterTransactions(state.transactions, toFilter(f), { categories: state.categories }) : [];
+  const pages = Math.max(1, Math.ceil(all.length / TX_PAGE_SIZE));
+  txPage = Math.min(txPage, pages - 1);
+  const rows = all.slice(txPage * TX_PAGE_SIZE, (txPage + 1) * TX_PAGE_SIZE);
+  for (const id of selected) if (!all.some((t) => t.id === id)) selected.delete(id);
+  // Totals of what's found, in EUR (transfers left out, as they only move money around).
+  const total = (sign) => all.filter((t) => !t.transferId && Math.sign(t.amount) === sign)
+    .reduce((sum, t) => sum + convert(t.amount, t.rate ?? latestRate(state.accounts.find((a) => a.id === t.accountId)?.currency) ?? 1), 0);
+  return h('div', {},
+    h('div', { class: 'fin-account-head' },
+      h('div', {}, h('h2', { class: 'fin-title', id: 'search-h', tabindex: '-1' }, 'Search'),
+        h('p', { class: 'fin-meta' }, 'Find transactions across all your accounts, archived ones included.'))),
+    h('section', { class: 'fin-card', 'aria-labelledby': 'search-res-h' },
+      h('div', { class: 'fin-card-head' },
+        h('h3', { id: 'search-res-h', class: 'fin-label' }, 'Results ', active && h('span', { class: 'fin-count' }, String(all.length))),
+        active && all.length > 0 && h('p', { class: 'fin-search-totals' },
+          h('span', {}, 'In ', h('strong', { class: 'fin-num fin-pos' }, money(total(1), 'EUR'))),
+          h('span', {}, 'Out ', h('strong', { class: 'fin-num fin-neg' }, money(-total(-1), 'EUR'))))),
+      filterBar('search', { showAccount: true }),
+      selected.size > 0 && bulkBar(rows),
+      !active
+        ? h('p', { class: 'fin-empty fin-pad' }, 'Type something to search for, or pick a category, type, dates or amounts.')
+        : rows.length === 0
+          ? h('p', { class: 'fin-empty fin-pad' }, 'Nothing matches these filters.')
+          : [
+            pages > 1 && pager(txPage, pages, all.length, 'top', 'search-res-h'),
+            txTable(rows, { caption: `Search results, newest first, page ${txPage + 1} of ${pages}`, showAccount: true }),
+            pages > 1 && pager(txPage, pages, all.length, 'bottom', 'search-res-h'),
+          ]));
 }
 
 const transferPartner = (tx) =>
@@ -543,7 +804,20 @@ const pickableAccounts = (keep) => state.accounts.filter((a) => !a.archived || a
 function transactionForm(account, tx) {
   const partner = transferPartner(tx);
   let kind = tx.kind === 'refund' ? 'refund' : tx.amount > 0 ? 'income' : 'expense';
-  const desc = input({ type: 'text', required: true, autocomplete: 'off', 'data-key': 'tx-desc-edit', value: tx.description });
+  // Suggestions fill in the description, and the categories when it has none (never the amount).
+  const descCombo = descriptionCombo(descriptionIndex(state.transactions), {
+    label: 'Description',
+    accountOf: () => account.id,
+    onAccept: (e) => {
+      desc.value = e.description;
+      if (!tx.transferId && !cats.value().length && e.categoryIds.length) cats.set(e.categoryIds);
+      amount.focus();
+    },
+  });
+  const desc = descCombo.box;
+  desc.required = true;
+  desc.value = tx.description;
+  desc.dataset.key = 'tx-desc-edit';
   const amount = input({ type: 'number', step: '0.01', min: '0.01', required: true, inputmode: 'decimal', value: String(Math.abs(tx.amount) / 100) });
   const date = input({ type: 'date', required: true, value: tx.date });
   const cats = categoryPicker(categoriesOf(tx), { label: `Categories of ${tx.description}` });
@@ -575,6 +849,7 @@ function transactionForm(account, tx) {
           rate: !dateMoved && partner.rate != null ? partner.rate : await ensureRate(partnerCurrency, date.value),
         });
       }
+      const catsBefore = categoriesOf(tx);
       Object.assign(tx, shared, {
         amount: next,
         kind: tx.transferId ? tx.kind : kind === 'refund' ? 'refund' : tx.kind === 'opening' ? 'opening' : undefined,
@@ -585,13 +860,15 @@ function transactionForm(account, tx) {
       editingTxId = null;
       persist(); render(`tx-edit-${tx.id}`);
       say(partner ? `Transfer updated in both ${account.name} and ${accountName(partner.accountId)}.` : 'Transaction updated.');
+      const added = categoriesOf(tx).find((id) => !catsBefore.includes(id));
+      if (added) offerRule(tx, added);
     },
   },
     tx.transferId
       ? h('p', { class: 'fin-hint fin-edit-note' }, `Transfer ${tx.amount < 0 ? 'to' : 'from'} ${accountName(partner?.accountId)}. Changes apply to both sides.`)
       : h('div', { class: 'fin-seg', role: 'group', 'aria-label': 'Transaction type' }, kinds),
     h('div', { class: 'fin-grid' },
-      field('Description', desc), field(`Amount (${account.currency})`, amount),
+      comboField('Description', descCombo), field(`Amount (${account.currency})`, amount),
       field('Date', date)),
     !tx.transferId && pickerField('Categories', cats),
     h('div', { class: 'fin-grid' }, field('Memo', memo)),
@@ -637,7 +914,14 @@ function categoryCell(t) {
   const picker = categoryPicker(categoriesOf(t), {
     label: `Categories of ${t.description}, ${shortDate(t.date)}`,
     compact: true,
-    onChange: (ids, change) => { t.categoryIds = ids; persist(); say(change); },
+    onChange: (ids, change) => {
+      const added = ids.find((id) => !categoriesOf(t).includes(id));
+      t.categoryIds = ids;
+      persist();
+      say(change);
+      // Categorizing by hand can teach a rule.
+      if (added) offerRule(t, added);
+    },
   }).el;
   return ious.length ? h('div', {}, picker, h('div', { class: 'fin-sub' }, iouLabel(ious))) : picker;
 }
@@ -672,7 +956,8 @@ function categoryPicker(selected, { label, compact = false, onChange } = {}) {
     else if (typeof focus === 'number') (wrap.querySelectorAll('.fin-cat-x')[focus] ?? add).focus();
   };
   paint();
-  return { el: wrap, value: () => [...ids] };
+  // `set(ids)` replaces the choice (a suggestion filling in its categories).
+  return { el: wrap, value: () => [...ids], set: (next) => { ids.splice(0, ids.length, ...next.filter((id) => category(id))); paint(); onChange?.([...ids], ''); } };
 }
 
 // A labelled form row for a category picker (a group, so the label is its accessible name).
@@ -702,80 +987,243 @@ function dialogHead(title, close) {
 
 const categoryOptions = (autoLabel = 'Auto') => [['', autoLabel], ...catOptions()];
 
+// A description box that suggests names from past transactions (ARIA combobox + listbox).
+// ↓/↑ move, Enter or Tab take the highlighted one, Esc closes the list. `onAccept(entry)` fills the
+// rest of the row. The list opens upwards when there isn't room below (the dialog scrolls).
+function descriptionCombo(index, { label, accountOf, onAccept }) {
+  const listId = `desc-${newId().slice(0, 8)}`;
+  const box = input({
+    type: 'text', autocomplete: 'off', role: 'combobox', 'aria-autocomplete': 'list',
+    'aria-expanded': 'false', 'aria-controls': listId, 'aria-label': label,
+  });
+  const listbox = h('ul', { id: listId, role: 'listbox', class: 'fin-options', hidden: true, 'aria-label': 'Earlier descriptions' });
+  let results = [];
+  let active = -1;
+  const isOpen = () => !listbox.hidden;
+  const open = (on) => {
+    listbox.hidden = !on;
+    box.setAttribute('aria-expanded', String(on));
+    if (!on) { box.removeAttribute('aria-activedescendant'); return; }
+    // Inside a scrolling table (the inline edit form) a floating list would be cut off, so it opens
+    // in the flow of the form instead.
+    listbox.classList.toggle('fin-options--inline', Boolean(box.closest('.fin-scroll')));
+    const r = box.getBoundingClientRect();
+    const room = (box.closest('dialog')?.getBoundingClientRect().bottom ?? window.innerHeight) - r.bottom;
+    listbox.classList.toggle('fin-options--up', room < 260);
+  };
+  const highlight = (i) => {
+    active = i;
+    [...listbox.children].forEach((li, j) => li.setAttribute('aria-selected', String(j === i)));
+    const li = listbox.children[i];
+    if (li) { box.setAttribute('aria-activedescendant', li.id); li.scrollIntoView({ block: 'nearest' }); }
+  };
+  const accept = (e) => { open(false); onAccept(e); };
+  const cur = (e) => state.accounts.find((a) => a.id === e.accountId)?.currency ?? 'EUR';
+  const update = () => {
+    results = suggestDescriptions(index, box.value, { accountId: accountOf() });
+    listbox.replaceChildren(...results.map((e, i) => h('li', {
+      id: `${listId}-${i}`, role: 'option', class: 'fin-option fin-option-desc', 'aria-selected': 'false',
+      onmousedown: (ev) => ev.preventDefault(), // keep focus in the box
+      onclick: () => accept(e),
+    },
+      h('span', { class: 'fin-option-main' }, e.description,
+        e.kind === 'transfer'
+          ? h('span', { class: 'fin-option-amt fin-num' }, `⇄ ${money(Math.abs(e.amount), cur(e))}`)
+          : h('span', { class: `fin-option-amt fin-num ${e.kind === 'refund' ? '' : tone(e.amount)}` }, `${e.kind === 'refund' ? '↩ ' : ''}${signed(e.amount, cur(e))}`)),
+      h('span', { class: 'fin-sub' }, [
+        e.kind === 'transfer' ? `${accountName(e.accountId)} → ${accountName(e.toAccountId)}` : e.categoryIds.map(catLabel).filter(Boolean).join(', ') || 'No category',
+        `used ${e.count}×`, `last ${shortDate(e.lastDate)}${e.lastDate.slice(0, 4) != thisYear ? ` ${e.lastDate.slice(0, 4)}` : ''}`].join(' · ')))));
+    open(results.length > 0);
+    // Pre-select the first suggestion only when it starts with what's typed, so Tab or Enter never
+    // swap a new description for a different old one; otherwise pick with the arrow keys first.
+    if (results.length && results[0].key.startsWith(normalize(box.value))) highlight(0);
+    else active = -1;
+  };
+  box.addEventListener('input', update);
+  box.addEventListener('keydown', (ev) => {
+    if (ev.key === 'ArrowDown') {
+      ev.preventDefault();
+      if (!isOpen() && box.value.trim()) update();
+      else if (results.length) highlight(Math.min(active + 1, results.length - 1));
+    } else if (ev.key === 'ArrowUp' && isOpen()) {
+      ev.preventDefault();
+      highlight(Math.max(active - 1, 0));
+    } else if ((ev.key === 'Enter' || ev.key === 'Tab') && !ev.shiftKey && !ev.metaKey && !ev.ctrlKey && isOpen() && active >= 0) {
+      ev.preventDefault();
+      ev.stopPropagation(); // the form's Enter (next row) shouldn't also run
+      accept(results[active]);
+    } else if (ev.key === 'Escape' && isOpen()) {
+      ev.preventDefault();
+      ev.stopPropagation(); // close the list, not the dialog
+      open(false);
+    }
+  });
+  box.addEventListener('blur', () => setTimeout(() => open(false), 100));
+  return { box, el: h('div', { class: 'fin-combo' }, box, listbox) };
+}
+
+// A form row for a description combobox: the label points at its box, the list sits under it.
+function comboField(label, combo, hint) {
+  const f = field(label, combo.box, hint);
+  f.replaceChild(combo.el, combo.box);
+  combo.el.prepend(combo.box);
+  return f;
+}
+
+// Quick entry: a grid of rows, made for the keyboard. Descriptions suggest earlier ones and fill the
+// rest of the row from their latest use; Enter goes to the next row (adding one at the end);
+// Ctrl/⌘+Enter saves them all.
 function multiTxForm(account, close, swap) {
   const accounts = pickableAccounts(account.id);
+  const index = descriptionIndex(state.transactions);
   const rows = [];
   const body = h('tbody');
   const error = h('p', { class: 'fin-error', role: 'alert' });
+  let form;
 
   const addRow = () => {
     const n = rows.length + 1;
-    const r = {
-      desc: input({ type: 'text', autocomplete: 'off', 'aria-label': `Description, row ${n}` }),
+    const r = {};
+    Object.assign(r, {
       cat: select(categoryOptions(), '', { 'aria-label': `Category, row ${n}` }),
-      sign: select([['-', '− Expense'], ['+', '+ Income'], ['r', '↩ Refund']], '-', { 'aria-label': `Expense, income or refund, row ${n}`, class: 'fin-input fin-sign' }),
+      sign: select([['-', '− Expense'], ['+', '+ Income'], ['r', '↩ Refund'], ['t', '⇄ Transfer']], '-', { 'aria-label': `Type, row ${n}`, class: 'fin-input fin-sign' }),
+      // For a transfer, the category cell shows where the money goes instead.
+      to: select([['', 'To account…'], ...accounts.map((a) => [a.id, a.name])], '', { 'aria-label': `Transfer to, row ${n}`, hidden: true }),
       amount: input({ type: 'number', step: '0.01', min: '0.01', inputmode: 'decimal', 'aria-label': `Amount, row ${n}` }),
       date: input({ type: 'date', value: rows.at(-1)?.date.value || today(), 'aria-label': `Date, row ${n}` }),
       acc: select(accounts.map((a) => [a.id, a.name]), rows.at(-1)?.acc.value ?? account.id, { 'aria-label': `Account, row ${n}` }),
-    };
+    });
+    const combo = descriptionCombo(index, {
+      label: `Description, row ${n}`,
+      accountOf: () => r.acc.value,
+      // Fill the row from the latest use of that description, except the amount, which is rarely the
+      // same; the cursor goes there next.
+      onAccept: (e) => {
+        r.desc.value = e.description;
+        const cat = e.categoryIds.find((id) => category(id));
+        if (cat) r.cat.value = cat;
+        r.sign.value = e.kind === 'transfer' ? 't' : e.kind === 'refund' ? 'r' : e.amount < 0 ? '-' : '+';
+        // A transfer brings both of its accounts, when they're still open.
+        if (e.kind === 'transfer') {
+          if (accounts.some((a) => a.id === e.accountId)) r.acc.value = e.accountId;
+          if (accounts.some((a) => a.id === e.toAccountId)) r.to.value = e.toAccountId;
+        }
+        syncType();
+        syncAuto();
+        ensureSpareRow();
+        r.amount.focus();
+      },
+    });
+    r.desc = combo.box;
     // While the category is on Auto, its label shows what the rules would pick.
-    r.desc.addEventListener('input', () => {
+    const syncAuto = () => {
       const id = categorize(r.desc.value, state.rules);
       r.cat.options[0].textContent = id ? `Auto: ${catLabel(id)}` : 'Auto';
-    });
+    };
+    r.desc.addEventListener('input', () => { syncAuto(); ensureSpareRow(); });
+    r.amount.addEventListener('focus', () => r.amount.select());
+    const syncType = () => {
+      const transfer = r.sign.value === 't';
+      r.cat.hidden = transfer;
+      r.to.hidden = !transfer;
+    };
+    r.sign.addEventListener('change', syncType);
     rows.push(r);
     body.append(h('tr', {},
-      h('td', {}, r.desc), h('td', {}, r.cat),
+      h('td', {}, combo.el), h('td', {}, r.cat, r.to),
       h('td', {}, h('div', { class: 'fin-amount' }, r.sign, r.amount)),
       h('td', {}, r.date), h('td', {}, r.acc)));
     return r;
   };
-  for (let i = 0; i < 5; i += 1) addRow();
+  // Typing in the last row adds another, so there's always an empty one to go to.
+  const ensureSpareRow = () => {
+    const last = rows.at(-1);
+    if (last.desc.value.trim() || last.amount.value) addRow();
+  };
+  for (let i = 0; i < 3; i += 1) addRow();
 
-  return h('form', {
+  // Enter in a field goes to the next row's description (adding one at the end); Ctrl/⌘+Enter saves.
+  const onKey = (ev) => {
+    if (ev.key !== 'Enter' || ev.target.tagName === 'BUTTON' || ev.target.tagName === 'TEXTAREA') return;
+    ev.preventDefault();
+    if (ev.metaKey || ev.ctrlKey) { form.requestSubmit(); return; }
+    const i = rows.findIndex((r) => Object.values(r).includes(ev.target));
+    if (i < 0) return;
+    if (i === rows.length - 1) addRow();
+    rows[i + 1].desc.focus();
+  };
+
+  form = h('form', {
+    onkeydown: onKey,
     onsubmit: async (e) => {
       e.preventDefault();
       const ready = [];
       for (const [i, r] of rows.entries()) {
         const res = batchRow({
           description: r.desc.value, amount: r.amount.value, sign: r.sign.value,
-          date: r.date.value, accountId: r.acc.value, categoryId: r.cat.value,
+          date: r.date.value, accountId: r.acc.value, categoryId: r.cat.value, toAccountId: r.to.value,
         }, state.rules);
         if (res.skip) continue;
         if (res.error) {
           error.textContent = `Row ${i + 1} ${res.error}.`;
-          (res.error.includes('description') ? r.desc : res.error.includes('date') ? r.date : r.amount).focus();
+          (res.error.includes('description') ? r.desc : res.error.includes('date') ? r.date
+            : res.error.includes('transfer') ? r.to : r.amount).focus();
           return;
         }
-        ready.push(res.tx);
+        ready.push(res);
       }
       if (!ready.length) { error.textContent = 'Fill in at least one row.'; rows[0].desc.focus(); return; }
-      for (const tx of ready) {
-        const cur = state.accounts.find((a) => a.id === tx.accountId).currency;
-        state.transactions.push({ id: newId(), ...tx, rate: await ensureRate(cur, tx.date) });
+      const acc = (id) => state.accounts.find((a) => a.id === id);
+      for (const res of ready) {
+        if (res.transfer) {
+          // Two linked sides; between currencies, the received amount is converted at that day's rate.
+          const { fromId, toId, date, description, sent } = res.transfer;
+          const from = acc(fromId);
+          const to = acc(toId);
+          const [rf, rt] = [await ensureRate(from.currency, date), await ensureRate(to.currency, date)];
+          const received = from.currency === to.currency || rf == null || rt == null ? sent : crossConvert(sent, rf, rt);
+          const legs = makeTransfer({ from, to, sent, received, date, description });
+          legs[0].rate = rf;
+          legs[1].rate = rt;
+          state.transactions.push(...legs);
+        } else {
+          const cur = acc(res.tx.accountId).currency;
+          state.transactions.push({ id: newId(), ...res.tx, rate: await ensureRate(cur, res.tx.date) });
+        }
       }
       persist(); close();
-      say(`Added ${ready.length} transaction${ready.length === 1 ? '' : 's'}.`);
+      const transfers = ready.filter((x) => x.transfer).length;
+      say(`Added ${ready.length - transfers} transaction${ready.length - transfers === 1 ? '' : 's'}${transfers ? ` and ${transfers} transfer${transfers === 1 ? '' : 's'}` : ''}.`);
     },
   },
     dialogHead('Add transactions', close),
-    h('div', { class: 'fin-scroll' }, h('table', { class: 'fin-batch' },
-      h('thead', {}, h('tr', {}, ['Description', 'Category', 'Amount', 'Date', 'Account'].map((t) => h('th', { scope: 'col' }, t)))),
+    h('p', { class: 'fin-keys' },
+      h('span', {}, h('kbd', {}, '↓'), h('kbd', {}, '↑'), ' pick a suggestion'),
+      h('span', {}, h('kbd', {}, 'Enter'), ' or ', h('kbd', {}, 'Tab'), ' take it'),
+      h('span', {}, h('kbd', {}, 'Enter'), ' next row'),
+      h('span', {}, h('kbd', {}, /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl'), h('kbd', {}, 'Enter'), ' save all')),
+    h('div', { class: 'fin-batch-wrap' }, h('table', { class: 'fin-batch' },
+      h('thead', {}, h('tr', {}, ['Description', 'Category or To', 'Amount', 'Date', 'Account (from)'].map((t) => h('th', { scope: 'col' }, t)))),
       body)),
-    button('Add row', () => addRow().desc.focus(), 'secondary fin-btn-sm'),
-    h('p', { class: 'fin-hint' }, 'Empty rows are skipped. Leave the category on Auto to use your rules.'),
+    h('p', { class: 'fin-hint' }, 'Empty rows are skipped. Leave the category on Auto to use your rules. A suggestion fills in its category and type, or both accounts for a transfer; you type the amount. For a transfer, pick ⇄ Transfer and the account the money goes to.'),
     error,
     h('div', { class: 'fin-dialog-foot' },
       h('button', { type: 'submit', class: 'fin-btn btn-primary' }, 'Add transactions'),
       h('span', { class: 'fin-muted' }, 'or'),
       h('button', { type: 'button', class: 'fin-link', onclick: () => swap('single') }, 'Add a single transaction')));
+  return form;
 }
 
 function singleTxForm(account, close, swap) {
   const accounts = pickableAccounts(account.id);
   const accountOptions = accounts.map((a) => [a.id, `${a.name} (${a.currency})`]);
   const type = select([['expense', 'Expense'], ['income', 'Income'], ['refund', 'Refund (money back on an expense)'], ['transfer', 'Transfer']], 'expense');
-  const desc = input({ type: 'text', autocomplete: 'off' });
+  // Suggestions fill in the type and categories (or both accounts, for a transfer), not the amount.
+  let fillFrom = () => {};
+  const descCombo = descriptionCombo(descriptionIndex(state.transactions), {
+    label: 'Description', accountOf: () => from.value, onAccept: (e) => fillFrom(e),
+  });
+  const desc = descCombo.box;
   let suggest = () => {};
   const cats = categoryPicker([], { label: 'Categories', onChange: () => suggest() });
   const amount = input({ type: 'number', step: '0.01', min: '0.01', required: true, inputmode: 'decimal' });
@@ -837,6 +1285,21 @@ function singleTxForm(account, close, swap) {
     return ` Repeats ${frequencyLabel(freq).toLowerCase()}, next on ${shortDate(nextDate)}.`;
   };
 
+  fillFrom = (e) => {
+    desc.value = e.description;
+    type.value = e.kind === 'transfer' ? 'transfer' : e.kind === 'refund' ? 'refund' : e.amount < 0 ? 'expense' : 'income';
+    if (e.kind === 'transfer') {
+      if (accounts.some((a) => a.id === e.accountId)) from.value = e.accountId;
+      if (accounts.some((a) => a.id === e.toAccountId)) to.value = e.toAccountId;
+    } else {
+      cats.set(e.categoryIds);
+    }
+    receivedTouched = false;
+    sync();
+    suggest();
+    amount.focus();
+  };
+
   const form = h('form', {
     onsubmit: async (e) => {
       e.preventDefault();
@@ -874,7 +1337,7 @@ function singleTxForm(account, close, swap) {
     dialogHead('Add transaction', close),
     h('div', { class: 'fin-grid fin-grid-2' },
       field('Type', type),
-      field('Description', desc),
+      comboField('Description', descCombo),
       catField, field('Date', date),
       amountField, receivedField,
       fromField, toField,
@@ -1095,9 +1558,10 @@ function lotsPanel(x) {
           h('td', { class: 'fin-r fin-num fin-muted' }, l.fees ? money(Math.round(l.fees * 100), x.currency) : '—'),
           h('td', { class: 'fin-r fin-num' }, money(Math.round((l.quantity * l.price + (l.kind === 'sell' ? -(l.fees ?? 0) : (l.fees ?? 0))) * 100), x.currency)),
           h('td', { class: 'fin-r' }, h('div', { class: 'fin-row-actions' }, iconButton('trash', `Delete the ${l.kind} of ${l.quantity} on ${shortDate(l.date)}`, () => {
-            state.lots = state.lots.filter((y) => y.id !== l.id);
-            recalcHolding(x);
-            persist(); render(`lots-${x.id}`); say(`Deleted. ${x.symbol} now has ${x.quantity} units.`);
+            undoable(`Deleted the ${l.kind} of ${l.quantity} ${x.symbol}.`, ['lots', 'holdings'], () => {
+              state.lots = state.lots.filter((y) => y.id !== l.id);
+              recalcHolding(state.holdings.find((y) => y.id === x.id));
+            });
           }, { danger: true })))))))),
     h('form', {
       onsubmit: (e) => {
@@ -1165,12 +1629,10 @@ function holdingsSection(account) {
               iconButton('edit', `Edit ${x.symbol}`, () => openHoldingDialog(x), { 'data-key': `hold-edit-${x.id}` }),
               button(own.length ? `Lots (${own.length})` : 'Add lots', () => { openLotsId = open ? null : x.id; render(`lots-${x.id}`); },
                 'secondary fin-btn-sm', { 'aria-expanded': String(open), 'data-key': `lots-${x.id}` }),
-              iconButton('trash', `Remove ${x.symbol}`, () => {
-                if (own.length && !confirm(`Remove ${x.symbol} and its ${own.length} buys and sells?`)) return;
+              iconButton('trash', `Remove ${x.symbol}`, () => undoable(`${x.symbol} removed${own.length ? ` with its ${own.length} buys and sells` : ''}.`, ['holdings', 'lots'], () => {
                 state.holdings = state.holdings.filter((y) => y.id !== x.id);
                 state.lots = state.lots.filter((l) => l.holdingId !== x.id);
-                persist(); render();
-              }, { danger: true }))));
+              }), { danger: true }))));
           return [row, open && h('tr', { class: 'fin-edit-row' }, h('td', { colspan: 9 }, lotsPanel(x)))];
         })))),
     h('form', {
@@ -1256,13 +1718,10 @@ function openIouDialog(preset = {}) {
 
 function deleteIou(e) {
   const linked = e.transactionId && state.transactions.find((t) => t.id === e.transactionId);
-  const msg = linked
-    ? `Delete this entry? The ${accountName(linked.accountId)} transaction it came with is deleted too.`
-    : 'Delete this entry?';
-  if (!confirm(msg)) return;
-  state.ious = state.ious.filter((x) => x.id !== e.id);
-  if (linked) state.transactions = state.transactions.filter((t) => t.id !== linked.id);
-  persist(); render('iou-add'); say('Entry deleted.');
+  undoable(linked ? `Entry deleted, with its ${accountName(linked.accountId)} transaction.` : 'Entry deleted.', ['ious', 'transactions'], () => {
+    state.ious = state.ious.filter((x) => x.id !== e.id);
+    if (linked) state.transactions = state.transactions.filter((t) => t.id !== linked.id);
+  });
 }
 
 function renderIous() {
@@ -1549,13 +2008,22 @@ function insightsPanel(accountIds) {
     rateOf: (c) => latestRate(c) ?? 1,
   });
   const rate = r.savingsRate == null ? '—' : `${Math.round(r.savingsRate * 100)}%`;
+  // The same length of time just before, to compare with (this year → last year).
+  const prevRange = previousRange(range);
+  const p = insights(state.transactions, {
+    ...prevRange, accountIds, accounts: state.accounts, categories: state.categories, ious: state.ious,
+    rateOf: (c) => latestRate(c) ?? 1,
+  });
+  const vs = (now, before) => h('p', { class: 'fin-stat-note' }, versus(now, before, prevRange));
   return h('div', { class: 'fin-insights' },
     periodControls(range),
     h('dl', { class: 'fin-stats' },
-      h('div', {}, h('dt', {}, 'Income'), h('dd', { class: 'fin-pos' }, money(r.income, 'EUR'))),
+      h('div', {}, h('dt', {}, 'Income'), h('dd', { class: 'fin-pos' }, money(r.income, 'EUR')), vs(r.income, p.income)),
       h('div', {}, h('dt', {}, 'Spending'), h('dd', { class: 'fin-neg' }, money(r.expenses, 'EUR')),
+        vs(r.expenses, p.expenses),
         r.refunds > 0 && h('p', { class: 'fin-stat-note' }, `after ${money(r.refunds, 'EUR')} of refunds`)),
-      h('div', {}, h('dt', {}, 'Net'), h('dd', { class: tone(r.net) }, signed(r.net, 'EUR'))),
+      h('div', {}, h('dt', {}, 'Net'), h('dd', { class: tone(r.net) }, signed(r.net, 'EUR')),
+        h('p', { class: 'fin-stat-note' }, `${signed(p.net, 'EUR')} the ${prevLabel(prevRange)}`)),
       h('div', {}, h('dt', {}, 'Saved'), h('dd', {}, rate),
         h('p', { class: 'fin-stat-note' }, 'of income'))),
     r.count === 0
@@ -1565,8 +2033,113 @@ function insightsPanel(accountIds) {
         h('div', { class: 'fin-break-grid' },
           categoryBreakdown('Spending by category', r.spending, r.expenses, 'fin-mark-out'),
           categoryBreakdown('Income by category', r.earning, r.income, 'fin-mark-in')),
+        categoryOverTime(range, prevRange, accountIds, r),
       ],
     h('p', { class: 'fin-hint fin-mt' }, 'Transfers between your accounts and opening balances aren’t counted. Loans and repayments count only what isn’t owed back, refunds lower spending, and a transaction with several categories counts under its first one.'));
+}
+
+// The period of the same length just before `range`.
+function previousRange({ from, to }) {
+  const day = (d, n) => new Date(Date.parse(`${d}T00:00:00Z`) + n * 864e5).toISOString().slice(0, 10);
+  const days = Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 864e5) + 1;
+  return { from: day(from, -days), to: day(from, -1) };
+}
+const prevLabel = ({ from, to }) => `${shortDate(from)} ${from.slice(0, 4)} – ${shortDate(to)} ${to.slice(0, 4)}`;
+// "+12% vs 1 Jan 2025 – 31 Dec 2025", "new", or "same as …".
+function versus(now, before, prevRange) {
+  if (!before) return now ? `nothing in ${prevLabel(prevRange)}` : '';
+  const pct = Math.round(((now - before) / Math.abs(before)) * 100);
+  return pct === 0 ? `same as ${prevLabel(prevRange)}` : `${pct > 0 ? '+' : ''}${pct}% vs ${prevLabel(prevRange)}`;
+}
+
+// One category's spending over the period (and its total against the previous period). Defaults to
+// the biggest spending category; the choice is kept while the page is open.
+let insightsCategory = null;
+function categoryOverTime(range, prevRange, accountIds, r) {
+  const options = catOptions();
+  const id = options.some(([x]) => x === insightsCategory) ? insightsCategory : r.spending.find((c) => c.id)?.id ?? options[0]?.[0];
+  if (!id) return null;
+  const opts = { accountIds, accounts: state.accounts, categories: state.categories, ious: state.ious, rateOf: (c) => latestRate(c) ?? 1, onlyCategory: id };
+  const now = insights(state.transactions, { ...range, ...opts });
+  const before = insights(state.transactions, { ...prevRange, ...opts });
+  const pick = select(options, id, { 'data-key': 'cat-time', 'aria-label': 'Category' });
+  pick.addEventListener('change', () => { insightsCategory = pick.value; render('cat-time'); });
+  return h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'cat-time-h' },
+    h('div', { class: 'fin-chart-head' },
+      h('h3', { id: 'cat-time-h', class: 'fin-label' }, `Spending on a category, by ${now.unit}`),
+      h('div', { class: 'fin-cat-time-pick' }, pick)),
+    h('p', { class: 'fin-readout' },
+      h('strong', { class: 'fin-num' }, money(now.expenses, 'EUR')), ` on ${catLabel(id)} · `,
+      h('span', { class: 'fin-muted' }, versus(now.expenses, before.expenses, prevRange))),
+    singleColumns(now.series.map((b) => ({ key: b.key, value: b.expenses })), now.unit, range, `Spending on ${catLabel(id)}`));
+}
+
+// One series as columns from a zero baseline (no legend: the heading names it). Hover or focus a
+// column for its value; the table under it has every value.
+function singleColumns(series, unit, range, label) {
+  const NS = 'http://www.w3.org/2000/svg';
+  const el = (tag, attrs = {}) => {
+    const n = document.createElementNS(NS, tag);
+    for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+    return n;
+  };
+  const W = 760; const H = 200; const L = 52; const R = 8; const T = 10; const B = 26;
+  const plotW = W - L - R; const plotH = H - T - B;
+  const top = Math.max(1, ...series.map((b) => b.value));
+  const mag = 10 ** Math.floor(Math.log10(top));
+  const niceTop = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((v) => v >= top);
+  const y = (v) => T + plotH - (Math.max(0, v) / niceTop) * plotH;
+  const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, class: 'fin-chart', role: 'group', 'aria-label': `${label}, by ${unit}` });
+  for (let i = 0; i <= 4; i += 1) {
+    const v = (niceTop / 4) * i;
+    svg.append(el('line', { x1: L, x2: W - R, y1: y(v), y2: y(v), class: i ? 'fin-grid-line' : 'fin-axis-line' }));
+    const t = el('text', { x: L - 8, y: y(v) + 4, class: 'fin-tick', 'text-anchor': 'end' });
+    t.textContent = compactEUR(v);
+    svg.append(t);
+  }
+  const slot = plotW / series.length;
+  const barW = Math.max(2, Math.min(24, slot - 6));
+  const every = Math.ceil(series.length / 12);
+  const multiYear = range.from.slice(0, 4) !== range.to.slice(0, 4);
+  const readout = h('p', { class: 'fin-readout fin-muted', 'aria-live': 'polite' }, 'Hover or focus a column for its value.');
+  series.forEach((b, i) => {
+    const cx = L + slot * i + slot / 2;
+    const g = el('g', { class: 'fin-col' });
+    const hit = el('rect', { x: L + slot * i, y: T, width: slot, height: plotH, class: 'fin-hit', tabindex: '0', 'aria-label': `${bucketTitle(b.key, unit)}: ${money(b.value, 'EUR')}` });
+    g.append(hit);
+    const y0 = T + plotH;
+    const yv = y(b.value);
+    if (y0 - yv >= 0.5) {
+      const rr = Math.min(4, barW / 2, y0 - yv);
+      const x = cx - barW / 2;
+      g.append(el('path', { class: 'fin-mark-out', d: `M${x},${y0}V${yv + rr}Q${x},${yv} ${x + rr},${yv}H${x + barW - rr}Q${x + barW},${yv} ${x + barW},${yv + rr}V${y0}Z` }));
+    }
+    const show = () => {
+      svg.querySelectorAll('.fin-col.is-active').forEach((n) => n.classList.remove('is-active'));
+      g.classList.add('is-active');
+      readout.replaceChildren(h('strong', {}, bucketTitle(b.key, unit)), ' ', h('strong', { class: 'fin-num' }, money(b.value, 'EUR')));
+    };
+    hit.addEventListener('pointerenter', show);
+    hit.addEventListener('focus', show);
+    svg.append(g);
+    if (i % every === 0) {
+      const t = el('text', { x: cx, y: H - 8, class: 'fin-tick', 'text-anchor': 'middle' });
+      t.textContent = bucketLabel(b.key, unit, multiYear);
+      svg.append(t);
+    }
+  });
+  return [
+    readout,
+    h('div', { class: 'fin-chart-wrap' }, svg),
+    h('details', { class: 'fin-chart-table' },
+      h('summary', {}, 'Show as a table'),
+      h('div', { class: 'fin-scroll' }, h('table', { class: 'fin-table' },
+        h('caption', { class: 'fin-sr' }, `${label}, by ${unit}`),
+        h('thead', {}, h('tr', {}, h('th', { scope: 'col' }, unit[0].toUpperCase() + unit.slice(1)), h('th', { scope: 'col', class: 'fin-r' }, 'Spending'))),
+        h('tbody', {}, series.map((b) => h('tr', {},
+          h('th', { scope: 'row' }, bucketTitle(b.key, unit)),
+          h('td', { class: 'fin-r fin-num' }, money(b.value, 'EUR')))))))),
+  ];
 }
 
 function renderInsights() {
@@ -1741,7 +2314,14 @@ function investmentInsights(account) {
       : h('p', { class: 'fin-notice' }, 'Pick a longer period to see the account over time.'),
     h('p', { class: 'fin-hint' },
       'Value is at market prices today and on days the app has recorded (once a day, when you open it). Before that, ',
-      byLots ? 'it’s the units held then times the latest trade price by then.' : 'it’s the money put in, as there’s no price history; adding the buys and sells (Lots, or an FT.com import) gives real values over time.'),
+      byLots
+        ? (own.every((x) => latestClose(x)) ? 'it’s the units held then times that week’s closing price.' : 'it’s the units held then times the latest trade price by then; load the price history for real weekly values.')
+        : 'it’s the money put in, as there’s no record of units held; adding the buys and sells (Lots, or an FT.com import) gives real values over time.'),
+    byLots && own.some((x) => !latestClose(x)) && h('div', { class: 'fin-actions fin-mt' },
+      button(`Load price history (${own.filter((x) => !latestClose(x)).length} holding${own.filter((x) => !latestClose(x)).length === 1 ? '' : 's'})`,
+        async (e) => { e.target.disabled = true; e.target.textContent = 'Loading…'; await loadHistory(own.filter((x) => !latestClose(x))); },
+        'secondary', { 'data-key': 'load-history' }),
+      h('span', { class: 'fin-hint' }, 'One lookup per holding, with your Market data keys. It then updates itself weekly.')),
     rows.length > 0 && h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'inv-h' },
       h('h3', { id: 'inv-h', class: 'fin-label' }, 'Holdings today'),
       h('div', { class: 'fin-scroll' }, h('table', { class: 'fin-table' },
@@ -1853,9 +2433,9 @@ function skipScheduled(s, focusKey) {
 }
 
 function deleteScheduled(s) {
-  if (!confirm(`Stop the schedule “${s.description}”? Transactions already entered are kept.`)) return;
-  state.schedules = state.schedules.filter((x) => x.id !== s.id);
-  persist(); render('sched-add'); say('Schedule removed.');
+  undoable(`Stopped “${s.description}”. Transactions already entered are kept.`, ['schedules'], () => {
+    state.schedules = state.schedules.filter((x) => x.id !== s.id);
+  });
 }
 
 const dueLabel = (date) => (date < today() ? 'Overdue' : date === today() ? 'Due today' : null);
@@ -2001,6 +2581,7 @@ const SETTINGS_PAGES = [
   { key: 'categories', label: 'Categories', group: 'Organise', render: () => categoriesSection() },
   { key: 'rules', label: 'Category rules', group: 'Organise', render: () => rulesSection() },
   { key: 'market', label: 'Market data', group: 'Prices', render: () => marketSection() },
+  { key: 'backup', label: 'Backup and restore', group: 'Data', render: () => backupSection() },
   { key: 'buxfer', label: 'Import from Buxfer', group: 'Data', render: () => buxferSection() },
   { key: 'import', label: 'Import CSV', group: 'Data', render: () => importSection() },
   { key: 'ft', label: 'Import holdings (FT.com)', group: 'Data', render: () => ftSection() },
@@ -2212,12 +2793,13 @@ function categoriesSection() {
     if (rules) lines.push(`${rules} rule${rules === 1 ? '' : 's'} using it will be deleted.`);
     if (kids.length) lines.push(`Its ${kids.length} subcategor${kids.length === 1 ? 'y moves' : 'ies move'} to the top level.`);
     if (!confirm(lines.join('\n'))) return;
-    for (const t of state.transactions) if (categoriesOf(t).includes(c.id)) t.categoryIds = categoriesOf(t).filter((id) => id !== c.id);
-    for (const k of kids) k.parentId = null;
-    state.rules = state.rules.filter((r) => r.categoryId !== c.id);
-    for (const s of state.schedules) if (s.categoryId === c.id) s.categoryId = null;
-    state.categories = state.categories.filter((x) => x.id !== c.id);
-    persist(); render('cat-add'); say(`Deleted ${c.name}.`);
+    undoable(`Deleted ${c.name}.`, ['transactions', 'categories', 'rules', 'schedules'], () => {
+      for (const t of state.transactions) if (categoriesOf(t).includes(c.id)) t.categoryIds = categoriesOf(t).filter((id) => id !== c.id);
+      for (const k of state.categories) if (k.parentId === c.id) k.parentId = null;
+      state.rules = state.rules.filter((r) => r.categoryId !== c.id);
+      for (const x of state.schedules) if (x.categoryId === c.id) x.categoryId = null;
+      state.categories = state.categories.filter((x) => x.id !== c.id);
+    });
   };
 
   const row = (c) => {
@@ -2589,44 +3171,205 @@ function download(name, rows) {
 
 const decimal2 = (minor) => (minor / 100).toFixed(2);
 
-function exportSection() {
+// Readable CSV tables (names instead of ids), for the Export buttons and inside a backup.
+function readableCsvs() {
   const accName = (id) => state.accounts.find((a) => a.id === id)?.name ?? '';
   const accCur = (id) => state.accounts.find((a) => a.id === id)?.currency ?? 'EUR';
+  const holdingOf = (id) => state.holdings.find((x) => x.id === id);
+  return {
+    transactions: [
+      ['Date', 'Description', 'Amount', 'Currency', 'Account', 'Category', 'Memo', 'Amount (EUR)', 'Transfer', 'Kind'],
+      ...[...state.transactions].sort((a, b) => a.date.localeCompare(b.date)).map((t) => [
+        t.date, t.description, decimal2(t.amount), accCur(t.accountId), accName(t.accountId),
+        t.transferId ? '' : categoriesOf(t).map(catLabel).filter(Boolean).join(', '), t.memo ?? '',
+        t.rate == null ? '' : decimal2(convert(t.amount, t.rate)), t.transferId ?? '', t.kind ?? '',
+      ]),
+    ],
+    accounts: [
+      ['Name', 'Type', 'Currency', 'Archived', 'Balance'],
+      ...[...state.accounts].sort(byName).map((a) => [a.name, ACCOUNT_TYPE_LABELS[a.type], a.currency, a.archived ? 'yes' : 'no', decimal2(accountValue(a))]),
+    ],
+    holdings: [
+      ['Account', 'Symbol', 'Exchange', 'Name', 'Quantity', 'Price', 'Currency', 'Value', 'Price date', 'Entered by hand'],
+      ...state.holdings.map((x) => [
+        accName(x.accountId), x.symbol, x.exchange ?? '', x.name ?? '', x.quantity, x.price ?? '', x.currency,
+        holdingValue(x) == null ? '' : decimal2(holdingValue(x)), x.priceAt?.slice(0, 10) ?? '', x.manual ? 'yes' : 'no',
+      ]),
+    ],
+    lots: [
+      ['Account', 'Symbol', 'Date', 'Buy or sell', 'Units', 'Price', 'Fees', 'Currency'],
+      ...[...state.lots].sort((a, b) => a.date.localeCompare(b.date)).map((l) => {
+        const x = holdingOf(l.holdingId);
+        return [accName(x?.accountId), x?.symbol ?? '', l.date, l.kind, l.quantity, l.price, l.fees ?? 0, x?.currency ?? ''];
+      }),
+    ],
+    ious: [
+      ['Date', 'Person', 'Type', 'Description', 'Amount (EUR, + they owe you)', 'Account'],
+      ...[...state.ious].sort((a, b) => a.date.localeCompare(b.date)).map((e) => [
+        e.date, personName(e.personId), IOU_TYPES[e.kind] ?? '', e.description, decimal2(e.amount),
+        accName(state.transactions.find((t) => t.id === e.transactionId)?.accountId),
+      ]),
+    ],
+    schedules: [
+      ['Next date', 'Description', 'Type', 'Amount', 'Account', 'To account', 'Category', 'Repeats', 'Ends'],
+      ...state.schedules.map((x) => [x.nextDate, x.description, x.kind, decimal2(x.amount), accName(x.accountId), accName(x.toAccountId), catLabel(x.categoryId), frequencyLabel(x), x.endDate ?? '']),
+    ],
+    categories: [
+      ['Category', 'Parent'],
+      ...sortedCategories(state.categories).map((c) => [c.name, c.parentId ? category(c.parentId)?.name ?? '' : '']),
+    ],
+    rules: [
+      ['Order', 'Match', 'Text', 'Category'],
+      ...state.rules.map((r, i) => [i + 1, r.match, r.pattern, catLabel(r.categoryId)]),
+    ],
+  };
+}
+
+// ── backups ──────────────────────────────────────────────────────────────────
+
+function downloadBytes(name, bytes, type) {
+  const a = h('a', { href: URL.createObjectURL(new Blob([bytes], { type })), download: name });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+// One .zip with everything: backup.json (restores exactly, links included) and the same data as
+// readable CSV files. API keys aren't in it, so the file is safe to keep in cloud storage.
+function downloadBackup() {
+  const data = backupData();
+  const counts = Object.entries(data.tables).filter(([, rows]) => rows.length).map(([t, rows]) => `${rows.length} ${t}`).join(', ');
+  const readme = [
+    `Finance backup, ${new Date().toLocaleString()}`,
+    '',
+    'backup.json holds everything and restores it exactly: open Finance, Settings → Backup and restore → Restore.',
+    'The .csv files are the same data to read in Excel, Numbers or Google Sheets.',
+    'API keys aren’t included; add them again in Settings → Market data after a restore.',
+    '',
+    `Contents: ${counts}.`,
+  ].join('\r\n');
+  const csvs = readableCsvs();
+  const bytes = makeZip([
+    { name: 'README.txt', data: readme },
+    { name: 'backup.json', data: JSON.stringify(data) },
+    ...Object.entries(csvs).map(([k, rows]) => ({ name: `${k}.csv`, data: toCsv(rows) })),
+  ]);
+  downloadBytes(`finance-backup-${today()}.zip`, bytes, 'application/zip');
+  state.settings.lastBackupAt = new Date().toISOString();
+  persist();
+  render();
+  say('Backup downloaded. Keep it somewhere safe, like iCloud Drive or Google Drive.');
+}
+
+const daysSince = (iso) => Math.floor((Date.now() - Date.parse(iso)) / 864e5);
+function backupDue() {
+  const every = state.settings.backupEvery ?? 7;
+  if (!every || (!state.accounts.length && !state.transactions.length)) return false;
+  const snooze = readPref('finance:backupSnooze', null);
+  if (snooze && snooze >= today()) return false;
+  return !state.settings.lastBackupAt || daysSince(state.settings.lastBackupAt) >= every;
+}
+
+function backupBanner() {
+  if (!state || !backupDue()) return null;
+  const last = state.settings.lastBackupAt;
+  return h('div', { class: 'fin-notice fin-legacy fin-backup-due', role: 'region', 'aria-label': 'Backup reminder' },
+    h('p', {}, last
+      ? `Your last backup was ${daysSince(last)} days ago. The database keeps no backups of its own, so it’s worth downloading one.`
+      : 'You haven’t downloaded a backup yet. The database keeps no backups of its own, so it’s worth having one.'),
+    h('div', { class: 'fin-actions' },
+      button('Download backup', downloadBackup, 'primary'),
+      button('Remind me tomorrow', () => { writePref('finance:backupSnooze', today()); render(); }, 'secondary')));
+}
+
+let restoreDraft = null;
+async function readRestoreFile(file) {
+  try {
+    let text;
+    if (/\.zip$/i.test(file.name)) {
+      const files = await readZip(new Uint8Array(await file.arrayBuffer()));
+      const json = files.get('backup.json');
+      if (!json) throw new Error('This ZIP has no backup.json in it');
+      text = new TextDecoder().decode(json);
+    } else text = await file.text();
+    const data = JSON.parse(text);
+    if (data?.format !== 'finance-backup' || !data.tables) throw new Error('This isn’t a Finance backup');
+    restoreDraft = { name: file.name, data };
+    render('restore-confirm');
+  } catch (err) {
+    say(err.message);
+    showToast(`Couldn’t read ${file.name}: ${err.message}`);
+  }
+}
+
+function backupSection() {
+  const last = state.settings.lastBackupAt;
+  const every = select([['7', 'Every week'], ['14', 'Every 2 weeks'], ['30', 'Every month'], ['0', 'Never']], String(state.settings.backupEvery ?? 7), { 'data-key': 'backup-every' });
+  every.addEventListener('change', () => { state.settings.backupEvery = Number(every.value); persist(); render('backup-every'); say('Saved.'); });
+  const file = input({ type: 'file', accept: '.zip,.json,application/zip,application/json', 'data-key': 'restore-file' });
+  file.addEventListener('change', () => file.files[0] && readRestoreFile(file.files[0]));
+
+  let restore;
+  if (restoreDraft) {
+    const d = restoreDraft.data;
+    const confirmIn = input({ type: 'text', autocomplete: 'off', spellcheck: 'false', 'data-key': 'restore-confirm' });
+    const go = button('Replace everything with this backup', async () => {
+      go.disabled = true;
+      say('Restoring…');
+      try {
+        await clearTables(BACKUP_TABLES);
+        restoreData(d);
+      } catch (err) {
+        showToast(`Restore failed: ${err.message}. Try again; the backup file is unchanged.`);
+        go.disabled = false;
+        return;
+      }
+      restoreDraft = null;
+      txPage = 0; selected.clear(); editingTxId = null;
+      const first = [...state.accounts].sort(byName).find((a) => !a.archived);
+      view = first ? { name: 'account', id: first.id } : { name: 'settings', section: 'backup' };
+      render();
+      say(`Restored ${state.transactions.length} transactions and ${state.accounts.length} accounts. Saving to your account…`);
+      await refreshRates();
+    }, 'danger', { disabled: true });
+    confirmIn.addEventListener('input', () => { go.disabled = confirmIn.value.trim() !== 'RESTORE'; });
+    const labels = { accounts: 'accounts', transactions: 'transactions', categories: 'categories', rules: 'rules', holdings: 'holdings', lots: 'buys and sells', schedules: 'schedules', people: 'people', ious: 'IOU entries', snapshots: 'daily values' };
+    restore = [
+      h('p', {}, h('strong', {}, restoreDraft.name), ` · made ${new Date(d.createdAt).toLocaleString()}`),
+      h('ul', { class: 'fin-import-list' }, Object.entries(labels).filter(([t]) => d.tables[t]?.length).map(([t, label]) =>
+        h('li', {}, `${d.tables[t].length} ${label}`, h('span', { class: 'fin-muted' }, ` (now ${state[t].length})`)))),
+      h('p', { class: 'fin-notice' }, 'This replaces everything in your account with the backup. It can’t be undone, so download a backup of what’s there now first if you might want it.'),
+      h('div', { class: 'fin-actions fin-mt' },
+        button('Download a backup of what’s there now', downloadBackup, 'secondary')),
+      h('div', { class: 'fin-grid fin-mt' }, field('Type RESTORE to confirm', confirmIn)),
+      h('div', { class: 'fin-actions' }, go, button('Cancel', () => { restoreDraft = null; render('restore-file'); }, 'secondary')),
+    ];
+  }
+
+  return h('div', {},
+    h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'settings-h' },
+      h('p', {}, last ? `Last backup: ${new Date(last).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })} (${daysSince(last) === 0 ? 'today' : `${daysSince(last)} days ago`}).` : 'No backup downloaded yet.'),
+      h('p', { class: 'fin-hint' }, 'Your data is in your Supabase project, whose free plan keeps no backups. A backup is one .zip file: backup.json restores everything exactly, and the same data comes as readable CSV files. API keys aren’t included. Keep it somewhere safe, like iCloud Drive or Google Drive.'),
+      h('div', { class: 'fin-actions fin-mt' }, button('Download backup', downloadBackup, 'primary', { 'data-key': 'backup-now' })),
+      h('div', { class: 'fin-grid fin-mt' }, field('Remind me to back up', every, 'A banner appears when a backup is due.'))),
+    h('section', { class: 'fin-card fin-pad fin-danger-zone', 'aria-labelledby': 'restore-h' },
+      h('h3', { id: 'restore-h', class: 'fin-label' }, 'Restore from a backup'),
+      restore ?? [
+        h('p', { class: 'fin-hint' }, 'Pick a backup .zip (or its backup.json). You’ll see what’s in it before anything changes.'),
+        h('div', { class: 'fin-grid' }, field('Backup file', file)),
+      ]));
+}
+
+function exportSection() {
   const stamp = today();
+  const csv = () => readableCsvs();
+  const labels = { transactions: 'Transactions', accounts: 'Accounts', holdings: 'Holdings', lots: 'Buys and sells', ious: 'IOUs', schedules: 'Scheduled', categories: 'Categories', rules: 'Category rules' };
   return h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'export-h' },
     h('h3', { id: 'export-h', class: 'fin-label' }, 'Export (CSV)'),
-    h('p', { class: 'fin-hint' }, 'Opens in Excel, Numbers or Google Sheets. The transactions file can be imported back here.'),
+    h('p', { class: 'fin-hint' }, 'Opens in Excel, Numbers or Google Sheets. The transactions file can be imported back here. For everything at once, use Backup and restore.'),
     h('div', { class: 'fin-actions' },
-      button('Transactions', () => download(`transactions-${stamp}.csv`, [
-        ['Date', 'Description', 'Amount', 'Currency', 'Account', 'Category', 'Memo', 'Amount (EUR)', 'Transfer'],
-        ...[...state.transactions].sort((a, b) => a.date.localeCompare(b.date)).map((t) => [
-          t.date, t.description, decimal2(t.amount), accCur(t.accountId), accName(t.accountId),
-          t.transferId ? '' : categoriesOf(t).map(catLabel).filter(Boolean).join(', '), t.memo ?? '',
-          t.rate == null ? '' : decimal2(convert(t.amount, t.rate)), t.transferId ?? '',
-        ]),
-      ])),
-      button('Accounts', () => download(`accounts-${stamp}.csv`, [
-        ['Name', 'Type', 'Currency', 'Archived', 'Balance'],
-        ...state.accounts.map((a) => [a.name, ACCOUNT_TYPE_LABELS[a.type], a.currency, a.archived ? 'yes' : 'no', decimal2(accountValue(a))]),
-      ])),
-      button('Holdings', () => download(`holdings-${stamp}.csv`, [
-        ['Account', 'Symbol', 'Exchange', 'Name', 'Quantity', 'Price', 'Currency', 'Value', 'Price date', 'Entered by hand'],
-        ...state.holdings.map((x) => [
-          accName(x.accountId), x.symbol, x.exchange ?? '', x.name ?? '', x.quantity, x.price ?? '', x.currency,
-          holdingValue(x) == null ? '' : decimal2(holdingValue(x)), x.priceAt?.slice(0, 10) ?? '', x.manual ? 'yes' : 'no',
-        ]),
-      ])),
-      button('IOUs', () => download(`ious-${stamp}.csv`, [
-        ['Date', 'Person', 'Type', 'Description', 'Amount (EUR, + they owe you)', 'Account'],
-        ...[...state.ious].sort((a, b) => a.date.localeCompare(b.date)).map((e) => [
-          e.date, personName(e.personId), IOU_TYPES[e.kind] ?? '', e.description, decimal2(e.amount),
-          accName(state.transactions.find((t) => t.id === e.transactionId)?.accountId),
-        ]),
-      ])),
-      button('Category rules', () => download(`rules-${stamp}.csv`, [
-        ['Order', 'Match', 'Text', 'Category'],
-        ...state.rules.map((r, i) => [i + 1, r.match, r.pattern, catLabel(r.categoryId)]),
-      ]))));
+      Object.entries(labels).map(([key, label]) => button(label, () => download(`${key}-${stamp}.csv`, csv()[key])))));
 }
 
 // ── shell ────────────────────────────────────────────────────────────────────
@@ -2645,19 +3388,27 @@ function render(focusKey) {
     if (on) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
   });
   const inSettings = view.name === 'settings';
+  if (!side.classList.contains('is-open')) sideToggle.textContent = inSettings ? 'Settings menu' : 'Accounts';
   side.setAttribute('aria-label', inSettings ? 'Settings' : 'Accounts');
   side.replaceChildren(...(inSettings ? renderSettingsNav() : renderSide()).flat().filter(Boolean));
   main.replaceChildren(
     needsSchemaUpdate() ? h('p', { class: 'fin-notice fin-legacy', role: 'alert' },
       'This version needs a database update: run tools/finance/schema.sql again in the Supabase SQL editor (it keeps your data), then reload. Until then, changes aren’t saved.') : '',
     legacyBanner() ?? '',
+    backupBanner() ?? '',
     view.name === 'settings' ? renderSettings()
       : view.name === 'scheduled' ? renderSchedules()
         : view.name === 'ious' ? renderIous()
+          : view.name === 'search' ? renderSearch()
           : view.name === 'insights' ? renderInsights()
             : view.name === 'networth' ? renderNetWorth()
         : current ? renderAccount(current) : renderWelcome());
-  if (key) document.querySelector(`[data-key="${key}"]`)?.focus();
+  if (key) {
+    const el = document.querySelector(`[data-key="${key}"]`);
+    el?.focus();
+    // A text box that was being typed in keeps its cursor at the end of what's there.
+    if (el && ['text', 'search'].includes(el.type) && el.setSelectionRange) el.setSelectionRange(el.value.length, el.value.length);
+  }
 }
 
 // Data from the earlier browser-only version: offer to move it into the account once.
@@ -2695,7 +3446,7 @@ const layout = document.querySelector('.fin-layout');
 function setShell(signedIn) {
   side.hidden = !signedIn;
   layout.classList.toggle('fin-layout--solo', !signedIn);
-  document.querySelectorAll('[data-nav], #sync').forEach((el) => { el.hidden = !signedIn; });
+  document.querySelectorAll('[data-nav], #sync, #fab, #side-toggle').forEach((el) => { el.hidden = !signedIn; });
 }
 
 function screen(title, ...body) {
@@ -2771,9 +3522,16 @@ async function boot() {
   setShell(true);
   syncEl.textContent = STATUS_TEXT.saved;
   render();
+  // Opened from the app's "Add transactions" shortcut (…/?add): go straight to quick entry.
+  if (new URLSearchParams(location.search).has('add')) {
+    history.replaceState(null, '', location.pathname);
+    quickAdd();
+  }
   await refreshRates();
   await refreshPrices(stalePrices());
   recordSnapshot();
+  const oldHistory = state.holdings.filter(historyStale);
+  if (oldHistory.length) await loadHistory(oldHistory);
 }
 
 document.querySelectorAll('[data-nav]').forEach((b) => b.addEventListener('click', () => {
@@ -2782,6 +3540,32 @@ document.querySelectorAll('[data-nav]').forEach((b) => b.addEventListener('click
     : { name: b.dataset.nav };
   render();
 }));
+
+// ── phone: account panel toggle, floating add button, installable app ────────
+
+const sideToggle = document.getElementById('side-toggle');
+// On small screens the account panel is folded away behind a button; opening an account folds it again.
+function setSideOpen(open) {
+  side.classList.toggle('is-open', open);
+  sideToggle.setAttribute('aria-expanded', String(open));
+  sideToggle.textContent = open ? 'Hide accounts' : view.name === 'settings' ? 'Settings menu' : 'Accounts';
+}
+sideToggle.addEventListener('click', () => setSideOpen(!side.classList.contains('is-open')));
+side.addEventListener('click', (e) => { if (e.target.closest('.fin-account, .fin-side-head--link')) setSideOpen(false); });
+
+// Quick entry for the account on screen, or the last one used.
+function quickAdd() {
+  const account = state.accounts.find((a) => a.id === view.id && !a.archived)
+    ?? state.accounts.find((a) => a.id === state.settings.lastAccountId && !a.archived)
+    ?? [...state.accounts].sort(byName).find((a) => !a.archived);
+  if (!account) { openAccountDialog(); return; }
+  openTxDialog('multi', account);
+}
+document.getElementById('fab').addEventListener('click', quickAdd);
+
+if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+  navigator.serviceWorker.register('/tools/finance/sw.js', { scope: '/tools/finance/' }).catch(() => {});
+}
 
 async function signOutNow() {
   if (hasPendingChanges() && !confirm('Some changes are still being saved. Sign out anyway?')) return;
@@ -2799,7 +3583,7 @@ window.addEventListener('beforeunload', (e) => {
 // or in the middle of being edited.
 document.addEventListener('visibilitychange', async () => {
   if (document.visibilityState !== 'visible' || !state || hasPendingChanges()) return;
-  if (Date.now() - loadedAt < 30_000 || editingTxId || editingCatId || importDraft || buxferDraft || ftDraft || document.querySelector('dialog[open]')) return;
+  if (Date.now() - loadedAt < 30_000 || editingTxId || editingCatId || importDraft || buxferDraft || ftDraft || restoreDraft || selected.size || document.querySelector('dialog[open]')) return;
   try { await loadData(); render(); } catch { /* keep showing what we have */ }
 });
 

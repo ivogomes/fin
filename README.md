@@ -41,6 +41,22 @@ Tests: `node --test tools/finance/model.test.mjs`. On this machine the `node` sh
 
 `schema.sql` only creates what's missing, so running the whole file again is safe and keeps your data. Do this when a new feature needs a table (scheduled transactions added `schedules`); until then the app loads normally and says which feature can't save yet.
 
+## Adding transactions from the keyboard
+
+**Add transactions** opens a grid of rows. Typing a description suggests earlier ones (names starting with it first, then words starting with it, then ones containing it; within that, the account's own, the most used and the most recent). ↓/↑ move through them; Enter or Tab take one, filling in its category and whether it was an expense, income or refund (not the amount, which is rarely the same), then jump to the amount. A suggestion is pre-selected only when it starts with exactly what you typed, so a new description is never swapped for an old one by accident. Enter in any field goes to the next row, and there's always an empty row at the end; Ctrl+Enter (⌘+Enter on a Mac) saves them all.
+
+A row can be a transfer: pick **⇄ Transfer** as its type and the category cell becomes the account the money goes to (the row's account is where it leaves from). Past transfers are suggested too, filling in both accounts. Between currencies the received amount is converted at that day's rate. The single-transaction form suggests descriptions the same way, and so does the inline edit form, where a suggestion fills in the description and, if the transaction has none, its categories.
+
+## Search, filters, selecting and undo
+
+Each account's transactions have a filter bar: text (description, memo, or an amount such as `12.99`), category (a parent includes its children; "Uncategorized" too), type, dates and amount range. **Search** in the header does the same across every account, archived ones included, with totals in and out. Rows have checkboxes (and one for the whole page); with any selected, a bar sets, adds or removes categories, or deletes them. Deletes and bulk changes show a message with **Undo** (also Ctrl/⌘+Z while it shows): account, transaction, holding, lot, IOU entry, schedule and category deletes.
+
+When you categorize a transaction by hand and no rule would already do that, the app offers "Always put … in …?". The rule matches the whole description, goes to the top of the list (the first match wins), and can fill in the other uncategorized transactions with that description at the same time.
+
+## On a phone
+
+On small screens the account panel folds behind an **Accounts** button, the header tabs scroll sideways, transactions stack as cards, dialogs fill the screen, and a round **+** button opens quick entry for the account on screen. The tool installs as an app (manifest and icons in this folder; `sw.js` keeps the app's own files so it opens instantly, while data always comes from the database). The app's "Add transactions" shortcut opens `?add`.
+
 ## Categories
 
 Two levels, like Buxfer: a category is top-level or sits under one, and is shown as "Parent / Child". A transaction can have several categories (chips you add and remove in the table or the edit form). Rules add one category when a transaction has none. Settings → Categories lists the tree with how many transactions use each one; deleting a category removes it from those transactions (they stay), deletes rules that set it, and moves its subcategories to the top level. Imports read several categories separated by commas, each possibly a path; Buxfer's `tags.csv` builds the whole tree.
@@ -61,6 +77,10 @@ Settings → **Import holdings (FT.com)** reads an FT.com portfolio transactions
 
 An investment account's Insights tab shows its value against the money invested over the period (same presets), the gain, the change in value, and each holding's units, value, cost, gain and share today. "Invested" is the cost of the units held when every holding has buys and sells, otherwise the money moved into the account. Past values follow the same rules as net worth below.
 
+**Price history:** an investment account's Insights has **Load price history**: weekly closing prices per holding (Alpha Vantage for non-US exchanges, Twelve Data for US ones; one lookup each), kept in `holdings.price_history` and refreshed weekly after that. With it, past values use each week's close instead of the last trade price.
+
+**Insights comparisons:** income and spending are compared with the period of the same length just before (this year against last year), and the **Spending on a category** card shows one category (with its children) over the period against the previous one.
+
 ## Net worth
 
 Click the net-worth card in the side panel. It shows net worth and the investments part over the chosen period (same presets as Insights), the change over the period, debts, and today's split by account type. Closed (archived) accounts count until their last transaction, then as nothing. Investment accounts are at market value today; on earlier dates they use the daily `snapshots` the app records (once a day, when you open it). Before the first snapshot, holdings with buys and sells are valued as the units held then times the latest trade price by then; holdings without them at what was put in, because there's no price history.
@@ -76,6 +96,12 @@ Money you lent or borrowed, per person. Each entry is positive when they owe you
 ## Scheduled transactions
 
 A schedule repeats every N days, weeks, months or years. Monthly and yearly ones keep their day of the month (the 31st falls back to the month's last day and returns to the 31st). Nothing is added by itself: when a date is due it shows on the account under "Next 30 days" with **Enter** (adds the transaction with that date) and **Skip**. Each account with schedules also shows a 30-day forecast. Create them under **Scheduled**, with **Repeat** in the single-transaction form, or by importing Buxfer's `reminders.csv`.
+
+## Backups
+
+Supabase's free plan keeps no backups, so the app makes them. **Settings → Backup and restore → Download backup** saves one `.zip`: `backup.json` (everything, ids and links included, for an exact restore) plus the same data as readable CSV files. API keys aren't in it. A banner reminds you when one is due (every week by default; every 2 weeks, every month or never in the same page), with "Remind me tomorrow". **Restore** reads a backup `.zip` (or its `backup.json`), shows what's in it next to what's there now, and after you type RESTORE replaces everything.
+
+`.github/workflows/finance-keepalive.yml` pings the Supabase project every 3 days so the free plan doesn't pause it for inactivity. It uses the public URL and key from `config.js` and reads no data. GitHub turns scheduled workflows off after 60 days without commits to the repo; re-enable it from the Actions tab if that happens.
 
 ## Import and export
 

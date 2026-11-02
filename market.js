@@ -65,6 +65,28 @@ export async function fetchQuoteAV(symbol, mic, apiKey) {
   return { price };
 }
 
+// Weekly closing prices for a listing, { 'YYYY-MM-DD': price }, as far back as the provider goes:
+// Alpha Vantage for the non-US exchanges it covers, Twelve Data otherwise. One request each.
+export async function fetchHistory(symbol, mic, { avKey, tdKey }) {
+  if (alphaVantageCovers(mic)) {
+    if (!avKey) throw new Error('Add an Alpha Vantage API key in Settings to load price history');
+    const ticker = `${symbol}.${AV_SUFFIX[mic]}`;
+    const res = await fetch(`${AV}?function=TIME_SERIES_WEEKLY&symbol=${encodeURIComponent(ticker)}&apikey=${encodeURIComponent(avKey)}`);
+    const data = await res.json();
+    const notice = data.Information || data.Note || data['Error Message'];
+    if (notice) throw new Error(notice);
+    const series = data['Weekly Time Series'];
+    if (!series) throw new Error(`Alpha Vantage has no history for ${ticker}`);
+    return Object.fromEntries(Object.entries(series).map(([date, v]) => [date, Number(v['4. close'])]).filter(([, v]) => v > 0));
+  }
+  if (!tdKey) throw new Error('Add a Twelve Data API key in Settings to load price history');
+  const micParam = mic ? `&mic_code=${encodeURIComponent(mic)}` : '';
+  const res = await fetch(`https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(symbol)}${micParam}&interval=1week&outputsize=5000&apikey=${encodeURIComponent(tdKey)}`);
+  const data = await res.json();
+  if (data.status === 'error' || !Array.isArray(data.values)) throw new Error(data.message || `No history for ${symbol}`);
+  return Object.fromEntries(data.values.map((v) => [v.datetime, Number(v.close)]).filter(([, v]) => v > 0));
+}
+
 // Returns { name, currency, price } for a listing. `mic` pins the exchange (e.g. XETR for Xetra).
 export async function fetchQuote(symbol, apiKey, mic) {
   if (!apiKey) throw new Error('Add a Twelve Data API key in Settings to fetch prices');

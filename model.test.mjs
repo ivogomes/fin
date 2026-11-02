@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { makeZip, readZip, crc32 } from './zip.js';
 import {
   toMinor, formatMoney, categorize, convert, rateFor, accountBalance,
   holdingValue, investmentValue, netWorth, defaultState, withRunningBalance,
@@ -9,6 +10,7 @@ import {
   categoryPath, categoryResolver, categoriesOf, sortedCategories,
   parseBuxferIou, iouSign, iouType, personBalances, personHistory,
   periodRange, granularity, insights, netWorthHistory, isFtExport, ftImport, lotSummary, investedHistory,
+  descriptionIndex, suggestDescriptions, filterTransactions, ruleSuggestion,
   parseFrequency, addInterval, occurrences, forecast, scheduledTransactions, advanceSchedule,
 } from './model.js';
 
@@ -146,6 +148,133 @@ test('invested over time: from lots when every holding has them, otherwise money
   const dates = ['2023-12-31', '2024-12-31', '2025-12-31'];
   assert.deepEqual(investedHistory(account, { transactions, holdings, lots }, dates), [0, 1000500, 500250]);
   assert.deepEqual(investedHistory(account, { transactions, holdings, lots: [] }, dates), [0, 1000000, 1000000]);
+});
+
+test('description suggestions: one per name, latest use wins, ranked by match, account, use, date', () => {
+  const tx = [
+    { accountId: 'a', date: '2026-01-01', description: 'Continente', amount: -3000, categoryIds: ['groc'] },
+    { accountId: 'a', date: '2026-03-01', description: 'continente', amount: -4500, categoryIds: ['groc', 'casa'] },
+    { accountId: 'b', date: '2026-02-01', description: 'Café Continental', amount: -150, categoryIds: ['cafe'] },
+    { accountId: 'a', date: '2026-02-10', description: 'Pingo Doce Continente', amount: -2000, categoryIds: [] },
+    { accountId: 'a', date: '2026-02-11', description: 'Refund Continente', amount: 500, kind: 'refund', categoryIds: ['groc'] },
+    { accountId: 'a', date: '2026-02-12', description: 'Pagamento Cartão', amount: -10000, transferId: 't' },
+    { accountId: 'card', date: '2026-02-12', description: 'Pagamento Cartão', amount: 10000, transferId: 't' },
+    { accountId: 'a', date: '2026-02-13', description: 'Orphan', amount: -100, transferId: 'lost' },
+  ];
+  const index = descriptionIndex(tx);
+  assert.equal(index.length, 5); // the two "Continente" are one; a transfer counts once; a lone side is left out
+  const pay = index.find((e) => e.key === 'pagamento cartao');
+  assert.deepEqual([pay.kind, pay.accountId, pay.toAccountId, pay.amount, pay.count], ['transfer', 'a', 'card', -10000, 1]);
+  const c = index.find((e) => e.key === 'continente');
+  assert.deepEqual([c.count, c.description, c.amount, c.categoryIds], [2, 'continente', -4500, ['groc', 'casa']]);
+  // Starts-with first; then word-start matches, the most recent first.
+  assert.deepEqual(suggestDescriptions(index, 'conti').map((e) => e.description),
+    ['continente', 'Refund Continente', 'Pingo Doce Continente', 'Café Continental']);
+  // With an account given, matches used there come first within the same rank.
+  assert.deepEqual(suggestDescriptions(index, 'conti', { accountId: 'b' }).map((e) => e.description),
+    ['continente', 'Café Continental', 'Refund Continente', 'Pingo Doce Continente']);
+  assert.equal(suggestDescriptions(index, 'cafe')[0].description, 'Café Continental'); // accents ignored
+  assert.deepEqual(suggestDescriptions(index, ''), []);
+  assert.equal(suggestDescriptions(index, 'refund')[0].kind, 'refund');
+});
+
+test('batch rows: transfers need a different account to go to', () => {
+  const base = { description: 'Card payment', amount: '100', sign: 't', date: '2026-11-02', accountId: 'bank', categoryId: '' };
+  assert.equal(batchRow(base, []).error, 'needs an account to transfer to');
+  assert.equal(batchRow({ ...base, toAccountId: 'bank' }, []).error, 'transfers to the same account');
+  assert.deepEqual(batchRow({ ...base, toAccountId: 'card' }, []).transfer,
+    { fromId: 'bank', toId: 'card', date: '2026-11-02', description: 'Card payment', sent: 10000 });
+});
+
+test('filters: text and amounts, categories with children, types, ranges, accounts', () => {
+  const categories = [{ id: 'casa', name: 'Casa', parentId: null }, { id: 'luz', name: 'Luz', parentId: 'casa' }, { id: 'fun', name: 'Fun', parentId: null }];
+  const tx = [
+    { id: '1', accountId: 'a', date: '2026-10-01', description: 'Endesa', amount: -6216, categoryIds: ['luz'] },
+    { id: '2', accountId: 'a', date: '2026-10-02', description: 'Cinema', memo: 'with Ana', amount: -1299, categoryIds: ['fun'] },
+    { id: '3', accountId: 'b', date: '2026-10-03', description: 'Refund Endesa', amount: 1000, kind: 'refund', categoryIds: ['luz'] },
+    { id: '4', accountId: 'a', date: '2026-10-04', description: 'Salary', amount: 300000, categoryIds: [] },
+    { id: '5', accountId: 'a', date: '2026-10-05', description: 'Card payment', amount: -5000, transferId: 't' },
+    { id: '6', accountId: 'a', date: '2026-09-30', description: 'Old', amount: -100, categoryIds: [] },
+  ];
+  const ids = (f) => filterTransactions(tx, f, { categories }).map((t) => t.id);
+  assert.deepEqual(ids({ text: 'endesa' }), ['3', '1']);
+  assert.deepEqual(ids({ text: 'ana' }), ['2']); // memo
+  assert.deepEqual(ids({ text: '12,99' }), ['2']); // amount
+  assert.deepEqual(ids({ categoryId: 'casa' }), ['3', '1']); // the parent includes its children
+  assert.deepEqual(ids({ categoryId: '' }), ['4', '6']); // uncategorized, transfers excluded
+  assert.deepEqual(ids({ type: 'expense' }), ['2', '1', '6']);
+  assert.deepEqual(ids({ type: 'income' }), ['4']);
+  assert.deepEqual(ids({ type: 'refund' }), ['3']);
+  assert.deepEqual(ids({ type: 'transfer' }), ['5']);
+  assert.deepEqual(ids({ min: '50', max: '100' }), ['5', '1']);
+  assert.deepEqual(ids({ from: '2026-10-02', to: '2026-10-03' }), ['3', '2']);
+  assert.deepEqual(ids({ accountIds: new Set(['b']) }), ['3']);
+});
+
+test('rule suggestions: offered unless the rules already pick it; counts others to fill', () => {
+  const rules = [{ pattern: 'continente', match: 'contains', categoryId: 'groc' }];
+  const tx = [
+    { id: '1', description: 'Continente', categoryIds: ['groc'] },
+    { id: '2', description: 'Lunch spot', categoryIds: ['meals'] },
+    { id: '3', description: 'lunch SPOT', categoryIds: [] },
+    { id: '4', description: 'Lunch spot', categoryIds: ['other'] },
+  ];
+  assert.equal(ruleSuggestion(tx[0], 'groc', rules, tx), null);
+  assert.deepEqual(ruleSuggestion(tx[1], 'meals', rules, tx), { pattern: 'Lunch spot', match: 'equals', categoryId: 'meals', others: 1 });
+  assert.ok(ruleSuggestion(tx[0], 'other', rules, tx)); // a different category than the rule's
+});
+
+test('insights for one category, and history priced from weekly closes', () => {
+  const categories = [{ id: 'casa', name: 'Casa', parentId: null }, { id: 'luz', name: 'Luz', parentId: 'casa' }, { id: 'fun', name: 'Fun', parentId: null }];
+  const tx = [
+    { id: '1', accountId: 'a', date: '2026-10-01', amount: -6000, categoryIds: ['luz'], rate: 1 },
+    { id: '2', accountId: 'a', date: '2026-10-02', amount: -1000, categoryIds: ['fun', 'luz'], rate: 1 },
+    { id: '3', accountId: 'a', date: '2026-10-03', amount: -2000, categoryIds: ['casa'], rate: 1 },
+  ];
+  const r = insights(tx, { from: '2026-10-01', to: '2026-10-31', accounts: [{ id: 'a', currency: 'EUR' }], categories, onlyCategory: 'casa' });
+  assert.equal(r.expenses, 8000); // its first category decides: the fun-first one isn't counted
+
+  const accounts = [{ id: 'etf', type: 'investment', currency: 'EUR' }];
+  const holdings = [{ id: 'h', accountId: 'etf', currency: 'EUR', priceHistory: { '2024-06-28': 110, '2024-12-27': 90 } }];
+  const lots = [{ holdingId: 'h', date: '2024-01-11', kind: 'buy', quantity: 100, price: 100 }];
+  const { points } = netWorthHistory({ accounts, transactions: [], holdings, lots }, {
+    from: '2024-01-01', to: '2024-12-31', today: '2026-11-02', holdingsValue: () => 0,
+  });
+  const at = (k) => points.find((p) => p.key === k).investments;
+  assert.equal(at('2024-03'), 100 * 100 * 100); // before the history starts: the trade price
+  assert.equal(at('2024-08'), 100 * 110 * 100); // the latest weekly close by then
+  assert.equal(at('2024-12'), 100 * 90 * 100);
+});
+
+test('zip: what makeZip writes, readZip reads back; also compressed entries from other tools', async () => {
+  const files = [
+    { name: 'README.txt', data: 'Backup of Finance' },
+    { name: 'transactions.csv', data: 'Date,Description\n2026-11-02,Café ☕\n' },
+    { name: 'empty.csv', data: '' },
+  ];
+  const back = await readZip(makeZip(files, new Date(2026, 10, 2, 15, 30)));
+  const dec = new TextDecoder();
+  assert.deepEqual([...back.keys()], ['README.txt', 'transactions.csv', 'empty.csv']);
+  assert.equal(dec.decode(back.get('transactions.csv')), 'Date,Description\n2026-11-02,Café ☕\n');
+  assert.equal(crc32(new TextEncoder().encode('123456789')), 0xCBF43926); // the standard check value
+  await assert.rejects(readZip(new TextEncoder().encode('not a zip at all, just text')), /Not a ZIP/);
+
+  // A compressed ("deflate") entry, as other zip tools write: rebuild the stored zip with the data
+  // deflated and the method, sizes and offsets patched.
+  const { deflateRawSync } = await import('node:zlib');
+  const text = 'hello '.repeat(200);
+  const plain = new TextEncoder().encode(text);
+  const packed = new Uint8Array(deflateRawSync(plain));
+  const stored = makeZip([{ name: 'a.txt', data: plain }]);
+  const nameLen = 5;
+  const local = stored.slice(0, 30 + nameLen);
+  const central = stored.slice(30 + nameLen + plain.length, 30 + nameLen + plain.length + 46 + nameLen);
+  const end = stored.slice(stored.length - 22);
+  const lv = new DataView(local.buffer); lv.setUint16(8, 8, true); lv.setUint32(18, packed.length, true);
+  const cv = new DataView(central.buffer); cv.setUint16(10, 8, true); cv.setUint32(20, packed.length, true);
+  const ev = new DataView(end.buffer); ev.setUint32(16, local.length + packed.length, true);
+  const zipped = new Uint8Array([...local, ...packed, ...central, ...end]);
+  assert.equal(dec.decode((await readZip(zipped)).get('a.txt')), text);
 });
 
 test('batch rows: refunds are positive and marked', () => {

@@ -150,6 +150,11 @@ update transactions set category_ids = array[category_id]
 alter table transactions add column if not exists kind text;
 -- The latest exchange rates and the day they're from, so they're fetched at most once a day.
 alter table settings add column if not exists fx jsonb not null default '{}';
+-- Weekly closing prices per holding, { date: price }, loaded once and kept, for charts over time.
+alter table holdings add column if not exists price_history jsonb;
+-- Backups: when one was last downloaded, and how many days between reminders (0 = none).
+alter table settings add column if not exists last_backup_at timestamptz;
+alter table settings add column if not exists backup_every integer not null default 7;
 
 do $$
 declare t text;

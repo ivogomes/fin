@@ -24,11 +24,12 @@ const TABLES = {
       id: x.id, account_id: x.accountId, symbol: x.symbol, mic: x.mic ?? null, exchange: x.exchange ?? null,
       name: x.name ?? null, currency: x.currency, quantity: x.quantity, price: x.price ?? null,
       price_at: x.priceAt ?? null, manual: Boolean(x.manual), price_error: x.priceError ?? null, source: x.source ?? null,
+      price_history: x.priceHistory ?? null,
     }),
     from: (r) => ({
       id: r.id, accountId: r.account_id, symbol: r.symbol, mic: r.mic, exchange: r.exchange, name: r.name,
       currency: r.currency, quantity: r.quantity, price: r.price, priceAt: r.price_at, manual: r.manual,
-      priceError: r.price_error ?? undefined, source: r.source,
+      priceError: r.price_error ?? undefined, source: r.source, priceHistory: r.price_history ?? undefined,
     }),
   },
   schedules: {
@@ -88,13 +89,15 @@ export const missingTables = () => [...missing];
 
 // Columns added after the first release. Saving needs them, so their absence is reported to the
 // app, which asks for schema.sql to be run again.
-const NEW_COLUMNS = { categories: ['parent_id'], transactions: ['category_ids', 'kind'], settings: ['fx'] };
+const NEW_COLUMNS = { categories: ['parent_id'], transactions: ['category_ids', 'kind'], settings: ['fx', 'last_backup_at', 'backup_every'], holdings: ['price_history'] };
 let schemaOutdated = false;
 export const needsSchemaUpdate = () => schemaOutdated || missing.size > 0;
 
 const toSettingsRow = (s) => ({
   quote_api_key: s.quoteApiKey || null, av_api_key: s.avApiKey || null, last_account_id: s.lastAccountId ?? null,
   fx: s.fx ?? {},
+  last_backup_at: s.lastBackupAt ?? null,
+  backup_every: s.backupEvery ?? 7,
 });
 
 let state = null;
@@ -135,6 +138,8 @@ export async function load() {
   state.settings = {
     quoteApiKey: s.quote_api_key ?? '', avApiKey: s.av_api_key ?? '', lastAccountId: s.last_account_id ?? undefined,
     fx: s.fx ?? {}, // today's exchange rates, { USD: { rate, date } }, so they're fetched once a day
+    lastBackupAt: s.last_backup_at ?? null, // when a backup was last downloaded
+    backupEvery: s.backup_every ?? 7, // days between backup reminders; 0 = no reminders
   };
   snapshot();
   const empty = !state.accounts.length && !state.categories.length && !state.rules.length;
@@ -233,6 +238,32 @@ export async function clearTables(tables) {
   }
   listener(diff().size ? 'saving' : 'saved');
   if (diff().size) schedule(0);
+}
+
+// ── Backups ──────────────────────────────────────────────────────────────────
+
+export const BACKUP_TABLES = ORDER;
+
+// Everything, as the rows the database holds (snake_case, ids and links kept), so a backup restores
+// exactly. API keys and the save bookkeeping are left out.
+export function backupData() {
+  return {
+    format: 'finance-backup', version: 1, createdAt: new Date().toISOString(),
+    tables: Object.fromEntries(ORDER.map((t) => [t, state[t].map((x, i) => TABLES[t].to(x, i))])),
+  };
+}
+
+// Replaces everything in memory with a backup (from backupData). The caller has already emptied
+// the database tables (clearTables), so the next save sends every row.
+export function restoreData(data) {
+  if (data?.format !== 'finance-backup' || !data.tables) throw new Error('This isn’t a Finance backup');
+  for (const t of ORDER) {
+    const rows = data.tables[t] ?? [];
+    state[t] = t === 'rules'
+      ? [...rows].sort((a, b) => (a.position ?? 0) - (b.position ?? 0)).map(TABLES[t].from)
+      : rows.map(TABLES[t].from);
+  }
+  persist();
 }
 
 // Data saved by the earlier, browser-only version of this tool, if any.
