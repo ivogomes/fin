@@ -607,8 +607,13 @@ textarea.fin-input { resize: vertical; }
 
 /* Upcoming rows on top of the transactions: greyed out, as they don't count in the balance yet.
    Only the text fades, so the buttons keep their contrast. Due schedules get a light tint. */
-.fin-upcoming > td { background: var(--f-surface-2); color: var(--f-muted); }
-.fin-upcoming > td.fin-num, .fin-upcoming > td.fin-num.fin-pos, .fin-upcoming > td.fin-num.fin-neg { color: var(--f-muted); font-weight: 400; }
+.fin-upcoming > td { background: var(--f-surface-2); color: var(--f-muted); font-style: italic; }
+/* Amounts keep their colour (in green, out red); the running balance stays quiet. */
+.fin-upcoming > td.fin-num { font-weight: 400; }
+.fin-upcoming > td.fin-num.fin-pos { color: var(--f-pos); }
+.fin-upcoming > td.fin-num.fin-neg { color: var(--f-neg); }
+/* Buttons and chips aren't data, so they stay upright. */
+.fin-upcoming .fin-btn, .fin-upcoming .fin-chip, .fin-upcoming .fin-cat-chip { font-style: normal; }
 .fin-table tr.fin-upcoming-head th { background: var(--f-surface-2); }
 .fin-upcoming-note { font-weight: 400; letter-spacing: 0; text-transform: none; }
 .fin-upcoming-actions .fin-btn-sm { padding: 3px 10px; }
