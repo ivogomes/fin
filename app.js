@@ -28,7 +28,7 @@ let state = null;
 // &section=backup, ?account=<id>&tab=insights, and …/finance/ for the last account. Going to another
 // section loads that page, so its data is fresh; within a page (accounts, settings pages) it's instant.
 const BASE_PATH = '/tools/finance/';
-const PAGES = ['search', 'scheduled', 'insights', 'ious', 'settings', 'networth'];
+const PAGES = ['search', 'scheduled', 'insights', 'ious', 'settings'];
 const sectionOf = (v) => (v.name === 'account' ? 'accounts' : v.name);
 function urlOf(v) {
   const q = new URLSearchParams();
@@ -38,6 +38,7 @@ function urlOf(v) {
   } else {
     q.set('page', v.name);
     if (v.name === 'settings' && v.section) q.set('section', v.section);
+    if (v.name === 'insights' && v.tab === 'networth') q.set('tab', 'networth');
     if (v.name === 'ious' && v.personId) q.set('person', v.personId);
   }
   const s = q.toString();
@@ -46,6 +47,8 @@ function urlOf(v) {
 function viewFromUrl() {
   const q = new URLSearchParams(location.search);
   const page = q.get('page');
+  // Net worth was its own page; it's now a tab of Insights (old links still land there).
+  if (page === 'networth' || (page === 'insights' && q.get('tab') === 'networth')) return { name: 'insights', tab: 'networth' };
   if (PAGES.includes(page)) {
     return { name: page, ...(q.get('section') && { section: q.get('section') }), ...(q.get('person') && { personId: q.get('person') }) };
   }
@@ -470,8 +473,8 @@ function renderSide() {
     // The net-worth card opens its own page: net worth over time and by account type.
     h('button', {
       type: 'button', class: 'fin-side-head fin-side-head--link', 'data-key': 'networth',
-      'aria-current': view.name === 'networth' ? 'page' : null,
-      onclick: () => { view = { name: 'networth' }; render('networth'); say('Net worth.'); },
+      'aria-current': view.name === 'insights' && view.tab === 'networth' ? 'page' : null,
+      onclick: () => { view = { name: 'insights', tab: 'networth' }; render('networth'); say('Net worth.'); },
     },
       h('span', { class: 'fin-side-title' }, 'Net worth'),
       h('span', { class: 'fin-num' }, money(nw.total, 'EUR')),
@@ -2009,7 +2012,7 @@ function timeChart(points, { id, title, unit, format, kind = 'change', ref = nul
     return n;
   };
   const change = kind === 'change';
-  const W = wide ? 860 : 560; const H = wide ? 260 : 220; const L = 66; const R = change ? 66 : 12; const T = 12; const B = 26;
+  const W = wide ? 860 : 560; const H = wide ? 260 : 220; const L = 76; const R = change ? 76 : 12; const T = 12; const B = 26;
   const plotW = W - L - R; const plotH = H - T - B;
   const base = points[0].v;
   const vals = [...points.map((p) => p.v), ...(ref ?? []).map((p) => p.v)];
@@ -2033,10 +2036,15 @@ function timeChart(points, { id, title, unit, format, kind = 'change', ref = nul
     const t = el('text', { x: L - 8, y: y(v) + 4, class: 'fin-tick', 'text-anchor': 'end' });
     t.textContent = short(v);
     svg.append(t);
-    if (change) {
-      // The same gridline read as up or down since the start.
-      const d = Math.round(v - base);
-      const r = el('text', { x: W - R + 8, y: y(v) + 4, class: `fin-tick ${d > 0 ? 'fin-tick-up' : d < 0 ? 'fin-tick-down' : ''}`, 'text-anchor': 'start' });
+  }
+  // The right axis: the change since the start, in round steps of the same size as the left's (the
+  // same scale, counted from the starting level), with a small tick for each.
+  if (change) {
+    for (let k = Math.ceil((bottom - base) / step); base + k * step <= top + step / 100; k += 1) {
+      const d = Math.round(k * step);
+      const yy = y(base + d);
+      svg.append(el('line', { x1: W - R, x2: W - R + 4, y1: yy, y2: yy, class: 'fin-axis-line' }));
+      const r = el('text', { x: W - R + 8, y: yy + 4, class: `fin-tick ${d > 0 ? 'fin-tick-up' : d < 0 ? 'fin-tick-down' : ''}`, 'text-anchor': 'start' });
       r.textContent = hideAmounts ? '•••' : d === 0 ? '0' : `${d > 0 ? '+' : '−'}${format(Math.abs(d)).replace(/[.,]00(?=\D*$)/, '').replace(/^[+−-]/, '')}`;
       svg.append(r);
     }
@@ -2889,12 +2897,21 @@ function singleColumns(series, unit, range, label) {
   ];
 }
 
+// Insights across all accounts, in two tabs sharing the period: income and spending, and net worth.
 function renderInsights() {
+  const worth = view.tab === 'networth';
+  const pick = (t) => { view = { name: 'insights', ...(t === 'networth' && { tab: 'networth' }) }; render(`ins-tab-${t}`); };
   return h('div', {},
     h('div', { class: 'fin-account-head' },
-      h('div', {}, h('h2', { class: 'fin-title' }, 'Insights'),
-        h('p', { class: 'fin-meta' }, 'Income and spending across all your accounts, archived ones included.'))),
-    insightsPanel(null));
+      h('div', {}, h('h2', { class: 'fin-title', id: 'insights-h', tabindex: '-1' }, 'Insights'),
+        h('p', { class: 'fin-meta' }, worth
+          ? 'Everything you own minus what you owe, across all accounts, in EUR.'
+          : 'Income and spending across all your accounts, archived ones included.'))),
+    h('div', { class: 'fin-tabs', role: 'group', 'aria-label': 'Insights view' },
+      [['spending', 'Income and spending'], ['networth', 'Net worth']].map(([t, label]) => h('button', {
+        type: 'button', class: 'fin-tab', 'aria-pressed': String(worth === (t === 'networth')), 'data-key': `ins-tab-${t}`, onclick: () => pick(t),
+      }, label))),
+    worth ? renderNetWorth() : insightsPanel(null));
 }
 
 // ── net worth over time ──────────────────────────────────────────────────────
@@ -3002,6 +3019,7 @@ function investmentInsights(account) {
 // balances_at's answer as accountRuns gives it: Map(accountId → { last, values }).
 const runMap = (obj) => new Map(Object.entries(obj ?? {}));
 
+// The Net worth tab of Insights (without the page's heading).
 function renderNetWorth() {
   const first = state.accounts.map((a) => totalsOf(a.id).first).filter(Boolean).reduce((min, d) => (d < min ? d : min), today());
   const range = periodRange(insightsPeriod.preset, today(), { from: insightsPeriod.from, to: insightsPeriod.to, first });
@@ -3010,9 +3028,7 @@ function renderNetWorth() {
   // Each account's running total at each point comes from the database; investments are valued here.
   const runs = ask('balances_at', { p_dates: historyPoints(range.from, to).ends.map((e) => e.date), p_rates: ratesArg() });
   if (!runs) {
-    return h('div', {},
-      h('div', { class: 'fin-account-head' }, h('div', {}, h('h2', { class: 'fin-title', id: 'networth-h', tabindex: '-1' }, 'Net worth'))),
-      periodControls(range), loader('Working out the history…'));
+    return h('div', { class: 'fin-insights' }, periodControls(range), loader('Working out the history…'));
   }
   const hist = netWorthHistory(state, {
     from: range.from, to, today: today(), holdingsValue: holdingsValueEUR, rateOf: (c) => latestRate(c) ?? 1, runs: runMap(runs),
@@ -3032,9 +3048,6 @@ function renderNetWorth() {
   const debts = byType.filter((x) => x.value < 0).reduce((s, x) => s - x.value, 0);
 
   return h('div', {},
-    h('div', { class: 'fin-account-head' },
-      h('div', {}, h('h2', { class: 'fin-title', id: 'networth-h', tabindex: '-1' }, 'Net worth'),
-        h('p', { class: 'fin-meta' }, 'Everything you own minus what you owe, across all accounts, in EUR.'))),
     h('div', { class: 'fin-insights' },
       periodControls(range),
       h('dl', { class: 'fin-stats' },
@@ -3051,7 +3064,7 @@ function renderNetWorth() {
           h('section', { class: 'fin-card fin-pad' },
             timeChart(pts.map((p) => ({ date: p.date, v: p.total })), { id: 'nw', title: 'Net worth over time', unit: 'in EUR', format: (v) => money(v, 'EUR'), wide: true })),
           pts.some((p) => p.investments) && h('section', { class: 'fin-card fin-pad' },
-            timeChart(pts.map((p) => ({ date: p.date, v: p.investments })), { id: 'nw-inv', title: 'Investments', unit: 'in EUR', format: (v) => money(v, 'EUR') })),
+            timeChart(pts.map((p) => ({ date: p.date, v: p.investments })), { id: 'nw-inv', title: 'Investments', unit: 'in EUR', format: (v) => money(v, 'EUR'), wide: true })),
         ]
         : h('p', { class: 'fin-notice' }, 'Pick a longer period to see net worth over time.'),
       h('p', { class: 'fin-hint' },
@@ -4164,7 +4177,6 @@ function render(focusKey) {
         : view.name === 'ious' ? renderIous()
           : view.name === 'search' ? renderSearch()
           : view.name === 'insights' ? renderInsights()
-            : view.name === 'networth' ? renderNetWorth()
         : current ? renderAccount(current) : renderWelcome());
   // The address follows what's shown (an account, a settings page…), so reloading stays there.
   shownView = view;
@@ -4230,6 +4242,7 @@ function renderSignIn(message) {
   const email = input({ type: 'email', required: true, autocomplete: 'email' });
   const note = h('p', { class: message ? 'fin-error' : 'fin-hint', role: message ? 'alert' : null }, message ?? '');
   screen('Sign in',
+    h('p', { class: 'fin-tagline-screen' }, 'Fin · Swim ahead of your money'),
     h('p', { class: 'fin-empty' }, 'We’ll email you a link. Open it on this device to sign in. No password needed.'),
     h('form', {
       class: 'fin-signin',

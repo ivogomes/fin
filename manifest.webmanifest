@@ -1,7 +1,7 @@
 {
   "name": "Fin",
   "short_name": "Fin",
-  "description": "Your money: accounts, transactions, investments and insights.",
+  "description": "Swim ahead of your money. Accounts, transactions, investments and insights.",
   "start_url": "/tools/finance/",
   "scope": "/tools/finance/",
   "id": "/tools/finance/",

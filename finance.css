@@ -78,6 +78,10 @@ body {
 }
 
 /* ── Header: the tool's teal bar, with the sections as tabs ── */
+/* The tagline after the name: small and quiet, and left out where the header is tight. */
+.fin-tagline { align-self: flex-end; margin-bottom: 1px; font-size: 13px; font-weight: 400; opacity: 0.75; white-space: nowrap; }
+.fin-tagline-screen { margin: 4px 0 0; color: var(--f-muted); font-style: italic; }
+@media (max-width: 64rem) { .fin-tagline { display: none; } }
 .tool-header { min-height: 64px; padding-block: 10px; }
 .fin-nav {
   display: flex;

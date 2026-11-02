@@ -1,6 +1,6 @@
 # Fin
 
-Fin is a personal finance tracker to replace Buxfer: accounts in EUR or USD (converted at the daily ECB rate), credit cards and investments, rule-based categories, transfers, stock and ETF holdings with live prices, and CSV import and export. Served at `/tools/finance/`.
+Fin (*swim ahead of your money*) is a personal finance tracker to replace Buxfer: accounts in EUR or USD (converted at the daily ECB rate), credit cards and investments, rule-based categories, transfers, stock and ETF holdings with live prices, and CSV import and export. Served at `/tools/finance/`.
 
 Data is stored in a Supabase project (Postgres) and you sign in with an emailed link, so the same data is available on every device. The browser keeps only the sign-in session and a few display preferences.
 
@@ -43,7 +43,7 @@ Tests: `node --test tools/finance/model.test.mjs`. On this machine the `node` sh
 
 ## Pages
 
-Each section in the header (Accounts, Search, Scheduled, Insights, IOUs, Settings) and the Net worth page is its own page with its own address, e.g. `/tools/finance/?page=search`, `?page=settings&section=backup` or `?account=<id>&tab=insights`; `/tools/finance/` opens the last account. Going to another section loads that page with fresh data, so switching sections also picks up changes made on another device.
+Each section in the header (Accounts, Search, Scheduled, Insights, IOUs, Settings) is its own page with its own address, e.g. `/tools/finance/?page=search`, `?page=settings&section=backup` or `?account=<id>&tab=insights`; `/tools/finance/` opens the last account. Going to another section loads that page with fresh data, so switching sections also picks up changes made on another device.
 
 Not every page loads every transaction. Account totals (balances, counts, what's coming in the next 30 days) are worked out by the database (`account_summaries` in `schema.sql`), and a change you make shows in them at once; they're checked against the database again after each save. An account page asks the database for the 100 transactions it shows, with their running balance and filters applied (`account_transactions`), and the suggestions when adding transactions come from `description_index`. Search asks the database for one page of results with their In and Out totals (`search_transactions`), and Insights for the period's sums per day and per category (`insight_totals`, the same rules as `insightTotals` in `model.js`); the app groups those into weeks or months and parent categories. Net worth (and an investment account's Insights tab) asks for each account's running total at the end of each week or month (`balances_at`); investments are then valued from their holdings in the app. No page loads every transaction up front: the IOUs page fetches just the ones its entries are linked to, and the Settings pages that work on all of them (categories, rules, backup, imports, link transfers, export) load them when opened. A backup always has every transaction, wherever it's downloaded from. Anything waiting to be saved is sent first, and leaving with something typed but not saved asks first. Moving between accounts, account tabs and settings pages stays instant, and the address follows, so reloading or bookmarking keeps you there.
 
@@ -101,7 +101,7 @@ An investment account's Insights tab shows its value against the money invested 
 
 ## Net worth
 
-Click the net-worth card in the side panel. It shows net worth and the investments part over the chosen period (same presets as Insights), the change over the period, debts, and today's split by account type. Closed (archived) accounts count until their last transaction, then as nothing. Investment accounts are at market value today; on earlier dates they use the daily `snapshots` the app records (once a day, when you open it). Before the first snapshot, holdings with buys and sells are valued as the units held then times the latest trade price by then; holdings without them at what was put in, because there's no price history.
+Insights → **Net worth** (or click the net-worth card in the side panel). It shows net worth and the investments part over the chosen period (shared with the Income and spending tab), the change over the period, debts, and today's split by account type. Closed (archived) accounts count until their last transaction, then as nothing. Investment accounts are at market value today; on earlier dates they use the daily `snapshots` the app records (once a day, when you open it). Before the first snapshot, holdings with buys and sells are valued as the units held then times the latest trade price by then; holdings without them at what was put in, because there's no price history.
 
 ## Exchange rates
 
