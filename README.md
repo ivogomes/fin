@@ -41,6 +41,12 @@ Tests: `node --test tools/finance/model.test.mjs`. On this machine the `node` sh
 
 `schema.sql` only creates what's missing, so running the whole file again is safe and keeps your data. Do this when a new feature needs a table (scheduled transactions added `schedules`); until then the app loads normally and says which feature can't save yet.
 
+## Pages
+
+Each section in the header (Accounts, Search, Scheduled, Insights, IOUs, Settings) and the Net worth page is its own page with its own address, e.g. `/tools/finance/?page=search`, `?page=settings&section=backup` or `?account=<id>&tab=insights`; `/tools/finance/` opens the last account. Going to another section loads that page with fresh data, so switching sections also picks up changes made on another device.
+
+Not every page loads every transaction. Account totals (balances, counts, what's coming in the next 30 days) are worked out by the database (`account_summaries` in `schema.sql`), and a change you make shows in them at once; they're checked against the database again after each save. An account page asks the database for the 100 transactions it shows, with their running balance and filters applied (`account_transactions`), and the suggestions when adding transactions come from `description_index`. Search, Insights, Net worth and Settings, and an account's Insights tab, still load every transaction for now; the IOUs page loads just the ones its entries are linked to. Anything waiting to be saved is sent first, and leaving with something typed but not saved asks first. Moving between accounts, account tabs and settings pages stays instant, and the address follows, so reloading or bookmarking keeps you there.
+
 ## Adding transactions from the keyboard
 
 **Add transactions** opens a grid of rows. Typing a description suggests earlier ones (names starting with it first, then words starting with it, then ones containing it; within that, the account's own, the most used and the most recent). ↓/↑ move through them; Enter or Tab take one, filling in its category and whether it was an expense, income or refund (not the amount, which is rarely the same), then jump to the amount. A suggestion is pre-selected only when it starts with exactly what you typed, so a new description is never swapped for an old one by accident. Enter in any field goes to the next row, and there's always an empty row at the end; Ctrl+Enter (⌘+Enter on a Mac) saves them all.
@@ -65,7 +71,7 @@ Two levels, like Buxfer: a category is top-level or sits under one, and is shown
 
 **Insights** in the header covers all accounts (archived ones included); each account also has an Insights tab. Pick a period (this or last week, month or year, the last 30 or 90 days, the last 12 months, all time, or a custom range). It shows income, spending, net and the share of income saved, a chart of income against spending by day, week, month or year (with a table view), and spending and income per top-level category, each opening onto its subcategories.
 
-What counts: transfers between your accounts and opening balances don't. A transaction counts after its IOU entries, so a loan or its repayment counts as nothing and a shared bill counts only your share. A refund (a transaction of kind "refund", marked ↩) lowers spending in its category instead of counting as income. Amounts are in EUR at each transaction's own rate. A transaction with several categories counts under its first one, so the categories add up to the total.
+What counts: transfers between your accounts and opening balances don't. A transaction counts after its IOU entries, so a loan or its repayment counts as nothing and a shared bill counts only your share. A refund (a transaction of kind "refund", marked ↩) is money back on an expense: it lowers spending and never counts as income. It lowers spending in its first category that is a spending one; categories that take in more than goes out across all your history (a salary, say) are skipped, as a refund tagged with one only says where the money came from. A refund with no spending category lowers spending on its own line, "Refunds with no expense category". A category can show negative spending when more came back than was spent in the period. Amounts are in EUR at each transaction's own rate. A transaction with several categories counts under its first one, so the categories add up to the total.
 
 ## Holdings and their buys and sells
 
@@ -95,7 +101,9 @@ Money you lent or borrowed, per person. Each entry is positive when they owe you
 
 ## Scheduled transactions
 
-A schedule repeats every N days, weeks, months or years. Monthly and yearly ones keep their day of the month (the 31st falls back to the month's last day and returns to the 31st). Nothing is added by itself: when a date is due it shows on the account under "Next 30 days" with **Enter** (adds the transaction with that date) and **Skip**. Each account with schedules also shows a 30-day forecast. Create them under **Scheduled**, with **Repeat** in the single-transaction form, or by importing Buxfer's `reminders.csv`.
+A schedule repeats every N days, weeks, months or years. Monthly and yearly ones keep their day of the month (the 31st falls back to the month's last day and returns to the 31st). Nothing is added by itself: when a date is due it shows greyed out under "Upcoming", at the top of the account's transactions, with **Enter** (adds the transaction with that date) and **Skip**. Each account with schedules also shows a 30-day forecast. Create them under **Scheduled**, with **Schedule…** on an account, with **Repeat** in the single-transaction form, or by importing Buxfer's `reminders.csv`.
+
+Transactions you add with a date after today don't count in the balance or net worth yet. They also wait greyed out under "Upcoming" (where you can edit or delete them), with the balance they would leave, and are part of the 30-day forecast; on their date they join the list like any other.
 
 ## Backups
 

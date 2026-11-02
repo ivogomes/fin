@@ -1,9 +1,9 @@
 import {
   CURRENCIES, ACCOUNT_TYPES, ACCOUNT_TYPE_LABELS, toMinor, formatMoney, categorize, convert, rateFor, defaultState,
   normalize, categoryPath, categoriesOf, sortedCategories,
-  IOU_KINDS, IOU_TYPES, personBalances, personHistory, PERIODS, periodRange, insights, netWorthHistory, investedHistory,
-  descriptionIndex, suggestDescriptions, filterTransactions, ruleSuggestion,
-  accountBalance, holdingValue, investmentValue, netWorth, withRunningBalance, newId,
+  IOU_KINDS, IOU_TYPES, personBalances, personHistory, PERIODS, periodRange, insights, completeMonths, REFUNDS_UNMATCHED, netWorthHistory, investedHistory,
+  suggestDescriptions, filterTransactions, ruleSuggestion,
+  plannedTransactions, holdingValue, investmentValue, investmentValueFrom, newId,
   crossConvert, batchRow, makeTransfer,
   parseCsv, toCsv, guessDateFormat, guessDecimal, guessMapping, importRows, IMPORT_FIELDS, findTransferPairs,
   detectBuxferFile, buxferImport, isFtExport, ftImport, lotSummary,
@@ -11,16 +11,60 @@ import {
 } from './model.js';
 import { fetchRate, fetchRateRange, fetchQuote, fetchQuoteAV, fetchHistory, alphaVantageCovers, searchSymbols, today } from './market.js';
 import {
-  load, persist, onStatus, hasPendingChanges, legacyData, forgetLegacyData, missingTables, clearTables, needsSchemaUpdate,
+  load, persist, settle, onStatus, onSaved, hasPendingChanges, addTransactions, loadAllTransactions, transactionsComplete,
+  refreshSummaries, accountTotals, editToken, isFromDatabase, legacyData, forgetLegacyData, missingTables, clearTables, needsSchemaUpdate,
   backupData, restoreData, BACKUP_TABLES,
 } from './store.js';
 import { makeZip, readZip } from './zip.js';
-import { configured, currentUser, completeSignIn, sendSignInLink, signOut, SignedOut } from './cloud.js';
+import { configured, currentUser, completeSignIn, sendSignInLink, signOut, SignedOut, rpc, selectAll } from './cloud.js';
 
 // Set once the signed-in user's data has loaded (see boot() at the bottom).
 let state = null;
 // view: { name: 'account', id } | { name: 'settings' }
-let view = { name: 'account', id: null };
+// Each main section is its own page, with its own address: …/finance/?page=search, ?page=settings
+// &section=backup, ?account=<id>&tab=insights, and …/finance/ for the last account. Going to another
+// section loads that page, so its data is fresh; within a page (accounts, settings pages) it's instant.
+const BASE_PATH = '/tools/finance/';
+const PAGES = ['search', 'scheduled', 'insights', 'ious', 'settings', 'networth'];
+const sectionOf = (v) => (v.name === 'account' ? 'accounts' : v.name);
+function urlOf(v) {
+  const q = new URLSearchParams();
+  if (v.name === 'account') {
+    if (v.id) q.set('account', v.id);
+    if (v.tab === 'insights') q.set('tab', 'insights');
+  } else {
+    q.set('page', v.name);
+    if (v.name === 'settings' && v.section) q.set('section', v.section);
+    if (v.name === 'ious' && v.personId) q.set('person', v.personId);
+  }
+  const s = q.toString();
+  return s ? `${BASE_PATH}?${s}` : BASE_PATH;
+}
+function viewFromUrl() {
+  const q = new URLSearchParams(location.search);
+  const page = q.get('page');
+  if (PAGES.includes(page)) {
+    return { name: page, ...(q.get('section') && { section: q.get('section') }), ...(q.get('person') && { personId: q.get('person') }) };
+  }
+  return { name: 'account', id: q.get('account'), ...(q.get('tab') === 'insights' && { tab: 'insights' }) };
+}
+let view = viewFromUrl();
+let shownView = view; // what's on screen, to fall back on if leaving the page is cancelled
+let pageSection = null; // the section this page was loaded for, once loaded
+let leaving = false;
+// Leaves for another page: sends what's waiting to be saved first. `ask`: confirm before dropping
+// something typed here but not saved (from the header tabs; actions that move on have saved already).
+async function leave(url, { ask = false } = {}) {
+  if (leaving) return;
+  if (ask && hasUnsavedInput() && !window.confirm('Leave this page? What you’ve typed here isn’t saved yet.')) return;
+  leaving = true;
+  if (hasPendingChanges()) {
+    say('Saving before switching page…');
+    await settle();
+  }
+  location.assign(url);
+  setTimeout(() => { leaving = false; }, 1000); // if the browser stays (the user chose to stay)
+}
 let editingTxId = null;
 const TX_PAGE_SIZE = 100;
 let txPage = 0; // 0 = the newest 100; reset when another account is selected
@@ -73,9 +117,17 @@ function hueOf(id) {
 }
 let hueOrder = null; // reset on every render, like iouByTx
 const catOptions = () => sortedCategories(state.categories).map((c) => [c.id, categoryPath(c, state.categories)]);
-const money = (minor, cur) => formatMoney(minor, cur);
+// Hide amounts (to show the app to someone): every amount and quantity is drawn as dots. The dots
+// stand in for a fixed number, so their length says nothing about the real one; signs, colours and
+// percentages stay. Remembered per browser.
+let hideAmounts = readPref('finance:hide-amounts', false);
+const MASK_MINOR = 123456;
+const masked = (text) => text.replace(/\d/g, '•');
+const money = (minor, cur) => (hideAmounts ? masked(formatMoney(minor < 0 ? -MASK_MINOR : MASK_MINOR, cur)) : formatMoney(minor, cur));
 const signed = (minor, cur) =>
-  new Intl.NumberFormat(undefined, { style: 'currency', currency: cur, signDisplay: 'exceptZero' }).format(minor / 100);
+  new Intl.NumberFormat(undefined, { style: 'currency', currency: cur, signDisplay: 'exceptZero' })
+    .format((hideAmounts ? Math.sign(minor) * MASK_MINOR : minor) / 100).replace(/\d/g, (d) => (hideAmounts ? '•' : d));
+const shownQty = (n) => (hideAmounts ? '•••' : String(n));
 const tone = (minor) => (minor > 0 ? 'fin-pos' : minor < 0 ? 'fin-neg' : '');
 const latestRate = (cur) => (cur === 'EUR' ? 1 : state.rates[`${cur}:latest`]?.rate ?? null);
 
@@ -100,6 +152,41 @@ const select = (options, value, attrs = {}) =>
     options.map(([v, label]) => h('option', { value: v, selected: v === value }, label)));
 const button = (label, onclick, kind = 'secondary', attrs = {}) =>
   h('button', { type: 'button', class: `fin-btn ${kind === 'primary' ? 'btn-primary' : kind}`, onclick, ...attrs }, label);
+
+// A transaction's type as a segmented switch (a radio group): one Tab stop, ←/→ move and pick, like
+// native radios. `compact` shows only the symbols (the quick-entry grid), with the names as labels
+// and tooltips. `value` reads and sets the picked type.
+const TX_TYPES = { expense: ['−', 'Expense'], income: ['+', 'Income'], refund: ['↩', 'Refund'], transfer: ['⇄', 'Transfer'] };
+function typeSwitch(kinds, value, { label = 'Transaction type', compact = false, onChange } = {}) {
+  let current = value;
+  const show = () => btns.forEach((b, i) => {
+    b.setAttribute('aria-checked', String(kinds[i] === current));
+    b.tabIndex = kinds[i] === current ? 0 : -1;
+  });
+  const pick = (k, focus) => {
+    if (focus) btns[kinds.indexOf(k)].focus();
+    if (k === current) return;
+    current = k;
+    show();
+    onChange?.(k);
+  };
+  const btns = kinds.map((k) => h('button', {
+    type: 'button', role: 'radio', class: 'fin-seg-btn', 'data-kind': k,
+    title: compact ? TX_TYPES[k][1] : null, 'aria-label': compact ? TX_TYPES[k][1] : null,
+    onclick: () => pick(k, true),
+  }, h('span', { class: 'fin-seg-icon', 'aria-hidden': 'true' }, TX_TYPES[k][0]), !compact && TX_TYPES[k][1]));
+  const el = h('div', {
+    class: `fin-seg fin-seg--type${compact ? ' fin-seg--compact' : ''}`, role: 'radiogroup', 'aria-label': label,
+    onkeydown: (ev) => {
+      const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[ev.key];
+      if (!step) return;
+      ev.preventDefault();
+      pick(kinds[(kinds.indexOf(current) + step + kinds.length) % kinds.length], true);
+    },
+  }, btns);
+  show();
+  return { el, get value() { return current; }, set value(k) { current = k; show(); } };
+}
 
 // Line icons (24px grid, drawn with the text colour) for compact row actions.
 const ICONS = {
@@ -173,6 +260,7 @@ async function refreshRates() {
   if (fetched) persist();
   // Fill in transactions that have no rate yet (saved offline, or imported). Many at once are
   // priced from one date-range request per currency instead of one request per date.
+  if (!transactionsComplete()) await fetchTransactions(() => selectAll('transactions', 'id', '&rate=is.null'));
   const missing = state.transactions.filter((t) => t.rate == null);
   const currencyOf = (t) => state.accounts.find((a) => a.id === t.accountId)?.currency;
   for (const cur of new Set(missing.map(currencyOf))) {
@@ -264,10 +352,19 @@ function stalePrices() {
 
 // ── values ───────────────────────────────────────────────────────────────────
 
+// Each account's totals as the database counted them plus any change made here since (store.js),
+// worked out once per render. Balances count what has happened: transactions dated after today wait
+// greyed out above the list.
+let totalsCache = null;
+function totalsOf(accountId) {
+  totalsCache ??= accountTotals(today(), daysFromToday(FORECAST_DAYS));
+  return totalsCache.get(accountId) ?? { balance: 0, count: 0, past: 0, planned: 0, plannedCount: 0 };
+}
 function accountValue(account) {
+  const invested = totalsOf(account.id).balance;
   return account.type === 'investment'
-    ? investmentValue(account, state.holdings, state.transactions, (c) => latestRate(c) ?? 1).total
-    : accountBalance(account, state.transactions);
+    ? investmentValueFrom(account, state.holdings, invested, (c) => latestRate(c) ?? 1).total
+    : invested;
 }
 
 // Group total in EUR. Accounts still waiting for a rate are left out and counted.
@@ -288,7 +385,14 @@ function groupTotal(list) {
 const byName = (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
 
 function renderSide() {
-  const nw = netWorth(state, latestRate);
+  // Net worth in EUR; accounts still waiting for a rate are left out and counted.
+  const nw = { total: 0, unconverted: 0 };
+  for (const a of state.accounts) {
+    if (a.archived) continue;
+    const rate = latestRate(a.currency);
+    if (rate == null) nw.unconverted += 1;
+    else nw.total += convert(accountValue(a), rate);
+  }
   return [
     // The net-worth card opens its own page: net worth over time and by account type.
     h('button', {
@@ -359,7 +463,7 @@ function selectAccount(id) {
 // Add an account, or edit `existing`. The currency is fixed once an account has transactions or
 // holdings, because their amounts are stored in that currency.
 function openAccountDialog(existing = null) {
-  const used = existing && (state.transactions.some((t) => t.accountId === existing.id)
+  const used = existing && (totalsOf(existing.id).count > 0
     || state.holdings.some((x) => x.accountId === existing.id));
   const name = input({ type: 'text', required: true, autocomplete: 'off', value: existing?.name });
   const type = select(ACCOUNT_TYPES.map((t) => [t, ACCOUNT_TYPE_LABELS[t]]), existing?.type ?? 'checking');
@@ -417,7 +521,7 @@ function renderWelcome() {
 function renderAccount(account) {
   const value = accountValue(account);
   const inv = account.type === 'investment'
-    ? investmentValue(account, state.holdings, state.transactions, (c) => latestRate(c) ?? 1)
+    ? investmentValueFrom(account, state.holdings, totalsOf(account.id).balance, (c) => latestRate(c) ?? 1)
     : null;
   const rate = latestRate(account.currency);
   return h('div', {},
@@ -430,8 +534,13 @@ function renderAccount(account) {
         account.archived
           ? button('Unarchive', () => setArchived(account, false), 'secondary', { 'data-key': 'unarchive-account' })
           : button('Archive', () => setArchived(account, true), 'secondary', { 'data-key': 'archive-account' }),
-        button('Delete', () => {
+        button('Delete', async () => {
           if (!confirm(`Delete "${account.name}" and everything in it?`)) return;
+          // All of its transactions are needed here, so undo can bring every one of them back.
+          if (!transactionsComplete()) {
+            say('Getting the account’s transactions…');
+            await fetchTransactions(() => selectAll('transactions', 'id', `&account_id=eq.${encodeURIComponent(account.id)}`));
+          }
           undoable(`${account.name} deleted.`, ['accounts', 'transactions', 'ious', 'holdings', 'lots', 'schedules'], () => {
             state.accounts = state.accounts.filter((a) => a.id !== account.id);
             const gone = new Set(state.transactions.filter((t) => t.accountId === account.id).map((t) => t.id));
@@ -456,16 +565,18 @@ function renderAccount(account) {
       inv?.hasHoldings && h('div', {}, h('dt', {}, 'Gain'),
         h('dd', { class: `fin-num ${tone(value - inv.invested)}` }, signed(value - inv.invested, account.currency),
           inv.invested > 0 && h('span', { class: 'fin-stat-sub' }, ` ${((value - inv.invested) / inv.invested * 100).toFixed(1)}%`))),
-      // Like Buxfer's forecast: the balance once everything scheduled in the next 30 days happens.
-      state.schedules.some((s) => scheduledEffect(s, account.id) !== 0) && (() => {
-        const next = forecast(account.id, value, state.schedules, daysFromToday(FORECAST_DAYS));
+      // Like Buxfer's forecast: the balance once everything scheduled in the next 30 days happens,
+      // and the transactions already added for those days.
+      (state.schedules.some((s) => scheduledEffect(s, account.id) !== 0) || totalsOf(account.id).plannedCount > 0) && (() => {
+        const next = forecast(account.id, value, state.schedules, daysFromToday(FORECAST_DAYS)) + totalsOf(account.id).planned;
         return h('div', {}, h('dt', {}, `Forecast, ${FORECAST_DAYS} days`),
           h('dd', { class: `fin-num ${tone(next)}` }, signed(next, account.currency)));
       })()),
     accountTabs(),
     view.tab === 'insights'
-      ? (account.type === 'investment' ? investmentInsights(account) : insightsPanel(new Set([account.id])))
-      : [account.type === 'investment' && holdingsSection(account), upcomingSection(account), transactionsSection(account)]);
+      ? (!transactionsComplete() ? needEverything()
+        : account.type === 'investment' ? investmentInsights(account) : insightsPanel(new Set([account.id])))
+      : [account.type === 'investment' && holdingsSection(account), transactionsSection(account)]);
 }
 
 // Transactions or Insights for the selected account.
@@ -504,13 +615,19 @@ function showToast(message, actions = [], { timeout = 10000, undo = null } = {})
 
 // Runs a change that can be taken back: the named tables are copied first, and the message offers
 // Undo, which puts the copies back (the save then sends the difference).
+// Undo puts back the rows as they were; rows that came in afterwards (a page of transactions fetched
+// meanwhile) stay, since leaving them out would delete them.
 function undoable(message, tables, change) {
   const before = structuredClone(Object.fromEntries(tables.map((t) => [t, state[t]])));
   change();
+  const after = Object.fromEntries(tables.map((t) => [t, new Set(state[t].map((x) => x.id))]));
   persist();
   render();
   const undo = () => {
-    Object.assign(state, before);
+    for (const t of tables) {
+      const was = new Set(before[t].map((x) => x.id));
+      state[t] = [...before[t], ...state[t].filter((x) => !was.has(x.id) && !after[t].has(x.id))];
+    }
     persist();
     render();
     say('Undone.');
@@ -546,7 +663,10 @@ function deleteTransactions(ids) {
 // ── learning rules from manual categories ────────────────────────────────────
 
 const ruleDeclined = new Set(); // "description|category" offers turned down, for this visit
-function offerRule(t, categoryId) {
+async function offerRule(t, categoryId) {
+  // The other uncategorised transactions with this description, which the rule could fill in.
+  const same = normalize(t.description ?? '');
+  if (same && !transactionsComplete()) await fetchTransactions(() => rpc('same_description_uncategorized', { p_key: same }));
   const s = ruleSuggestion(t, categoryId, state.rules, state.transactions);
   if (!s) return;
   const key = `${normalize(s.pattern)}|${categoryId}`;
@@ -596,9 +716,19 @@ function filterBar(scope, { showAccount = false } = {}) {
   cat.addEventListener('change', () => set({ categoryId: cat.value === '*' ? null : cat.value }, `${scope}-cat`));
   const type = select([['', 'All types'], ['expense', 'Expenses'], ['income', 'Income'], ['refund', 'Refunds'], ['transfer', 'Transfers']], f.type ?? '', { 'data-key': `${scope}-type`, 'aria-label': 'Type' });
   type.addEventListener('change', () => set({ type: type.value || null }, `${scope}-type`));
+  // A date box reports a "valid" date after almost every keystroke (typing 2026 passes through 0002,
+  // 0020, 0202), and applying it redraws the list and resets the box mid-typing. So it applies a
+  // moment after typing stops, only once the year looks real, and at once on Enter or leaving it.
   const dateIn = (k, label) => {
     const el = input({ type: 'date', value: f[k], 'data-key': `${scope}-${k}`, 'aria-label': label });
-    el.addEventListener('change', () => set({ [k]: el.value }, `${scope}-${k}`));
+    const apply = (wait) => {
+      if (el.value === filterOf(scope)[k]) return;
+      if (el.value && Number(el.value.slice(0, 4)) < 1900) return;
+      set({ [k]: el.value }, `${scope}-${k}`, wait);
+    };
+    el.addEventListener('change', () => apply(1200));
+    el.addEventListener('blur', () => apply(0));
+    el.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); apply(0); } });
     return el;
   };
   const amountIn = (k, label) => {
@@ -672,7 +802,8 @@ function bulkBar(pageRows) {
 
 // The transactions table. `rows` is one page; each may carry `balance` (shown when `showBalance`).
 // With `showAccount` (search), each row names its account and amounts are in that account's currency.
-function txTable(rows, { caption, showBalance = false, showAccount = false, inEur = false }) {
+// `upcoming(cols)` gives greyed rows to show first (an account's future transactions).
+function txTable(rows, { caption, showBalance = false, showAccount = false, inEur = false, upcoming = null }) {
   const accOf = (t) => state.accounts.find((a) => a.id === t.accountId);
   const cols = 6 + (showBalance ? 1 : 0) + (showAccount ? 1 : 0) + (inEur ? 1 : 0);
   const allOnPage = rows.length > 0 && rows.every((t) => selected.has(t.id));
@@ -694,7 +825,7 @@ function txTable(rows, { caption, showBalance = false, showAccount = false, inEu
       h('th', { scope: 'col' }, 'Categories'),
       inEur && h('th', { scope: 'col', class: 'fin-r' }, 'In EUR'),
       h('th', { scope: 'col' }, h('span', { class: 'fin-sr' }, 'Actions')))),
-    h('tbody', {}, rows.flatMap((t, i) => {
+    h('tbody', {}, upcoming?.(cols), rows.flatMap((t, i) => {
       const account = accOf(t);
       const cur = account?.currency ?? 'EUR';
       // A heading row at the start of each month makes a long list easier to scan.
@@ -717,7 +848,7 @@ function txTable(rows, { caption, showBalance = false, showAccount = false, inEu
         h('td', { class: `fin-r fin-num c-amt ${tone(t.amount)}` },
           t.kind === 'refund' && h('span', { class: 'fin-refund', title: 'Refund' }, icon('refund'), h('span', { class: 'fin-sr' }, 'Refund: ')),
           signed(t.amount, cur)),
-        showBalance && h('td', { class: 'fin-r fin-num fin-muted c-bal' }, money(t.balance, cur)),
+        showBalance && h('td', { class: 'fin-r fin-num fin-muted c-bal' }, t.balance == null ? '' : money(t.balance, cur)),
         h('td', { class: 'c-desc' }, t.description, t.memo && h('span', { class: 'fin-sub' }, t.memo)),
         showAccount && h('td', { class: 'c-acc' }, h('button', {
           type: 'button', class: 'fin-link fin-link-sm', onclick: () => selectAccount(t.accountId),
@@ -730,31 +861,152 @@ function txTable(rows, { caption, showBalance = false, showAccount = false, inEu
     }))));
 }
 
+// ── an account's transactions, a page at a time from the database ─────────────
+
+// Fetches transactions (`get` resolves to database rows) into the ones in use. Pending changes are
+// saved first, and the answer is dropped if something changed while it was on its way (it could
+// bring back a row just deleted); then it tries again.
+async function fetchTransactions(get) {
+  for (let i = 0; i < 3; i += 1) {
+    await settle();
+    const token = editToken();
+    const rows = await get();
+    const added = addTransactions(rows, token);
+    if (added) return added;
+  }
+  return null;
+}
+
+// The page of the list on screen, as the database sent it: which rows, their running balances, how
+// many match. `known`: the transactions in use when it was asked for, so one added here since (not
+// on the page yet) still shows.
+let txView = null;
+let txLoading = null;
+const txKey = (account, f) => JSON.stringify([account.id, txPage, f, today()]);
+function requestTxPage(account, f) {
+  const key = txKey(account, f);
+  if (txLoading === key) return;
+  txLoading = key;
+  const text = String(f.text ?? '').trim();
+  const asAmount = /^[\d.,]+$/.test(text) ? Math.abs(toMinor(text.replace(/,(\d{1,2})$/, '.$1').replace(/,/g, ''))) : null;
+  const args = {
+    p_account: account.id, p_today: today(), p_limit: TX_PAGE_SIZE, p_offset: txPage * TX_PAGE_SIZE,
+    p_text: normalize(text) || null, p_amount: asAmount,
+    p_category: f.categoryId || null, p_uncategorized: f.categoryId === '', p_type: f.type || null,
+    p_from: f.from || null, p_to: f.to || null,
+    p_min: f.min === '' || f.min == null ? null : toMinor(f.min), p_max: f.max === '' || f.max == null ? null : toMinor(f.max),
+  };
+  let page = null;
+  let known = null;
+  fetchTransactions(async () => {
+    known = new Set(state.transactions.map((t) => t.id));
+    page = await rpc('account_transactions', args);
+    return [...page.rows, ...page.planned, ...page.partners];
+  }).then((added) => {
+    if (txLoading !== key) return;
+    txLoading = null;
+    if (!added || !page) { say('Couldn’t load the transactions. Try again in a moment.'); return; }
+    txView = {
+      key, total: Number(page.total), ids: page.rows.map((r) => r.id),
+      balances: new Map(page.rows.map((r) => [r.id, Number(r.balance)])), known,
+    };
+    renderWhenIdle();
+  }).catch((err) => {
+    if (txLoading === key) txLoading = null;
+    say(`Couldn’t load the transactions: ${err.message}`);
+  });
+}
+
+// Draws again after data arrives, unless that would wipe something being typed or edited; then the
+// next redraw shows it.
+function renderWhenIdle() {
+  if (editingTxId || hasUnsavedInput()) return;
+  render();
+}
+
 function transactionsSection(account) {
   const scope = `acc:${account.id}`;
   const f = filterOf(scope);
-  const withBalance = withRunningBalance(account.id, state.transactions);
-  // Filtering keeps each row's running balance: it's still the balance right after that row.
-  const keep = filterActive(f) ? new Set(filterTransactions(withBalance, f, { categories: state.categories }).map((t) => t.id)) : null;
-  const all = keep ? withBalance.filter((t) => keep.has(t.id)) : withBalance;
-  const pages = Math.max(1, Math.ceil(all.length / TX_PAGE_SIZE));
-  txPage = Math.min(txPage, pages - 1); // e.g. after deleting the last row of the last page
-  const rows = all.slice(txPage * TX_PAGE_SIZE, (txPage + 1) * TX_PAGE_SIZE);
-  for (const id of selected) if (!all.some((t) => t.id === id)) selected.delete(id);
+  const filtered = filterActive(f);
+  const now = today();
+  // After a save the page is asked for again; meanwhile it keeps showing (`usable`, not `fresh`).
+  const usable = txView?.key === txKey(account, f);
+  if (!usable || txView.stale) requestTxPage(account, f);
+  const ready = usable;
+  const totals = totalsOf(account.id);
+  const byId = new Map(state.transactions.map((t) => [t.id, t]));
+  // The page's rows (minus any deleted since), plus transactions added here since it was fetched.
+  const fresh = ready ? state.transactions.filter((t) => t.accountId === account.id && t.date <= now
+    && !txView.known.has(t.id) && !isFromDatabase(t.id) && !txView.ids.includes(t.id)) : [];
+  const rows = [
+    ...(ready ? txView.ids.map((id) => byId.get(id)).filter((t) => t && t.accountId === account.id && t.date <= now) : []),
+    ...(filtered ? filterTransactions(fresh, f, { categories: state.categories }) : fresh),
+  ].sort((a, b) => b.date.localeCompare(a.date) || b.id.localeCompare(a.id));
+  // Running balances: on the first page, counted down from the balance right now, so they follow
+  // every change at once; elsewhere, the database's (exact again after the next save).
+  if (txPage === 0 && !filtered) {
+    let bal = totals.balance;
+    for (const t of rows) { t.balance = bal; bal -= t.amount; }
+  } else {
+    for (const t of rows) t.balance = txView?.balances.get(t.id) ?? null;
+  }
+  const total = ready ? txView.total + fresh.length : totals.past;
+  const pages = Math.max(1, Math.ceil(total / TX_PAGE_SIZE));
+  if (ready && txPage > pages - 1) { txPage = pages - 1; return transactionsSection(account); } // after deleting the last rows of the last page
+  for (const id of selected) if (!rows.some((t) => t.id === id)) selected.delete(id);
+  // What's coming sits on top of the first page, unless filters are narrowing the list.
+  const upcoming = !filtered && txPage === 0
+    ? (cols) => upcomingRows(account, { cols, inEur: account.currency !== 'EUR', balance: totals.balance })
+    : null;
+  const hasUpcoming = Boolean(upcoming) && (plannedTransactions(account.id, state.transactions, now).length > 0
+    || state.schedules.some((s) => scheduledEffect(s, account.id) !== 0 && occurrences(s, daysFromToday(FORECAST_DAYS)).length > 0));
   return h('section', { class: 'fin-card', 'aria-labelledby': 'tx-h' },
     h('div', { class: 'fin-card-head' },
-      h('h3', { id: 'tx-h', class: 'fin-label' }, 'Transactions ', h('span', { class: 'fin-count' }, keep ? `${all.length} of ${withBalance.length}` : String(all.length))),
-      button('Add transactions', () => openTxDialog('multi', account), 'primary', { 'data-key': 'tx-add', 'aria-haspopup': 'dialog' })),
+      h('h3', { id: 'tx-h', class: 'fin-label' }, 'Transactions ', h('span', { class: 'fin-count' }, filtered ? (ready ? `${total} of ${totals.past}` : '…') : String(totals.past))),
+      h('div', { class: 'fin-actions' },
+        button('Schedule…', () => openScheduleDialog(null, { accountId: account.id }), 'secondary', { 'data-key': 'up-add', 'aria-haspopup': 'dialog' }),
+        button('Add transactions', () => openTxDialog('multi', account), 'primary', { 'data-key': 'tx-add', 'aria-haspopup': 'dialog' }))),
     filterBar(scope),
     selected.size > 0 && bulkBar(rows),
-    pages > 1 && pager(txPage, pages, all.length, 'top'),
-    rows.length === 0
-      ? h('p', { class: 'fin-empty fin-pad' }, keep ? 'No transactions match these filters.' : 'No transactions yet.')
-      : txTable(rows, {
-        caption: `Transactions for ${account.name}, newest first, page ${txPage + 1} of ${pages}`,
-        showBalance: true, inEur: account.currency !== 'EUR',
-      }),
-    pages > 1 && pager(txPage, pages, all.length, 'bottom'));
+    pages > 1 && pager(txPage, pages, total, 'top'),
+    !ready && rows.length === 0
+      ? h('p', { class: 'fin-empty fin-pad', role: 'status' }, 'Loading transactions…')
+      : rows.length === 0 && !hasUpcoming
+        ? h('p', { class: 'fin-empty fin-pad' }, filtered ? 'No transactions match these filters.' : 'No transactions yet.')
+        : txTable(rows, {
+          caption: `Transactions for ${account.name}, newest first, page ${txPage + 1} of ${pages}${hasUpcoming ? '. Upcoming ones come first and don’t count in the balance yet' : ''}`,
+          showBalance: true, inEur: account.currency !== 'EUR', upcoming: hasUpcoming ? upcoming : null,
+        }),
+    pages > 1 && pager(txPage, pages, total, 'bottom'));
+}
+
+// Shown where a view needs every transaction (Insights on an account page) while they load.
+let everythingLoading = false;
+function needEverything() {
+  if (!everythingLoading) {
+    everythingLoading = true;
+    loadAllTransactions()
+      .then(() => { everythingLoading = false; renderWhenIdle(); })
+      .catch((err) => { everythingLoading = false; say(`Couldn’t load the transactions: ${err.message}`); });
+  }
+  return h('p', { class: 'fin-empty fin-pad', role: 'status' }, 'Loading all transactions for this view…');
+}
+
+// Earlier descriptions for the suggestions when adding transactions, from the database (one list,
+// fetched once per page and again after transactions are saved). Empty until it arrives.
+let descCache = null;
+let descLoading = false;
+function loadDescIndex() {
+  if (descLoading) return;
+  descLoading = true;
+  rpc('description_index')
+    .then((list) => { descCache = list; })
+    .catch(() => { /* suggestions are a convenience; try again next time */ })
+    .finally(() => { descLoading = false; });
+}
+function descIndex() {
+  if (!descCache) loadDescIndex();
+  return descCache ?? [];
 }
 
 // Search across every account (archived ones too).
@@ -805,7 +1057,7 @@ function transactionForm(account, tx) {
   const partner = transferPartner(tx);
   let kind = tx.kind === 'refund' ? 'refund' : tx.amount > 0 ? 'income' : 'expense';
   // Suggestions fill in the description, and the categories when it has none (never the amount).
-  const descCombo = descriptionCombo(descriptionIndex(state.transactions), {
+  const descCombo = descriptionCombo(descIndex, {
     label: 'Description',
     accountOf: () => account.id,
     onAccept: (e) => {
@@ -824,12 +1076,7 @@ function transactionForm(account, tx) {
   const memo = h('textarea', { class: 'fin-input', rows: '2' });
   memo.value = tx.memo ?? '';
   const cancel = () => { editingTxId = null; render(`tx-edit-${tx.id}`); };
-  const KINDS = { expense: 'Expense', income: 'Income', refund: 'Refund' };
-  const kinds = Object.keys(KINDS).map((k) =>
-    h('button', {
-      type: 'button', class: 'fin-seg-btn', 'aria-pressed': String(k === kind),
-      onclick: () => { kind = k; kinds.forEach((b, i) => b.setAttribute('aria-pressed', String(Object.keys(KINDS)[i] === kind))); },
-    }, KINDS[k]));
+  const kinds = typeSwitch(['expense', 'income', 'refund'], kind, { onChange: (k) => { kind = k; } });
 
   return h('form', {
     class: 'fin-tx-form',
@@ -866,7 +1113,7 @@ function transactionForm(account, tx) {
   },
     tx.transferId
       ? h('p', { class: 'fin-hint fin-edit-note' }, `Transfer ${tx.amount < 0 ? 'to' : 'from'} ${accountName(partner?.accountId)}. Changes apply to both sides.`)
-      : h('div', { class: 'fin-seg', role: 'group', 'aria-label': 'Transaction type' }, kinds),
+      : kinds.el,
     h('div', { class: 'fin-grid' },
       comboField('Description', descCombo), field(`Amount (${account.currency})`, amount),
       field('Date', date)),
@@ -989,27 +1236,41 @@ const categoryOptions = (autoLabel = 'Auto') => [['', autoLabel], ...catOptions(
 
 // A description box that suggests names from past transactions (ARIA combobox + listbox).
 // ↓/↑ move, Enter or Tab take the highlighted one, Esc closes the list. `onAccept(entry)` fills the
-// rest of the row. The list opens upwards when there isn't room below (the dialog scrolls).
+// rest of the row. The list floats over the page (fixed to the window), so a dialog or a scrolling
+// table can't cut it off; it opens upwards when there isn't room below.
+// `index()` gives the earlier descriptions (descIndex).
 function descriptionCombo(index, { label, accountOf, onAccept }) {
   const listId = `desc-${newId().slice(0, 8)}`;
   const box = input({
     type: 'text', autocomplete: 'off', role: 'combobox', 'aria-autocomplete': 'list',
     'aria-expanded': 'false', 'aria-controls': listId, 'aria-label': label,
   });
-  const listbox = h('ul', { id: listId, role: 'listbox', class: 'fin-options', hidden: true, 'aria-label': 'Earlier descriptions' });
+  const listbox = h('ul', { id: listId, role: 'listbox', class: 'fin-options fin-options--float', hidden: true, 'aria-label': 'Earlier descriptions' });
   let results = [];
   let active = -1;
   const isOpen = () => !listbox.hidden;
+  // Lines the list up with the box; the position goes to CSS as custom properties.
+  const place = () => {
+    const r = box.getBoundingClientRect();
+    const below = window.innerHeight - r.bottom - 12;
+    const up = below < 240 && r.top > below;
+    const width = Math.min(Math.max(r.width, 288), window.innerWidth - 16);
+    const set = (k, v) => listbox.style.setProperty(k, `${Math.round(v)}px`);
+    listbox.classList.toggle('fin-options--up', up);
+    set('--opt-left', Math.max(8, Math.min(r.left, window.innerWidth - 8 - width)));
+    set('--opt-width', width);
+    set('--opt-top', r.bottom + 4);
+    set('--opt-bottom', window.innerHeight - r.top + 4);
+    set('--opt-max', Math.min(288, up ? r.top - 12 : below));
+  };
   const open = (on) => {
     listbox.hidden = !on;
     box.setAttribute('aria-expanded', String(on));
+    // Follow the box while anything scrolls (the dialog, the page) or the window changes size.
+    window[on ? 'addEventListener' : 'removeEventListener']('scroll', place, true);
+    window[on ? 'addEventListener' : 'removeEventListener']('resize', place);
     if (!on) { box.removeAttribute('aria-activedescendant'); return; }
-    // Inside a scrolling table (the inline edit form) a floating list would be cut off, so it opens
-    // in the flow of the form instead.
-    listbox.classList.toggle('fin-options--inline', Boolean(box.closest('.fin-scroll')));
-    const r = box.getBoundingClientRect();
-    const room = (box.closest('dialog')?.getBoundingClientRect().bottom ?? window.innerHeight) - r.bottom;
-    listbox.classList.toggle('fin-options--up', room < 260);
+    place();
   };
   const highlight = (i) => {
     active = i;
@@ -1018,21 +1279,18 @@ function descriptionCombo(index, { label, accountOf, onAccept }) {
     if (li) { box.setAttribute('aria-activedescendant', li.id); li.scrollIntoView({ block: 'nearest' }); }
   };
   const accept = (e) => { open(false); onAccept(e); };
-  const cur = (e) => state.accounts.find((a) => a.id === e.accountId)?.currency ?? 'EUR';
   const update = () => {
-    results = suggestDescriptions(index, box.value, { accountId: accountOf() });
+    results = suggestDescriptions(index(), box.value, { accountId: accountOf() });
     listbox.replaceChildren(...results.map((e, i) => h('li', {
       id: `${listId}-${i}`, role: 'option', class: 'fin-option fin-option-desc', 'aria-selected': 'false',
       onmousedown: (ev) => ev.preventDefault(), // keep focus in the box
       onclick: () => accept(e),
     },
-      h('span', { class: 'fin-option-main' }, e.description,
-        e.kind === 'transfer'
-          ? h('span', { class: 'fin-option-amt fin-num' }, `⇄ ${money(Math.abs(e.amount), cur(e))}`)
-          : h('span', { class: `fin-option-amt fin-num ${e.kind === 'refund' ? '' : tone(e.amount)}` }, `${e.kind === 'refund' ? '↩ ' : ''}${signed(e.amount, cur(e))}`)),
+      h('span', { class: 'fin-option-main' }, e.description),
       h('span', { class: 'fin-sub' }, [
-        e.kind === 'transfer' ? `${accountName(e.accountId)} → ${accountName(e.toAccountId)}` : e.categoryIds.map(catLabel).filter(Boolean).join(', ') || 'No category',
-        `used ${e.count}×`, `last ${shortDate(e.lastDate)}${e.lastDate.slice(0, 4) != thisYear ? ` ${e.lastDate.slice(0, 4)}` : ''}`].join(' · ')))));
+        e.kind === 'transfer' ? `⇄ ${accountName(e.accountId)} → ${accountName(e.toAccountId)}`
+          : `${e.kind === 'refund' ? '↩ Refund · ' : ''}${e.categoryIds.map(catLabel).filter(Boolean).join(', ') || 'No category'}`,
+        `used ${e.count}×`].join(' · ')))));
     open(results.length > 0);
     // Pre-select the first suggestion only when it starts with what's typed, so Tab or Enter never
     // swap a new description for a different old one; otherwise pick with the arrow keys first.
@@ -1073,9 +1331,10 @@ function comboField(label, combo, hint) {
 // Quick entry: a grid of rows, made for the keyboard. Descriptions suggest earlier ones and fill the
 // rest of the row from their latest use; Enter goes to the next row (adding one at the end);
 // Ctrl/⌘+Enter saves them all.
+const SIGNS = { expense: '-', income: '+', refund: 'r', transfer: 't' }; // batchRow's codes
 function multiTxForm(account, close, swap) {
   const accounts = pickableAccounts(account.id);
-  const index = descriptionIndex(state.transactions);
+  const index = descIndex;
   const rows = [];
   const body = h('tbody');
   const error = h('p', { class: 'fin-error', role: 'alert' });
@@ -1086,7 +1345,7 @@ function multiTxForm(account, close, swap) {
     const r = {};
     Object.assign(r, {
       cat: select(categoryOptions(), '', { 'aria-label': `Category, row ${n}` }),
-      sign: select([['-', '− Expense'], ['+', '+ Income'], ['r', '↩ Refund'], ['t', '⇄ Transfer']], '-', { 'aria-label': `Type, row ${n}`, class: 'fin-input fin-sign' }),
+      type: typeSwitch(['expense', 'income', 'refund', 'transfer'], 'expense', { label: `Type, row ${n}`, compact: true, onChange: () => syncType() }),
       // For a transfer, the category cell shows where the money goes instead.
       to: select([['', 'To account…'], ...accounts.map((a) => [a.id, a.name])], '', { 'aria-label': `Transfer to, row ${n}`, hidden: true }),
       amount: input({ type: 'number', step: '0.01', min: '0.01', inputmode: 'decimal', 'aria-label': `Amount, row ${n}` }),
@@ -1102,7 +1361,7 @@ function multiTxForm(account, close, swap) {
         r.desc.value = e.description;
         const cat = e.categoryIds.find((id) => category(id));
         if (cat) r.cat.value = cat;
-        r.sign.value = e.kind === 'transfer' ? 't' : e.kind === 'refund' ? 'r' : e.amount < 0 ? '-' : '+';
+        r.type.value = e.kind === 'transfer' ? 'transfer' : e.kind === 'refund' ? 'refund' : e.amount < 0 ? 'expense' : 'income';
         // A transfer brings both of its accounts, when they're still open.
         if (e.kind === 'transfer') {
           if (accounts.some((a) => a.id === e.accountId)) r.acc.value = e.accountId;
@@ -1122,17 +1381,24 @@ function multiTxForm(account, close, swap) {
     };
     r.desc.addEventListener('input', () => { syncAuto(); ensureSpareRow(); });
     r.amount.addEventListener('focus', () => r.amount.select());
+    // In the amount, + and − switch the row to income or expense without leaving the keyboard.
+    r.amount.addEventListener('keydown', (ev) => {
+      const k = { '+': 'income', '-': 'expense' }[ev.key];
+      if (!k) return;
+      ev.preventDefault();
+      r.type.value = k;
+      syncType();
+    });
     const syncType = () => {
-      const transfer = r.sign.value === 't';
+      const transfer = r.type.value === 'transfer';
       r.cat.hidden = transfer;
       r.to.hidden = !transfer;
     };
-    r.sign.addEventListener('change', syncType);
     rows.push(r);
-    body.append(h('tr', {},
-      h('td', {}, combo.el), h('td', {}, r.cat, r.to),
-      h('td', {}, h('div', { class: 'fin-amount' }, r.sign, r.amount)),
-      h('td', {}, r.date), h('td', {}, r.acc)));
+    r.tr = h('tr', {},
+      h('td', {}, combo.el), h('td', {}, r.type.el), h('td', {}, r.cat, r.to),
+      h('td', {}, r.amount), h('td', {}, r.date), h('td', {}, r.acc));
+    body.append(r.tr);
     return r;
   };
   // Typing in the last row adds another, so there's always an empty one to go to.
@@ -1144,10 +1410,11 @@ function multiTxForm(account, close, swap) {
 
   // Enter in a field goes to the next row's description (adding one at the end); Ctrl/⌘+Enter saves.
   const onKey = (ev) => {
-    if (ev.key !== 'Enter' || ev.target.tagName === 'BUTTON' || ev.target.tagName === 'TEXTAREA') return;
+    if (ev.key !== 'Enter' || ev.target.tagName === 'TEXTAREA') return;
+    if (ev.target.tagName === 'BUTTON' && ev.target.getAttribute('role') !== 'radio') return;
     ev.preventDefault();
     if (ev.metaKey || ev.ctrlKey) { form.requestSubmit(); return; }
-    const i = rows.findIndex((r) => Object.values(r).includes(ev.target));
+    const i = rows.findIndex((r) => r.tr.contains(ev.target));
     if (i < 0) return;
     if (i === rows.length - 1) addRow();
     rows[i + 1].desc.focus();
@@ -1160,7 +1427,7 @@ function multiTxForm(account, close, swap) {
       const ready = [];
       for (const [i, r] of rows.entries()) {
         const res = batchRow({
-          description: r.desc.value, amount: r.amount.value, sign: r.sign.value,
+          description: r.desc.value, amount: r.amount.value, sign: SIGNS[r.type.value],
           date: r.date.value, accountId: r.acc.value, categoryId: r.cat.value, toAccountId: r.to.value,
         }, state.rules);
         if (res.skip) continue;
@@ -1193,19 +1460,21 @@ function multiTxForm(account, close, swap) {
       }
       persist(); close();
       const transfers = ready.filter((x) => x.transfer).length;
-      say(`Added ${ready.length - transfers} transaction${ready.length - transfers === 1 ? '' : 's'}${transfers ? ` and ${transfers} transfer${transfers === 1 ? '' : 's'}` : ''}.`);
+      const later = ready.some((x) => (x.transfer?.date ?? x.tx.date) > today());
+      say(`Added ${ready.length - transfers} transaction${ready.length - transfers === 1 ? '' : 's'}${transfers ? ` and ${transfers} transfer${transfers === 1 ? '' : 's'}` : ''}.${later ? ' Those dated after today wait under Upcoming.' : ''}`);
     },
   },
     dialogHead('Add transactions', close),
     h('p', { class: 'fin-keys' },
       h('span', {}, h('kbd', {}, '↓'), h('kbd', {}, '↑'), ' pick a suggestion'),
       h('span', {}, h('kbd', {}, 'Enter'), ' or ', h('kbd', {}, 'Tab'), ' take it'),
+      h('span', {}, h('kbd', {}, '+'), h('kbd', {}, '−'), ' in the amount: income or expense'),
       h('span', {}, h('kbd', {}, 'Enter'), ' next row'),
       h('span', {}, h('kbd', {}, /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl'), h('kbd', {}, 'Enter'), ' save all')),
     h('div', { class: 'fin-batch-wrap' }, h('table', { class: 'fin-batch' },
-      h('thead', {}, h('tr', {}, ['Description', 'Category or To', 'Amount', 'Date', 'Account (from)'].map((t) => h('th', { scope: 'col' }, t)))),
+      h('thead', {}, h('tr', {}, ['Description', 'Type', 'Category or To', 'Amount', 'Date', 'Account (from)'].map((t) => h('th', { scope: 'col' }, t)))),
       body)),
-    h('p', { class: 'fin-hint' }, 'Empty rows are skipped. Leave the category on Auto to use your rules. A suggestion fills in its category and type, or both accounts for a transfer; you type the amount. For a transfer, pick ⇄ Transfer and the account the money goes to.'),
+    h('p', { class: 'fin-hint' }, 'Empty rows are skipped. Leave the category on Auto to use your rules. A suggestion fills in its category and type, or both accounts for a transfer; you type the amount. For a transfer, pick ⇄ and the account the money goes to.'),
     error,
     h('div', { class: 'fin-dialog-foot' },
       h('button', { type: 'submit', class: 'fin-btn btn-primary' }, 'Add transactions'),
@@ -1217,10 +1486,10 @@ function multiTxForm(account, close, swap) {
 function singleTxForm(account, close, swap) {
   const accounts = pickableAccounts(account.id);
   const accountOptions = accounts.map((a) => [a.id, `${a.name} (${a.currency})`]);
-  const type = select([['expense', 'Expense'], ['income', 'Income'], ['refund', 'Refund (money back on an expense)'], ['transfer', 'Transfer']], 'expense');
+  const type = typeSwitch(['expense', 'income', 'refund', 'transfer'], 'expense', { onChange: () => { sync(); suggest(); } });
   // Suggestions fill in the type and categories (or both accounts, for a transfer), not the amount.
   let fillFrom = () => {};
-  const descCombo = descriptionCombo(descriptionIndex(state.transactions), {
+  const descCombo = descriptionCombo(descIndex, {
     label: 'Description', accountOf: () => from.value, onAccept: (e) => fillFrom(e),
   });
   const desc = descCombo.box;
@@ -1271,10 +1540,9 @@ function singleTxForm(account, close, swap) {
     const id = categorize(desc.value, state.rules);
     hint.textContent = id ? `Category from rules: ${catLabel(id)}` : 'No rule matches. It will be uncategorized.';
   };
-  [type, from, to, amount, date].forEach((el) => el.addEventListener(el.tagName === 'SELECT' ? 'change' : 'input', sync));
+  [from, to, amount, date].forEach((el) => el.addEventListener(el.tagName === 'SELECT' ? 'change' : 'input', sync));
   received.addEventListener('input', () => { receivedTouched = received.value !== ''; });
   desc.addEventListener('input', suggest);
-  type.addEventListener('change', suggest);
 
   // Repeat: also creates a schedule whose next date is one interval after this transaction.
   const scheduleFrom = (fields) => {
@@ -1307,6 +1575,7 @@ function singleTxForm(account, close, swap) {
       const a = acc(from.value);
       const sent = toMinor(amount.value);
       const common = { date: date.value, memo: memo.value.trim() };
+      const laterNote = () => (date.value > today() ? ' It’s dated after today, so it waits under Upcoming.' : '');
       if (type.value === 'transfer') {
         const b = acc(to.value);
         if (!b || b.id === a.id) { error.textContent = 'Pick a different account to transfer to.'; to.focus(); return; }
@@ -1319,7 +1588,7 @@ function singleTxForm(account, close, swap) {
         legs[1].rate = await ensureRate(b.currency, date.value);
         state.transactions.push(...legs);
         const repeats = scheduleFrom({ description: legs[0].description, amount: sent, kind: 'transfer', accountId: a.id, toAccountId: b.id, categoryId: null });
-        persist(); close(); say(`Transferred from ${a.name} to ${b.name}.${repeats}`);
+        persist(); close(); say(`Transferred from ${a.name} to ${b.name}.${repeats}${laterNote()}`);
         return;
       }
       // None picked: the rules choose one, as in the quick form.
@@ -1331,12 +1600,12 @@ function singleTxForm(account, close, swap) {
         ...(type.value === 'refund' ? { kind: 'refund' } : {}),
       });
       const repeats = scheduleFrom({ description: desc.value.trim(), amount: sent, kind: type.value === 'expense' ? 'expense' : 'income', accountId: a.id, toAccountId: null, categoryId: categoryIds[0] ?? null });
-      persist(); close(); say(`Transaction added.${repeats}`);
+      persist(); close(); say(`Transaction added.${repeats}${laterNote()}`);
     },
   },
     dialogHead('Add transaction', close),
+    type.el,
     h('div', { class: 'fin-grid fin-grid-2' },
-      field('Type', type),
       comboField('Description', descCombo),
       catField, field('Date', date),
       amountField, receivedField,
@@ -1553,7 +1822,7 @@ function lotsPanel(x) {
         h('tbody', {}, [...own].reverse().map((l) => h('tr', {},
           h('td', { class: 'fin-nowrap' }, shortDate(l.date), l.date.slice(0, 4) != thisYear && ` ${l.date.slice(0, 4)}`),
           h('td', {}, h('span', { class: `fin-chip ${l.kind === 'sell' ? 'fin-chip-sell' : 'fin-chip-buy'}` }, l.kind === 'sell' ? 'Sell' : 'Buy')),
-          h('td', { class: 'fin-r fin-num' }, String(l.quantity)),
+          h('td', { class: 'fin-r fin-num' }, shownQty(l.quantity)),
           h('td', { class: 'fin-r fin-num' }, money(Math.round(l.price * 100), x.currency)),
           h('td', { class: 'fin-r fin-num fin-muted' }, l.fees ? money(Math.round(l.fees * 100), x.currency) : '—'),
           h('td', { class: 'fin-r fin-num' }, money(Math.round((l.quantity * l.price + (l.kind === 'sell' ? -(l.fees ?? 0) : (l.fees ?? 0))) * 100), x.currency)),
@@ -1618,7 +1887,7 @@ function holdingsSection(account) {
             h('td', {}, x.name ?? '', x.priceError && h('span', { class: 'fin-sub fin-row-error' },
               `No live price: ${x.priceError.replace(/\s*Consider upgrading.*$/i, '')} Enter the price by hand for now.`)),
             h('td', { class: 'fin-muted' }, x.exchange ?? (x.mic ? '' : 'not set')),
-            h('td', { class: 'fin-r fin-num' }, String(x.quantity)),
+            h('td', { class: 'fin-r fin-num' }, shownQty(x.quantity)),
             h('td', { class: 'fin-r fin-num' }, priceCell(x)),
             h('td', { class: 'fin-r fin-num' }, v == null ? '—' : money(v, x.currency)),
             h('td', { class: 'fin-r fin-num fin-muted' }, sum ? money(sum.cost, x.currency) : '—',
@@ -1817,7 +2086,8 @@ function renderPerson(personId) {
 // ── insights ─────────────────────────────────────────────────────────────────
 
 let insightsPeriod = readPref('finance:period', { preset: 'this-month' });
-const compactEUR = (minor) => new Intl.NumberFormat(undefined, { style: 'currency', currency: 'EUR', notation: 'compact', maximumFractionDigits: 1 }).format(minor / 100);
+const compactEUR = (minor) => (hideAmounts ? '•••'
+  : new Intl.NumberFormat(undefined, { style: 'currency', currency: 'EUR', notation: 'compact', maximumFractionDigits: 1 }).format(minor / 100));
 
 function bucketLabel(key, unit, multiYear) {
   if (unit === 'year') return key;
@@ -1960,41 +2230,78 @@ function incomeSpendChart(r) {
 }
 
 // Spending (or income) per top-level category, largest first, each opening onto its subcategories.
-function categoryBreakdown(title, rows, total, mark) {
-  const max = Math.max(1, ...rows.map((c) => c.amount));
-  const name = (id) => (id ? catLabel(id) || 'Deleted category' : 'Uncategorised');
-  const barSvg = (amount) => {
-    const NS = 'http://www.w3.org/2000/svg';
-    const svg = document.createElementNS(NS, 'svg');
-    svg.setAttribute('class', 'fin-hbar');
-    svg.setAttribute('aria-hidden', 'true');
-    const rect = document.createElementNS(NS, 'rect');
-    rect.setAttribute('class', mark);
-    rect.setAttribute('x', '0');
-    rect.setAttribute('y', '0');
-    rect.setAttribute('height', '100%');
-    rect.setAttribute('rx', '3');
-    rect.setAttribute('width', `${Math.max(0.5, (Math.max(0, amount) / max) * 100)}%`);
-    svg.append(rect);
-    return svg;
-  };
+// A donut of the top-level categories (the biggest seven, the rest as Other) with the total in the
+// middle, over the list of every category with its amount and share; a category with subcategories
+// opens to show them. Hover or focus a slice to read it in the middle. Slice colours go by rank
+// (validated categorical palette); each list row carries the same colour as a dot.
+const DONUT_SLOTS = 7;
+function categoryBreakdown(title, rows, total) {
+  const name = (id) => (id === REFUNDS_UNMATCHED ? 'Refunds with no expense category'
+    : id ? catLabel(id) || 'Deleted category' : 'Uncategorised');
   const share = (amount) => (total > 0 ? `${Math.round((amount / total) * 100)}%` : '');
-  const line = (id, amount, child = false) => h('div', { class: `fin-break-row${child ? ' fin-break-child' : ''}` },
+  const positive = rows.filter((c) => c.amount > 0);
+  const slices = positive.slice(0, DONUT_SLOTS).map((c, i) => ({ label: name(c.id), amount: c.amount, slot: String(i) }));
+  const rest = positive.slice(DONUT_SLOTS).reduce((sum, c) => sum + c.amount, 0);
+  if (rest > 0) slices.push({ label: 'Other', amount: rest, slot: 'other' });
+  const slotOf = (id) => {
+    const i = positive.findIndex((c) => c.id === id);
+    return i < 0 ? null : i < DONUT_SLOTS ? String(i) : 'other';
+  };
+
+  const NS = 'http://www.w3.org/2000/svg';
+  const el = (tag, attrs = {}) => {
+    const n = document.createElementNS(NS, tag);
+    for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+    return n;
+  };
+  const S = 220; const C = S / 2; const RO = 104; const RI = 70;
+  const svg = el('svg', { viewBox: `0 0 ${S} ${S}`, class: 'fin-donut', role: 'group', 'aria-label': `${title}: ${slices.length} slices` });
+  const centre = el('text', { x: C, y: C - 4, class: 'fin-donut-value', 'text-anchor': 'middle' });
+  const caption = el('text', { x: C, y: C + 18, class: 'fin-donut-label', 'text-anchor': 'middle' });
+  const showTotal = () => { centre.textContent = money(total, 'EUR'); caption.textContent = 'Total'; };
+  const sum = slices.reduce((x, sl) => x + sl.amount, 0);
+  const pt = (r, a) => `${(C + r * Math.sin(a)).toFixed(2)},${(C - r * Math.cos(a)).toFixed(2)}`;
+  let a0 = 0;
+  for (const sl of slices) {
+    const a1 = a0 + Math.min((sl.amount / sum) * 2 * Math.PI, 2 * Math.PI - 1e-4);
+    const large = a1 - a0 > Math.PI ? 1 : 0;
+    const path = el('path', {
+      class: 'fin-slice', 'data-slot': sl.slot, tabindex: '0',
+      d: `M${pt(RO, a0)}A${RO},${RO} 0 ${large} 1 ${pt(RO, a1)}L${pt(RI, a1)}A${RI},${RI} 0 ${large} 0 ${pt(RI, a0)}Z`,
+      'aria-label': `${sl.label}: ${money(sl.amount, 'EUR')}, ${share(sl.amount)}`,
+    });
+    // The middle fits about 20 characters; the list beside it has the full name.
+    const short = sl.label.length > 16 ? `${sl.label.slice(0, 15)}…` : sl.label;
+    const show = () => { centre.textContent = money(sl.amount, 'EUR'); caption.textContent = `${short} · ${share(sl.amount)}`; };
+    path.addEventListener('pointerenter', show);
+    path.addEventListener('focus', show);
+    path.addEventListener('pointerleave', showTotal);
+    path.addEventListener('blur', showTotal);
+    svg.append(path);
+    a0 = a1;
+  }
+  showTotal();
+  svg.append(centre, caption);
+
+  const dot = (slot) => h('span', { class: 'fin-dot', 'data-slot': slot ?? 'none', 'aria-hidden': 'true' });
+  const line = (id, amount, child = false) => h('div', { class: `fin-break-row fin-break-row--dot${child ? ' fin-break-child' : ''}` },
+    child ? h('span', { 'aria-hidden': 'true' }) : dot(slotOf(id)),
     h('span', { class: 'fin-break-name' }, child ? (category(id)?.name ?? name(id)) : name(id)),
-    barSvg(amount),
     h('span', { class: 'fin-num fin-break-amt' }, money(amount, 'EUR')),
     h('span', { class: 'fin-num fin-break-pct fin-muted' }, share(amount)));
   return h('section', { class: 'fin-card fin-pad', 'aria-label': title },
     h('h3', { class: 'fin-label' }, title),
-    rows.length === 0 ? h('p', { class: 'fin-empty' }, 'Nothing in this period.') :
+    rows.length === 0 ? h('p', { class: 'fin-empty' }, 'Nothing in this period.') : [
+      slices.length > 0 && h('div', { class: 'fin-donut-wrap' }, svg),
       h('ul', { class: 'fin-break' }, rows.map((c) => h('li', {},
         c.children.length
           ? h('details', {},
             h('summary', {}, line(c.id, c.amount)),
             h('div', { class: 'fin-break-children' }, c.children.map((k) => line(k.id, k.amount, true)),
-              c.amount - c.children.reduce((s, k) => s + k.amount, 0) !== 0 &&
-                line(null, c.amount - c.children.reduce((s, k) => s + k.amount, 0), true)))
-          : line(c.id, c.amount)))));
+              c.amount - c.children.reduce((x, k) => x + k.amount, 0) !== 0 &&
+                line(null, c.amount - c.children.reduce((x, k) => x + k.amount, 0), true)))
+          : line(c.id, c.amount)))),
+    ]);
 }
 
 // The whole Insights panel for some accounts (a Set of ids) or all of them (null).
@@ -2015,6 +2322,15 @@ function insightsPanel(accountIds) {
     rateOf: (c) => latestRate(c) ?? 1,
   });
   const vs = (now, before) => h('p', { class: 'fin-stat-note' }, versus(now, before, prevRange));
+  const whole = completeMonths(range.from, range.to, today());
+  const avg = whole && whole.months >= 2 ? {
+    months: whole.months,
+    r: insights(state.transactions, {
+      ...whole, accountIds, accounts: state.accounts, categories: state.categories, ious: state.ious,
+      rateOf: (c) => latestRate(c) ?? 1,
+    }),
+    note: `over ${whole.months} months, ${monthLabel(whole.from.slice(0, 7))} – ${monthLabel(whole.to.slice(0, 7))}`,
+  } : null;
   return h('div', { class: 'fin-insights' },
     periodControls(range),
     h('dl', { class: 'fin-stats' },
@@ -2025,17 +2341,22 @@ function insightsPanel(accountIds) {
       h('div', {}, h('dt', {}, 'Net'), h('dd', { class: tone(r.net) }, signed(r.net, 'EUR')),
         h('p', { class: 'fin-stat-note' }, `${signed(p.net, 'EUR')} the ${prevLabel(prevRange)}`)),
       h('div', {}, h('dt', {}, 'Saved'), h('dd', {}, rate),
-        h('p', { class: 'fin-stat-note' }, 'of income'))),
+        h('p', { class: 'fin-stat-note' }, 'of income')),
+      // Averages over the whole months of the period that have ended (not this month, still going).
+      avg && h('div', {}, h('dt', {}, 'Average spending a month'), h('dd', { class: 'fin-neg' }, money(Math.round(avg.r.expenses / avg.months), 'EUR')),
+        h('p', { class: 'fin-stat-note' }, avg.note)),
+      avg && h('div', {}, h('dt', {}, 'Average income a month'), h('dd', { class: 'fin-pos' }, money(Math.round(avg.r.income / avg.months), 'EUR')),
+        h('p', { class: 'fin-stat-note' }, avg.note))),
     r.count === 0
       ? h('p', { class: 'fin-notice' }, 'No income or spending in this period. Transfers between your accounts don’t count.')
       : [
         incomeSpendChart(r),
         h('div', { class: 'fin-break-grid' },
-          categoryBreakdown('Spending by category', r.spending, r.expenses, 'fin-mark-out'),
-          categoryBreakdown('Income by category', r.earning, r.income, 'fin-mark-in')),
+          categoryBreakdown('Spending by category', r.spending, r.expenses),
+          categoryBreakdown('Income by category', r.earning, r.income)),
         categoryOverTime(range, prevRange, accountIds, r),
       ],
-    h('p', { class: 'fin-hint fin-mt' }, 'Transfers between your accounts and opening balances aren’t counted. Loans and repayments count only what isn’t owed back, refunds lower spending, and a transaction with several categories counts under its first one.'));
+    h('p', { class: 'fin-hint fin-mt' }, 'Transfers between your accounts and opening balances aren’t counted. Loans and repayments count only what isn’t owed back, refunds lower spending (in their first category that isn’t an income one, like a salary), and a transaction with several categories counts under its first one.'));
 }
 
 // The period of the same length just before `range`.
@@ -2329,7 +2650,7 @@ function investmentInsights(account) {
         h('thead', {}, h('tr', {}, ['Holding', 'Units', 'Value', 'Cost', 'Gain', 'Share'].map((t, i) => h('th', { scope: 'col', class: i ? 'fin-r' : null }, t)))),
         h('tbody', {}, rows.map(({ x, value, cost, gain: g }) => h('tr', {},
           h('td', {}, x.symbol, h('span', { class: 'fin-sub' }, x.name ?? '')),
-          h('td', { class: 'fin-r fin-num' }, String(x.quantity)),
+          h('td', { class: 'fin-r fin-num' }, shownQty(x.quantity)),
           h('td', { class: 'fin-r fin-num' }, money(value, 'EUR')),
           h('td', { class: 'fin-r fin-num fin-muted' }, cost == null ? '—' : money(cost, 'EUR')),
           h('td', { class: `fin-r fin-num ${g == null ? '' : tone(g)}` }, g == null ? '—' : signed(g, 'EUR'),
@@ -2507,39 +2828,67 @@ function openScheduleDialog(existing = null, preset = {}) {
   desc.focus();
 }
 
-// The schedules touching one account that fall within the forecast window, due ones first.
-function upcomingSection(account) {
+// What's coming for one account, as greyed rows above its transactions: the schedules falling within
+// the forecast window, and transactions already added with a later date (they count once it comes).
+// Newest first like the list, each with the balance it would leave; `cols` matches the table's.
+function upcomingRows(account, { cols, inEur, balance }) {
   const until = daysFromToday(FORECAST_DAYS);
-  const items = state.schedules
-    .filter((s) => scheduledEffect(s, account.id) !== 0)
-    .flatMap((s) => occurrences(s, until).map((date, i) => ({ s, date, first: i === 0 })))
-    .sort((a, b) => a.date.localeCompare(b.date));
-  if (!items.length) return null;
-  return h('section', { class: 'fin-card', 'aria-labelledby': 'up-h' },
-    h('div', { class: 'fin-card-head' },
-      h('h3', { id: 'up-h', class: 'fin-label' }, `Next ${FORECAST_DAYS} days `, h('span', { class: 'fin-count' }, String(items.length))),
-      button('Schedule…', () => openScheduleDialog(null, { accountId: account.id }), 'secondary fin-btn-sm', { 'data-key': 'up-add' })),
-    h('div', { class: 'fin-scroll' }, h('table', { class: 'fin-table' },
-      h('caption', { class: 'fin-sr' }, `Scheduled transactions for ${account.name} in the next ${FORECAST_DAYS} days`),
-      h('thead', {}, h('tr', {},
-        h('th', { scope: 'col' }, 'Date'), h('th', { scope: 'col', class: 'fin-r' }, 'Amount'),
-        h('th', { scope: 'col' }, 'Description'), h('th', { scope: 'col' }, h('span', { class: 'fin-sr' }, 'Actions')))),
-      h('tbody', {}, items.map(({ s, date, first }) => {
-        const effect = scheduledEffect(s, account.id);
-        const due = dueLabel(date);
-        return h('tr', { class: due ? 'fin-due' : null },
-          h('td', { class: 'fin-nowrap' }, h('time', { datetime: date }, shortDate(date)),
-            due && h('span', { class: 'fin-chip fin-chip-inline fin-chip-due' }, due)),
-          h('td', { class: `fin-r fin-num ${tone(effect)}` }, signed(effect, account.currency)),
-          h('td', {}, s.description, h('span', { class: 'fin-sub' },
-            `${frequencyLabel(s)}${s.kind === 'transfer' ? ` · ${scheduleAccounts(s)}` : ''}`)),
-          // Only the next date of a schedule can be entered or skipped; later ones follow from it.
-          h('td', { class: 'fin-r' }, first && h('div', { class: 'fin-actions fin-row-actions' },
-            button('Enter', () => enterScheduled(s, `up-enter-${s.id}`), 'secondary fin-btn-sm',
-              { 'aria-label': `Enter ${s.description} for ${shortDate(date)}`, 'data-key': `up-enter-${s.id}` }),
-            button('Skip', () => skipScheduled(s, `up-skip-${s.id}`), 'secondary fin-btn-sm',
-              { 'aria-label': `Skip ${s.description} on ${shortDate(date)}`, 'data-key': `up-skip-${s.id}` }))));
-      })))));
+  const items = [
+    ...state.schedules
+      .filter((s) => scheduledEffect(s, account.id) !== 0)
+      .flatMap((s) => occurrences(s, until).map((date, i) => ({ s, date, first: i === 0, amount: scheduledEffect(s, account.id) }))),
+    ...plannedTransactions(account.id, state.transactions, today()).map((t) => ({ t, date: t.date, amount: t.amount })),
+  ].sort((a, b) => a.date.localeCompare(b.date));
+  if (!items.length) return [];
+  let running = balance;
+  for (const it of items) it.balance = (running += it.amount);
+  const cur = account.currency;
+  const dateCell = (date, chip) => h('td', { class: 'fin-nowrap c-date' }, h('time', { datetime: date }, shortDate(date)),
+    date.slice(0, 4) != thisYear && ` ${date.slice(0, 4)}`, chip);
+  const amountCell = (amount, refund) => h('td', { class: `fin-r fin-num c-amt ${tone(amount)}` },
+    refund && h('span', { class: 'fin-refund', title: 'Refund' }, icon('refund'), h('span', { class: 'fin-sr' }, 'Refund: ')),
+    signed(amount, cur));
+  const balanceCell = (b) => h('td', { class: 'fin-r fin-num fin-muted c-bal' }, money(b, cur));
+
+  const scheduleRow = ({ s, date, first, amount, balance: b }) => {
+    const due = dueLabel(date);
+    return h('tr', { class: `fin-upcoming${due ? ' fin-due' : ''}` },
+      h('td', { class: 'fin-tick-col c-tick' }),
+      dateCell(date, h('span', { class: `fin-chip fin-chip-inline${due ? ' fin-chip-due' : ''}` }, due ?? 'Scheduled')),
+      amountCell(amount),
+      balanceCell(b),
+      h('td', { class: 'c-desc' }, s.description, h('span', { class: 'fin-sub' },
+        `${frequencyLabel(s)}${s.kind === 'transfer' ? ` · ${scheduleAccounts(s)}` : ''}`)),
+      h('td', { class: 'c-cat' }, s.categoryId && h('span', { class: 'fin-muted' }, catLabel(s.categoryId))),
+      inEur && h('td', { class: 'c-eur' }),
+      // Only the next date of a schedule can be entered or skipped; later ones follow from it.
+      h('td', { class: 'fin-r c-act' }, first && h('div', { class: 'fin-actions fin-row-actions fin-upcoming-actions' },
+        button('Enter', () => enterScheduled(s, `up-enter-${s.id}`), 'secondary fin-btn-sm',
+          { 'aria-label': `Enter ${s.description} for ${shortDate(date)}`, 'data-key': `up-enter-${s.id}` }),
+        button('Skip', () => skipScheduled(s, `up-skip-${s.id}`), 'secondary fin-btn-sm',
+          { 'aria-label': `Skip ${s.description} on ${shortDate(date)}`, 'data-key': `up-skip-${s.id}` }))));
+  };
+  // A transaction added ahead of time: already saved, so it's edited or deleted like any other.
+  const plannedRow = ({ t, balance: b }) => {
+    if (t.id === editingTxId) return h('tr', { class: 'fin-edit-row' }, h('td', { colspan: cols }, transactionForm(account, t)));
+    const label = `${t.description}, ${shortDate(t.date)}`;
+    return h('tr', { class: 'fin-upcoming' },
+      h('td', { class: 'fin-tick-col c-tick' }),
+      dateCell(t.date),
+      amountCell(t.amount, t.kind === 'refund'),
+      balanceCell(b),
+      h('td', { class: 'c-desc' }, t.description, t.memo && h('span', { class: 'fin-sub' }, t.memo)),
+      h('td', { class: 'c-cat' }, categoryCell(t)),
+      inEur && h('td', { class: 'c-eur' }),
+      h('td', { class: 'fin-r c-act' }, h('div', { class: 'fin-row-actions' },
+        iconButton('edit', `Edit ${label}`, () => { editingTxId = t.id; render('tx-desc-edit'); }, { 'data-key': `tx-edit-${t.id}` }),
+        iconButton('trash', `Delete ${label}`, () => deleteTransactions(new Set([t.id])), { danger: true }))));
+  };
+  return [
+    h('tr', { class: 'fin-month fin-upcoming-head' }, h('th', { colspan: cols, scope: 'colgroup' },
+      'Upcoming ', h('span', { class: 'fin-upcoming-note' }, `· not in the balance yet · scheduled ones for the next ${FORECAST_DAYS} days`))),
+    ...items.reverse().map((it) => (it.t ? plannedRow(it) : scheduleRow(it))),
+  ];
 }
 
 function renderSchedules() {
@@ -3265,7 +3614,7 @@ function downloadBackup() {
 const daysSince = (iso) => Math.floor((Date.now() - Date.parse(iso)) / 864e5);
 function backupDue() {
   const every = state.settings.backupEvery ?? 7;
-  if (!every || (!state.accounts.length && !state.transactions.length)) return false;
+  if (!every || !state.accounts.length) return false;
   const snooze = readPref('finance:backupSnooze', null);
   if (snooze && snooze >= today()) return false;
   return !state.settings.lastBackupAt || daysSince(state.settings.lastBackupAt) >= every;
@@ -3376,7 +3725,15 @@ function exportSection() {
 
 // Re-rendering replaces the DOM, so keep keyboard focus on the element with the same data-key.
 function render(focusKey) {
+  // Moving to another main section loads its own page (fresh data, nothing carried over).
+  if (pageSection && sectionOf(view) !== pageSection) {
+    const target = urlOf(view);
+    view = shownView;
+    leave(target);
+    return;
+  }
   const key = focusKey ?? document.activeElement?.dataset?.key;
+  totalsCache = null;
   iouByTx = null;
   hueOrder = null;
   const account = view.name === 'account' && state.accounts.find((a) => a.id === view.id);
@@ -3403,6 +3760,10 @@ function render(focusKey) {
           : view.name === 'insights' ? renderInsights()
             : view.name === 'networth' ? renderNetWorth()
         : current ? renderAccount(current) : renderWelcome());
+  // The address follows what's shown (an account, a settings page…), so reloading stays there.
+  shownView = view;
+  const url = urlOf(view);
+  if (url !== location.pathname + location.search) history.replaceState(null, '', url);
   if (key) {
     const el = document.querySelector(`[data-key="${key}"]`);
     el?.focus();
@@ -3446,7 +3807,7 @@ const layout = document.querySelector('.fin-layout');
 function setShell(signedIn) {
   side.hidden = !signedIn;
   layout.classList.toggle('fin-layout--solo', !signedIn);
-  document.querySelectorAll('[data-nav], #sync, #fab, #side-toggle').forEach((el) => { el.hidden = !signedIn; });
+  document.querySelectorAll('[data-nav], #sync, #fab, #side-toggle, #hide-amounts').forEach((el) => { el.hidden = !signedIn; });
 }
 
 function screen(title, ...body) {
@@ -3497,11 +3858,22 @@ onStatus((s, err) => {
   syncEl.dataset.state = s;
 });
 
-let loadedAt = 0;
+// Pages that work from every transaction load them all (until those calculations move to the
+// database too); account pages fetch what they show, IOUs the transactions its entries are linked to.
+const NEEDS_EVERY_TRANSACTION = ['search', 'insights', 'networth', 'settings'];
 async function loadData() {
-  state = await load();
-  loadedAt = Date.now();
-  if (view.name !== 'settings') view = { name: 'account', id: view.id ?? state.settings.lastAccountId ?? state.accounts[0]?.id };
+  state = await load({ allTransactions: NEEDS_EVERY_TRANSACTION.includes(sectionOf(view)), today: today(), until: daysFromToday(FORECAST_DAYS) });
+  if (sectionOf(view) === 'ious') {
+    const ids = [...new Set(state.ious.map((e) => e.transactionId).filter(Boolean))];
+    for (let i = 0; i < ids.length; i += 100) {
+      const list = ids.slice(i, i + 100).map((id) => `"${id.replace(/"/g, '\\"')}"`).join(',');
+      await fetchTransactions(() => selectAll('transactions', 'id', `&id=in.(${encodeURIComponent(list)})`));
+    }
+  }
+  // On an account page: the one in the address, else the last one opened, else the first.
+  if (view.name === 'account' && !state.accounts.some((a) => a.id === view.id)) {
+    view = { name: 'account', id: state.settings.lastAccountId ?? state.accounts[0]?.id, tab: view.tab };
+  }
 }
 
 async function boot() {
@@ -3521,12 +3893,11 @@ async function boot() {
   }
   setShell(true);
   syncEl.textContent = STATUS_TEXT.saved;
-  render();
+  const add = new URLSearchParams(location.search).has('add');
+  pageSection = sectionOf(view);
+  render(); // also tidies the address (drops ?add)
   // Opened from the app's "Add transactions" shortcut (…/?add): go straight to quick entry.
-  if (new URLSearchParams(location.search).has('add')) {
-    history.replaceState(null, '', location.pathname);
-    quickAdd();
-  }
+  if (add) quickAdd();
   await refreshRates();
   await refreshPrices(stalePrices());
   recordSnapshot();
@@ -3534,12 +3905,46 @@ async function boot() {
   if (oldHistory.length) await loadHistory(oldHistory);
 }
 
-document.querySelectorAll('[data-nav]').forEach((b) => b.addEventListener('click', () => {
-  view = b.dataset.nav === 'overview'
-    ? { name: 'account', id: state.settings.lastAccountId ?? state.accounts[0]?.id }
-    : { name: b.dataset.nav };
-  render();
+// After transactions are saved: the totals are asked for again (they already showed the change; this
+// confirms it), and so are the list page and the description suggestions.
+onSaved(async (tables) => {
+  if (!tables.has('transactions')) return;
+  if (txView) txView.stale = true; // refetched on the next draw; its rows stay on screen until then
+  descCache = null;
+  try { await refreshSummaries(today(), daysFromToday(FORECAST_DAYS)); } catch { /* the next save tries again */ }
+  if (view.name === 'account') renderWhenIdle();
+});
+
+// The header tabs are links to the sections' pages. A plain click first sends unsaved changes
+// (and asks before dropping anything typed but not saved); Ctrl/⌘-click opens a new tab as usual.
+document.querySelectorAll('[data-nav]').forEach((a) => a.addEventListener('click', (e) => {
+  if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+  e.preventDefault();
+  leave(a.href, { ask: true });
 }));
+
+// Hide amounts: the eye in the header, or Alt/Option+H anywhere.
+const hideToggle = document.getElementById('hide-amounts');
+function showHidden() {
+  hideToggle.setAttribute('aria-pressed', String(hideAmounts));
+  hideToggle.title = hideAmounts ? 'Show amounts (Alt+H)' : 'Hide amounts (Alt+H)';
+  document.body.classList.toggle('fin-amounts-hidden', hideAmounts);
+}
+function setHideAmounts(on) {
+  hideAmounts = on;
+  writePref('finance:hide-amounts', on);
+  showHidden();
+  render();
+  say(on ? 'Amounts hidden.' : 'Amounts shown.');
+}
+hideToggle.addEventListener('click', () => setHideAmounts(!hideAmounts));
+document.addEventListener('keydown', (e) => {
+  if (e.altKey && !e.metaKey && !e.ctrlKey && e.code === 'KeyH' && !hideToggle.hidden) {
+    e.preventDefault();
+    setHideAmounts(!hideAmounts);
+  }
+});
+showHidden();
 
 // ── phone: account panel toggle, floating add button, installable app ────────
 
@@ -3579,12 +3984,15 @@ window.addEventListener('beforeunload', (e) => {
   if (state && hasPendingChanges()) e.preventDefault();
 });
 
-// Coming back to the tab picks up edits made on another device, unless something here is unsaved
-// or in the middle of being edited.
-document.addEventListener('visibilitychange', async () => {
-  if (document.visibilityState !== 'visible' || !state || hasPendingChanges()) return;
-  if (Date.now() - loadedAt < 30_000 || editingTxId || editingCatId || importDraft || buxferDraft || ftDraft || restoreDraft || selected.size || document.querySelector('dialog[open]')) return;
-  try { await loadData(); render(); } catch { /* keep showing what we have */ }
-});
+// Whether any field on the page holds something typed or picked but not saved yet (an API key pasted
+// in, say): its value differs from the one it was drawn with. Filters and file pickers don't count.
+function hasUnsavedInput() {
+  return [...document.querySelectorAll('#app input, #app textarea, #app select')].some((el) => {
+    if (el.type === 'search' || el.type === 'file' || el.closest('[role="search"]')) return false;
+    if (el.type === 'checkbox' || el.type === 'radio') return el.checked !== el.defaultChecked;
+    if (el.tagName === 'SELECT') return [...el.options].some((o) => o.selected !== o.defaultSelected);
+    return el.value !== el.defaultValue;
+  });
+}
 
 boot();

@@ -100,6 +100,8 @@ async function rest(path, opts = {}, retried = false) {
     const data = await res.json().catch(() => ({}));
     throw new Error(data.message || `Database error (${res.status})`);
   }
+  // With `count`: the rows and the table's total, from the Content-Range header ("0-999/21398").
+  if (opts.count) return { rows: await res.json(), total: Number(res.headers.get('content-range')?.split('/')[1]) };
   return res.status === 204 ? null : res.json().catch(() => null);
 }
 
@@ -114,15 +116,33 @@ export async function hasColumns(table, columns) {
   }
 }
 
-// Pages through the table in a stable order (`orderBy` must be unique per user).
-export async function selectAll(table, orderBy = 'id') {
-  const out = [];
-  for (let offset = 0; ; offset += PAGE) {
-    const rows = await rest(`${table}?select=*&order=${orderBy}&limit=${PAGE}&offset=${offset}`);
-    out.push(...rows);
-    if (rows.length < PAGE) return out;
+// Pages through the table in a stable order (`orderBy` must be unique per user). The first page
+// also brings the row count, so the other pages are fetched side by side, a few at a time, instead
+// of one after another (21 000 transactions are 22 pages).
+const PARALLEL = 8;
+// `filter` narrows it, as PostgREST query parameters (e.g. "&account_id=eq.abc").
+export async function selectAll(table, orderBy = 'id', filter = '') {
+  const page = (offset, opts) => rest(`${table}?select=*${filter}&order=${orderBy}&limit=${PAGE}&offset=${offset}`, opts);
+  const { rows: first, total } = await page(0, { count: true, headers: { Prefer: 'count=exact' } });
+  if (first.length < PAGE) return first;
+  const out = [first];
+  if (!Number.isFinite(total)) { // no count came back: one page after another
+    for (let offset = PAGE; ; offset += PAGE) {
+      const rows = await page(offset);
+      out.push(rows);
+      if (rows.length < PAGE) return out.flat();
+    }
   }
+  const offsets = [];
+  for (let offset = PAGE; offset < total; offset += PAGE) offsets.push(offset);
+  for (let i = 0; i < offsets.length; i += PARALLEL) {
+    out.push(...await Promise.all(offsets.slice(i, i + PARALLEL).map((offset) => page(offset))));
+  }
+  return out.flat();
 }
+
+// Calls one of the database functions in schema.sql (they return JSON).
+export const rpc = (name, args = {}) => rest(`rpc/${name}`, { method: 'POST', body: JSON.stringify(args) });
 
 export async function upsert(table, rows, conflict = 'user_id,id') {
   for (let i = 0; i < rows.length; i += 500) {

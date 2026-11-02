@@ -2,14 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { makeZip, readZip, crc32 } from './zip.js';
 import {
-  toMinor, formatMoney, categorize, convert, rateFor, accountBalance,
+  toMinor, formatMoney, categorize, convert, rateFor, accountBalance, plannedTransactions,
   holdingValue, investmentValue, netWorth, defaultState, withRunningBalance,
   crossConvert, batchRow, makeTransfer,
   parseCsv, toCsv, parseAmount, parseDate, guessDateFormat, guessDecimal, guessMapping, importRows,
   findTransferPairs, detectBuxferFile, buxferImport,
   categoryPath, categoryResolver, categoriesOf, sortedCategories,
   parseBuxferIou, iouSign, iouType, personBalances, personHistory,
-  periodRange, granularity, insights, netWorthHistory, isFtExport, ftImport, lotSummary, investedHistory,
+  periodRange, granularity, insights, completeMonths, incomeCategories, REFUNDS_UNMATCHED, netWorthHistory, isFtExport, ftImport, lotSummary, investedHistory,
   descriptionIndex, suggestDescriptions, filterTransactions, ruleSuggestion,
   parseFrequency, addInterval, occurrences, forecast, scheduledTransactions, advanceSchedule,
 } from './model.js';
@@ -53,6 +53,7 @@ test('insights: transfers and openings ignored, IOUs netted, refunds lower spend
   const casa = r.spending.find((c) => c.id === 'casa');
   assert.equal(casa.amount, 5000 + 254); // electricity after its refund, plus my share of the bill
   assert.deepEqual(casa.children, [{ id: 'luz', amount: 5000 }]);
+  assert.equal(r.earning.find((c) => c.id === 'casa'), undefined); // a refund is never income
   assert.equal(r.spending.find((c) => c.id === '').amount, 9000); // uncategorised USD spend
   assert.equal(r.unit, 'week');
   assert.equal(r.series.reduce((s, b) => s + b.expenses, 0), r.expenses);
@@ -682,6 +683,21 @@ test('credit card balance is negative when money is owed', () => {
   assert.equal(accountBalance(card, tx), -3500);
 });
 
+test('transactions dated after today wait: out of the balance and net worth, listed as planned', () => {
+  const acc = { id: 'a', type: 'checking', currency: 'EUR' };
+  const tx = [
+    { id: '1', accountId: 'a', date: '2026-11-02', amount: 10000 },
+    { id: '3', accountId: 'a', date: '2026-12-01', amount: -2500 },
+    { id: '2', accountId: 'a', date: '2026-11-03', amount: -1000 },
+    { id: '4', accountId: 'b', date: '2026-11-20', amount: -700 },
+  ];
+  assert.equal(accountBalance(acc, tx, '2026-11-02'), 10000);
+  assert.equal(accountBalance(acc, tx), 6500); // no date: everything, as before
+  assert.deepEqual(plannedTransactions('a', tx, '2026-11-02').map((t) => t.id), ['2', '3']);
+  const nw = netWorth({ accounts: [acc], transactions: tx, holdings: [] }, () => 1, '2026-11-02');
+  assert.equal(nw.total, 10000);
+});
+
 test('investment value: holdings in another currency convert through EUR', () => {
   const acc = { id: 'i', type: 'investment', currency: 'EUR' };
   const holdings = [
@@ -724,4 +740,31 @@ test('net worth leaves out archived accounts', () => {
   s.accounts = [{ id: 'a', type: 'checking', currency: 'EUR' }, { id: 'b', type: 'checking', currency: 'EUR', archived: true }];
   s.transactions = [{ accountId: 'a', amount: 100 }, { accountId: 'b', amount: 900 }];
   assert.equal(netWorth(s, () => 1).total, 100);
+});
+
+test('monthly averages use whole months finished by today', () => {
+  assert.deepEqual(completeMonths('2026-01-01', '2026-12-31', '2026-11-02'), { from: '2026-01-01', to: '2026-10-31', months: 10 });
+  assert.deepEqual(completeMonths('2025-01-01', '2025-12-31', '2026-11-02'), { from: '2025-01-01', to: '2025-12-31', months: 12 });
+  // starts mid-month (all time from a first transaction): that month is left out
+  assert.deepEqual(completeMonths('2014-08-21', '2026-11-02', '2026-11-02'), { from: '2014-09-01', to: '2026-10-31', months: 146 });
+  assert.equal(completeMonths('2026-11-01', '2026-11-30', '2026-11-02'), null);
+  assert.deepEqual(completeMonths('2026-10-01', '2026-10-31', '2026-11-02'), { from: '2026-10-01', to: '2026-10-31', months: 1 });
+});
+
+test('refunds tagged with an income category lower spending in their spending category, or on their own line', () => {
+  const accounts = [{ id: 'a', currency: 'EUR' }];
+  const categories = [{ id: 'sal', name: 'Salary', parentId: null }, { id: 'trip', name: 'Travel', parentId: null }];
+  const tx = [
+    { id: '1', accountId: 'a', date: '2025-01-28', amount: 300000, categoryIds: ['sal'], rate: 1 },
+    { id: '2', accountId: 'a', date: '2025-03-01', amount: -90000, categoryIds: ['trip'], rate: 1 },
+    { id: '3', accountId: 'a', date: '2025-03-20', amount: 40000, categoryIds: ['sal', 'trip'], rate: 1, kind: 'refund' },
+    { id: '4', accountId: 'a', date: '2025-03-29', amount: 3000, categoryIds: ['sal'], rate: 1, kind: 'refund' },
+  ];
+  assert.deepEqual([...incomeCategories(tx, categories)], ['sal']);
+  const r = insights(tx, { from: '2025-01-01', to: '2025-12-31', accounts, categories });
+  assert.equal(r.income, 300000); // refunds are never income
+  assert.equal(r.expenses, 90000 - 40000 - 3000);
+  assert.equal(r.spending.find((c) => c.id === 'trip').amount, 90000 - 40000);
+  assert.equal(r.spending.find((c) => c.id === REFUNDS_UNMATCHED).amount, -3000);
+  assert.equal(r.spending.find((c) => c.id === 'sal'), undefined); // no negative salary spending
 });

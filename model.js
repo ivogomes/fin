@@ -230,10 +230,19 @@ export function makeTransfer({ from, to, sent, received, date, description, memo
 }
 
 // Account balance in the account's own currency. Credit card balances are negative when money is owed.
-export function accountBalance(account, transactions) {
+// With `asOf` (a date), transactions dated after it don't count yet: they're planned, not done.
+export function accountBalance(account, transactions, asOf = null) {
   return transactions
-    .filter((t) => t.accountId === account.id)
+    .filter((t) => t.accountId === account.id && (!asOf || t.date <= asOf))
     .reduce((sum, t) => sum + t.amount, 0);
+}
+
+// Transactions dated after `today` for one account, soonest first: added ahead of time, they wait
+// with the scheduled ones and count once their date comes.
+export function plannedTransactions(accountId, transactions, today) {
+  return transactions
+    .filter((t) => t.accountId === accountId && t.date > today)
+    .sort((a, b) => a.date.localeCompare(b.date));
 }
 
 // Transactions of one account, newest first, each with the account balance right after it.
@@ -255,8 +264,12 @@ export function holdingValue(holding) {
 // An investment account with holdings is worth its holdings at current prices; the money moved into
 // it (its transactions) is what was invested, and the difference is the gain. Without holdings it is
 // worth the sum of its transactions, like any other account. This matches how Buxfer values them.
-export function investmentValue(account, holdings, transactions, latestRate) {
-  const invested = accountBalance(account, transactions);
+export function investmentValue(account, holdings, transactions, latestRate, asOf = null) {
+  return investmentValueFrom(account, holdings, accountBalance(account, transactions, asOf), latestRate);
+}
+
+// The same, from the money put in (`invested`, the account's balance) instead of its transactions.
+export function investmentValueFrom(account, holdings, invested, latestRate) {
   const own = holdings.filter((x) => x.accountId === account.id);
   if (!own.length) return { total: invested, invested, missing: 0, hasHoldings: false };
   let total = 0;
@@ -273,8 +286,8 @@ export function investmentValue(account, holdings, transactions, latestRate) {
 }
 
 // Net worth in the base currency. Archived accounts don't count; accounts still waiting for a rate
-// are counted separately.
-export function netWorth(state, latestRate) {
+// are counted separately. With `asOf`, transactions dated after it are left out.
+export function netWorth(state, latestRate, asOf = null) {
   let total = 0;
   let unconverted = 0;
   for (const account of state.accounts) {
@@ -282,8 +295,8 @@ export function netWorth(state, latestRate) {
     const rate = latestRate(account.currency);
     if (rate == null) { unconverted += 1; continue; }
     const native = account.type === 'investment'
-      ? investmentValue(account, state.holdings, state.transactions, latestRate).total
-      : accountBalance(account, state.transactions);
+      ? investmentValue(account, state.holdings, state.transactions, latestRate, asOf).total
+      : accountBalance(account, state.transactions, asOf);
     total += convert(native, rate);
   }
   return { total, unconverted };
@@ -664,11 +677,50 @@ const nextBucket = (key, unit) => {
 // - In the category breakdown a transaction counts under its first category, so the parts add up
 //   to the total.
 // `onlyCategory` (an id) keeps only transactions whose first category is it or one of its children.
+// The whole calendar months inside a period, up to the last one finished by `today`: what monthly
+// averages are taken over (this year on 2 Nov → January to October, 10 months). null if none.
+export function completeMonths(from, to, today) {
+  const index = (d) => Number(d.slice(0, 4)) * 12 + Number(d.slice(5, 7)) - 1;
+  const lastDay = (i) => new Date(Date.UTC(Math.floor(i / 12), (i % 12) + 1, 0)).toISOString().slice(0, 10);
+  const end = to < today ? to : today;
+  const first = from.slice(8) === '01' ? index(from) : index(from) + 1;
+  const last = lastDay(index(end)) === end ? index(end) : index(end) - 1;
+  if (first > last) return null;
+  return { from: `${lastDay(first).slice(0, 7)}-01`, to: lastDay(last), months: last - first + 1 };
+}
+
+// Where a refund lowers spending when none of its categories is a spending one (see insights).
+export const REFUNDS_UNMATCHED = 'refunds';
+
+// Top-level categories that mostly take money in across all of history (salary, interest…): more
+// income than spending under them, refunds and transfers left out.
+export function incomeCategories(transactions, categories) {
+  const parentOf = new Map(categories.map((c) => [c.id, c.parentId ?? null]));
+  const net = new Map();
+  for (const t of transactions) {
+    if (t.transferId || t.kind) continue;
+    const cat = categoriesOf(t)[0];
+    if (!cat) continue;
+    const top = parentOf.get(cat) ?? cat;
+    net.set(top, (net.get(top) ?? 0) + Math.round(t.amount * (t.rate ?? 1)));
+  }
+  return new Set([...net].filter(([, v]) => v > 0).map(([id]) => id));
+}
+
 export function insights(transactions, { from, to, accountIds = null, accounts, categories, ious = [], rateOf = () => 1, onlyCategory = null }) {
   const currency = new Map(accounts.map((a) => [a.id, a.currency]));
   const iouByTx = new Map();
   for (const e of ious) if (e.transactionId) iouByTx.set(e.transactionId, (iouByTx.get(e.transactionId) ?? 0) + e.amount);
   const parentOf = new Map(categories.map((c) => [c.id, c.parentId ?? null]));
+  // A refund is often tagged with where the money came from (a salary category) rather than what
+  // it pays back: it lowers spending in its first category that's a spending one, else on its own line.
+  const incomeTops = incomeCategories(transactions, categories);
+  const categoryOf = (t) => {
+    const cats = categoriesOf(t);
+    if (t.kind !== 'refund') return cats[0] ?? null;
+    if (!cats.length) return null;
+    return cats.find((c) => !incomeTops.has(parentOf.get(c) ?? c)) ?? REFUNDS_UNMATCHED;
+  };
   const unit = granularity(from, to);
   const only = onlyCategory ? new Set([onlyCategory, ...categories.filter((c) => c.parentId === onlyCategory).map((c) => c.id)]) : null;
 
@@ -694,13 +746,15 @@ export function insights(transactions, { from, to, accountIds = null, accounts, 
     if (t.date < from || t.date > to) continue;
     if (accountIds && !accountIds.has(t.accountId)) continue;
     if (t.transferId || t.kind === 'opening') continue;
-    if (only && !only.has(categoriesOf(t)[0])) continue;
+    if (only && !only.has(categoryOf(t))) continue;
     const rate = t.rate ?? rateOf(currency.get(t.accountId) ?? 'EUR') ?? 1;
     const eur = Math.round(t.amount * rate) + (iouByTx.get(t.id) ?? 0);
     if (!eur) continue;
     count += 1;
-    const cat = categoriesOf(t)[0] ?? null;
+    const cat = categoryOf(t);
     const bucket = buckets.get(bucketOf(t.date, unit));
+    // A refund is money back on an expense: it cancels part of the spending in its category (a
+    // category can go below zero when more came back than was spent in the period). Not income.
     if (t.kind === 'refund') {
       expenses -= eur;
       refunds += eur;

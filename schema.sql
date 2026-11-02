@@ -156,6 +156,145 @@ alter table holdings add column if not exists price_history jsonb;
 alter table settings add column if not exists last_backup_at timestamptz;
 alter table settings add column if not exists backup_every integer not null default 7;
 
+-- ── Calculations done in the database ─────────────────────────────────────────
+-- The app doesn't load every transaction on every page: these functions return what a page shows.
+-- They run as the signed-in user (row-level security applies) and return JSON, so a large answer
+-- isn't cut at the 1000-row limit. Safe to re-run.
+
+-- Text compared the way the app does: lowercase, trimmed, accents removed ("Café" = "cafe").
+create or replace function fin_norm(t text) returns text
+language sql immutable as $$
+  select trim(translate(lower(coalesce(t, '')), 'áàâãäåāăąçćčďéèêëēėęěíìîïīįñńňóòôõöōőŕřśšşťúùûüūůűųýÿžźż', 'aaaaaaaaacccdeeeeeeeeiiiiiinnnooooooorrssstuuuuuuuuyyzzz'))
+$$;
+
+-- A transaction's categories (rows saved before several categories were allowed have category_id).
+create or replace function fin_cats(ids text[], one text) returns text[]
+language sql immutable as $$
+  select case when cardinality(ids) > 0 then ids when one is not null then array[one] else '{}'::text[] end
+$$;
+
+-- One row per account: balance up to `p_today`, how many transactions, and the ones dated after
+-- today (planned: their sum up to `p_until`, and how many there are in all).
+create or replace function account_summaries(p_today date, p_until date) returns jsonb
+language sql stable as $$
+  select coalesce(jsonb_agg(jsonb_build_object(
+    'accountId', account_id, 'balance', balance, 'count', n, 'past', past, 'planned', planned, 'plannedCount', planned_n)), '[]'::jsonb)
+  from (
+    select account_id,
+      coalesce(sum(amount) filter (where date <= p_today), 0) as balance,
+      count(*) as n,
+      count(*) filter (where date <= p_today) as past,
+      coalesce(sum(amount) filter (where date > p_today and date <= p_until), 0) as planned,
+      count(*) filter (where date > p_today) as planned_n
+    from transactions
+    where user_id = auth.uid()
+    group by account_id
+  ) s
+$$;
+
+-- One page of an account's transactions up to today, newest first, each with the account balance
+-- right after it (over all of the account's history, so filters don't change it). Also: how many
+-- match, every transaction dated after today, and the other side of any transfer on the page.
+-- Filters as in the app: p_text (normalised) in the description or memo, or p_amount (cents) as the
+-- size; p_category with its subcategories; p_uncategorized; p_type expense/income/refund/transfer;
+-- dates; sizes in cents.
+create or replace function account_transactions(
+  p_account text, p_today date, p_limit int default 100, p_offset int default 0,
+  p_text text default null, p_amount bigint default null, p_category text default null,
+  p_uncategorized boolean default false, p_type text default null,
+  p_from date default null, p_to date default null, p_min bigint default null, p_max bigint default null
+) returns jsonb
+language sql stable as $$
+  with t as (
+    select tr.*, fin_cats(tr.category_ids, tr.category_id) as cats,
+      sum(tr.amount) over (order by tr.date, tr.id rows unbounded preceding) as balance
+    from transactions tr
+    where tr.user_id = auth.uid() and tr.account_id = p_account and tr.date <= p_today
+  ),
+  wanted as (
+    select array_agg(id) as ids from categories
+    where user_id = auth.uid() and p_category is not null and (id = p_category or parent_id = p_category)
+  ),
+  f as (
+    select t.* from t
+    where (p_from is null or date >= p_from) and (p_to is null or date <= p_to)
+      and (p_min is null or abs(amount) >= p_min) and (p_max is null or abs(amount) <= p_max)
+      and (p_type is null
+        or (p_type = 'transfer' and transfer_id is not null)
+        or (p_type = 'refund' and kind = 'refund')
+        or (p_type = 'expense' and transfer_id is null and kind is distinct from 'refund' and amount < 0)
+        or (p_type = 'income' and transfer_id is null and kind is distinct from 'refund' and amount > 0))
+      and (not p_uncategorized or (cardinality(cats) = 0 and transfer_id is null))
+      and (p_category is null or cats && coalesce((select ids from wanted), array[p_category]))
+      and (p_text is null or p_text = ''
+        or strpos(fin_norm(description), p_text) > 0 or strpos(fin_norm(memo), p_text) > 0
+        or abs(amount) = p_amount)
+  ),
+  page as (
+    select * from f order by date desc, id desc limit p_limit offset p_offset
+  ),
+  planned as (
+    select tr.* from transactions tr
+    where tr.user_id = auth.uid() and tr.account_id = p_account and tr.date > p_today
+  ),
+  partners as (
+    select tr.* from transactions tr
+    where tr.user_id = auth.uid() and tr.account_id <> p_account
+      and tr.transfer_id in (select transfer_id from page where transfer_id is not null
+                             union select transfer_id from planned where transfer_id is not null)
+  )
+  select jsonb_build_object(
+    'total', (select count(*) from f),
+    'rows', coalesce((select jsonb_agg((to_jsonb(page) - 'user_id' - 'cats') order by date desc, id desc) from page), '[]'::jsonb),
+    'planned', coalesce((select jsonb_agg(to_jsonb(planned) - 'user_id' order by date, id) from planned), '[]'::jsonb),
+    'partners', coalesce((select jsonb_agg(to_jsonb(partners) - 'user_id') from partners), '[]'::jsonb)
+  )
+$$;
+
+-- Earlier descriptions for the suggestions when adding transactions: one entry per description
+-- (normalised), from its latest use, with how often it's used. Transfers are listed from the side
+-- money leaves, with the account it goes to.
+create or replace function description_index() returns jsonb
+language sql stable as $$
+  with t as (
+    select * from transactions
+    where user_id = auth.uid() and kind is distinct from 'opening' and description <> ''
+  ),
+  incoming as (
+    select distinct on (transfer_id) transfer_id, account_id from t
+    where transfer_id is not null and amount > 0
+    order by transfer_id, id
+  ),
+  uses as (
+    select fin_norm(t.description) as key, t.description, t.date, t.amount, t.id,
+      case when t.transfer_id is not null then 'transfer' else t.kind end as kind,
+      case when t.transfer_id is not null then '{}'::text[] else fin_cats(t.category_ids, t.category_id) end as cats,
+      t.account_id, i.account_id as to_account_id
+    from t left join incoming i on i.transfer_id = t.transfer_id
+    where t.transfer_id is null or (t.amount < 0 and i.account_id is not null)
+  ),
+  latest as (
+    select distinct on (key) key, count(*) over (partition by key) as n, description, date, amount, kind, cats, account_id, to_account_id
+    from uses
+    order by key, date desc, id desc
+  )
+  select coalesce(jsonb_agg(jsonb_build_object(
+    'key', key, 'count', n, 'description', description, 'lastDate', date, 'amount', amount, 'kind', kind,
+    'categoryIds', to_jsonb(cats), 'accountId', account_id, 'toAccountId', to_account_id)), '[]'::jsonb)
+  from latest
+$$;
+
+-- Uncategorised transactions (not transfers) with this description (normalised): the ones a new
+-- rule could fill in.
+create or replace function same_description_uncategorized(p_key text) returns jsonb
+language sql stable as $$
+  select coalesce(jsonb_agg(to_jsonb(tr) - 'user_id'), '[]'::jsonb)
+  from transactions tr
+  where tr.user_id = auth.uid() and tr.transfer_id is null
+    and cardinality(fin_cats(tr.category_ids, tr.category_id)) = 0
+    and fin_norm(tr.description) = p_key
+$$;
+
 do $$
 declare t text;
 begin

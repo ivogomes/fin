@@ -96,6 +96,7 @@ body {
   color: var(--tool-header-ink);
   font-weight: 500;
 }
+.tool-header .fin-nav a.fin-btn { text-decoration: none; } /* the tabs are links to each section's page */
 .tool-header .fin-nav .fin-btn:hover { background: color-mix(in srgb, var(--tool-header-ink) 10%, transparent); }
 .tool-header .fin-nav .fin-btn[aria-current="page"] {
   background: var(--f-surface);
@@ -104,6 +105,28 @@ body {
 }
 .tool-header .fin-nav .fin-nav-quiet { opacity: 0.75; margin-left: 6px; }
 .tool-header .fin-nav .fin-nav-quiet:hover { opacity: 1; }
+
+/* Hide amounts: an eye in the header; crossed out while amounts are hidden. */
+.fin-hide-toggle {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 38px;
+  height: 38px;
+  margin-left: 6px;
+  border: 0;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--tool-header-ink) 8%, transparent);
+  color: var(--tool-header-ink);
+  cursor: pointer;
+}
+.fin-hide-toggle[hidden] { display: none; }
+.fin-hide-toggle:hover { background: color-mix(in srgb, var(--tool-header-ink) 16%, transparent); }
+.fin-hide-toggle:focus-visible { outline: 2px solid var(--tool-header-ink); outline-offset: 2px; }
+.fin-hide-toggle[aria-pressed="true"] { background: var(--f-surface); color: var(--f-text); }
+.fin-hide-toggle .fin-icon { width: 20px; height: 20px; }
+.fin-hide-toggle[aria-pressed="true"] .fin-eye-open,
+.fin-hide-toggle[aria-pressed="false"] .fin-eye-shut { display: none; }
 
 .fin-sync {
   display: inline-flex;
@@ -450,7 +473,21 @@ textarea.fin-input { resize: vertical; }
 
 .fin-seg { display: inline-flex; gap: 2px; padding: 3px; margin-bottom: 14px; border-radius: 10px; background: var(--f-surface-2); border: 1px solid var(--f-border); }
 .fin-seg-btn { padding: 6px 16px; border: 0; border-radius: 7px; background: transparent; color: var(--f-muted); font: 500 13px var(--font-sans); cursor: pointer; }
-.fin-seg-btn[aria-pressed="true"] { background: var(--f-surface); color: var(--f-text); box-shadow: 0 1px 2px rgb(16 24 20 / 0.1); }
+.fin-seg-btn[aria-checked="true"] { background: var(--f-surface); color: var(--f-text); box-shadow: 0 1px 2px rgb(16 24 20 / 0.1); }
+.fin-seg-btn:hover:not([aria-checked="true"]) { color: var(--f-text); }
+.fin-seg-btn:focus-visible { outline: 2px solid var(--f-accent); outline-offset: 1px; }
+/* Transaction type: the symbol takes the type's colour once picked (red out, green in). */
+.fin-seg--type { align-self: flex-start; }
+.fin-seg--type .fin-seg-btn { display: inline-flex; align-items: center; gap: 6px; }
+.fin-seg-icon { font-size: 15px; line-height: 1; }
+.fin-seg-btn[aria-checked="true"][data-kind="expense"] .fin-seg-icon { color: var(--f-neg); }
+.fin-seg-btn[aria-checked="true"][data-kind="income"] .fin-seg-icon,
+.fin-seg-btn[aria-checked="true"][data-kind="refund"] .fin-seg-icon { color: var(--f-pos); }
+.fin-seg-btn[aria-checked="true"][data-kind="transfer"] .fin-seg-icon { color: var(--f-accent); }
+/* In the quick-entry grid: symbols only, as tall as the inputs beside them. */
+.fin-seg--compact { margin: 0; }
+.fin-seg--compact .fin-seg-btn { justify-content: center; min-width: 32px; padding: 6px 8px; }
+.fin-seg--compact .fin-seg-icon { font-size: 16px; }
 
 /* A switch: a real checkbox (role="switch") laid over a drawn track, so keyboard and screen readers
    get the native control. */
@@ -557,8 +594,14 @@ textarea.fin-input { resize: vertical; }
 .fin-tx-form .fin-hint { margin: -6px 0 14px; }
 .fin-edit-note { margin: 0 0 14px; }
 
-/* Scheduled dates that are due. */
-.fin-due > td { background: color-mix(in srgb, var(--f-accent) 6%, transparent); }
+/* Upcoming rows on top of the transactions: greyed out, as they don't count in the balance yet.
+   Only the text fades, so the buttons keep their contrast. Due schedules get a light tint. */
+.fin-upcoming > td { background: var(--f-surface-2); color: var(--f-muted); }
+.fin-upcoming > td.fin-num, .fin-upcoming > td.fin-num.fin-pos, .fin-upcoming > td.fin-num.fin-neg { color: var(--f-muted); font-weight: 400; }
+.fin-table tr.fin-upcoming-head th { background: var(--f-surface-2); }
+.fin-upcoming-note { font-weight: 400; letter-spacing: 0; text-transform: none; }
+.fin-upcoming-actions .fin-btn-sm { padding: 3px 10px; }
+.fin-due > td { background: color-mix(in srgb, var(--f-accent) 6%, var(--f-surface-2)); }
 
 /* ── Chips and tags ───────────────────────────────────── */
 .fin-chip {
@@ -753,6 +796,35 @@ textarea.fin-input { resize: vertical; }
 .fin-break-amt { text-align: right; font-weight: 500; }
 .fin-break-pct { text-align: right; font-size: 12px; }
 
+/* Category donuts: slices by rank, the biggest seven, then Other in grey. Categorical palette
+   validated with the dataviz check in both modes; each slice is named in the list beside it. */
+:root {
+  --f-cat-0: #2A78D6; --f-cat-1: #EB6834; --f-cat-2: #1BAF7A; --f-cat-3: #EDA100;
+  --f-cat-4: #E87BA4; --f-cat-5: #008300; --f-cat-6: #6250D6; --f-cat-other: #A3ACA9;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --f-cat-0: #3987E5; --f-cat-1: #D95926; --f-cat-2: #199E70; --f-cat-3: #C98500;
+    --f-cat-4: #D55181; --f-cat-5: #008300; --f-cat-6: #9085E9; --f-cat-other: #5E6B67;
+  }
+}
+.fin-donut-wrap { display: flex; justify-content: center; margin: 4px 0 12px; }
+.fin-donut { width: min(220px, 100%); height: auto; overflow: visible; }
+.fin-slice { stroke: var(--f-surface); stroke-width: 2; cursor: pointer; transition: opacity 0.12s ease; }
+.fin-donut:has(.fin-slice:hover, .fin-slice:focus-visible) .fin-slice:not(:hover):not(:focus-visible) { opacity: 0.45; }
+.fin-slice:focus-visible { outline: none; stroke: var(--f-text); }
+.fin-donut-value { fill: var(--f-text); font: 650 17px var(--font-sans); font-variant-numeric: tabular-nums; }
+.fin-donut-label { fill: var(--f-muted); font: 12px var(--font-sans); }
+[data-slot="0"] { --slot: var(--f-cat-0); } [data-slot="1"] { --slot: var(--f-cat-1); }
+[data-slot="2"] { --slot: var(--f-cat-2); } [data-slot="3"] { --slot: var(--f-cat-3); }
+[data-slot="4"] { --slot: var(--f-cat-4); } [data-slot="5"] { --slot: var(--f-cat-5); }
+[data-slot="6"] { --slot: var(--f-cat-6); } [data-slot="other"] { --slot: var(--f-cat-other); }
+.fin-slice { fill: var(--slot); }
+.fin-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--slot, transparent); }
+.fin-break-row--dot { grid-template-columns: 10px minmax(7rem, 1fr) auto 3rem; }
+.fin-break-row--dot.fin-break-child { padding-left: 4px; }
+.fin-break-row--dot.fin-break-child .fin-break-name { padding-left: 14px; }
+
 /* ── Net worth chart ──────────────────────────────────── */
 /* Line colours, validated with the dataviz palette check in both modes. */
 :root { --f-chart-net: #2B78C5; --f-chart-inv: #E0703C; }
@@ -877,10 +949,6 @@ textarea.fin-input { resize: vertical; }
 
 /* Quick entry: no scrolling wrapper, so a row's suggestion list isn't clipped. */
 .fin-batch-wrap { position: relative; }
-.fin-options--up { top: auto; bottom: calc(100% + 4px); }
-.fin-options--inline { position: static; margin-top: 4px; box-shadow: var(--f-shadow); }
-.fin-option-desc .fin-option-main { display: flex; justify-content: space-between; gap: 12px; }
-.fin-option-amt { flex: none; font-size: 13px; }
 .fin-keys { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 0 0 4px; font-size: 12px; color: var(--f-muted); }
 .fin-keys kbd {
   display: inline-block;
@@ -900,9 +968,6 @@ textarea.fin-input { resize: vertical; }
 .fin-batch td { padding: 4px 6px; }
 .fin-batch td:first-child { min-width: 14rem; }
 .fin-batch .fin-input { min-width: 7rem; }
-.fin-amount { display: flex; }
-.fin-amount .fin-sign { width: auto; min-width: 0; border-right: 0; border-top-right-radius: 0; border-bottom-right-radius: 0; }
-.fin-amount .fin-input:last-child { border-top-left-radius: 0; border-bottom-left-radius: 0; }
 
 /* ── Symbol search (combobox) ─────────────────────────── */
 .fin-grid-hold { grid-template-columns: minmax(0, 3fr) minmax(8rem, 1fr); }
@@ -925,6 +990,19 @@ textarea.fin-input { resize: vertical; }
   box-shadow: var(--f-shadow-lg);
 }
 .fin-options[hidden] { display: none; }
+/* Description suggestions float fixed to the window (placed by app.js), so the dialog's own
+   scrolling and the rows below can't cover or clip them. Must come after .fin-options. */
+.fin-options.fin-options--float {
+  position: fixed;
+  z-index: 20;
+  top: var(--opt-top);
+  bottom: auto;
+  left: var(--opt-left);
+  right: auto;
+  width: var(--opt-width);
+  max-height: var(--opt-max, 18rem);
+}
+.fin-options.fin-options--float.fin-options--up { top: auto; bottom: var(--opt-bottom); }
 .fin-option { padding: 8px 10px; border-radius: 6px; cursor: pointer; }
 .fin-option:hover, .fin-option[aria-selected="true"] { background: var(--f-accent-soft); }
 .fin-option-main { display: block; }
@@ -1102,6 +1180,7 @@ textarea.fin-input { resize: vertical; }
   .fin-filter-pair { flex: 1 1 100%; }
   .fin-filter-pair .fin-input { flex: 1 1 0; width: auto; }
   .fin-break-row { grid-template-columns: minmax(6rem, 1fr) minmax(3rem, 0.8fr) auto 2.5rem; gap: 8px; }
+  .fin-break-row--dot { grid-template-columns: 10px minmax(6rem, 1fr) auto 2.5rem; }
   .fin-card-head { padding: 14px 14px; }
   .fin-pad { padding: 14px; }
 }

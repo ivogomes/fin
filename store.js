@@ -1,9 +1,15 @@
 // Cloud persistence. The app mutates `state` in memory and calls `persist()`; this module works out
 // which rows were added, changed or removed since the last save and sends only those, in an order
 // that respects foreign keys. Nothing but the sign-in session is kept in the browser.
+//
+// Transactions are the exception to loading everything: `state.transactions` holds only the ones in
+// use (a page of an account, what an action needs), unless a page asks for all of them. Rows are
+// never dropped from it, so one missing since the last save was deleted. Account totals come from
+// the database (`refreshSummaries`) with the changes not yet counted there added on top
+// (`accountTotals`), so they move the moment something changes.
 
 import { defaultState, categoriesOf } from './model.js';
-import { selectAll, upsert, remove, removeAll, currentUser, hasColumns } from './cloud.js';
+import { selectAll, upsert, remove, removeAll, currentUser, hasColumns, rpc } from './cloud.js';
 
 // camelCase in the app ↔ snake_case in the database.
 const TABLES = {
@@ -106,6 +112,13 @@ let savedSettings = '';
 let timer = null;
 let running = null;
 let listener = () => {};
+let savedListener = () => {};
+let allTransactions = false;
+
+// After each successful save round, with the tables it wrote.
+export const onSaved = (fn) => { savedListener = fn; };
+// Whether `state.transactions` holds every transaction (some pages and tools need them all).
+export const transactionsComplete = () => allTransactions;
 
 // status: 'saved' | 'saving' | 'error'. The app shows it in the header.
 export const onStatus = (fn) => { listener = fn; };
@@ -116,22 +129,28 @@ const snapshot = () => {
   savedSettings = JSON.stringify(toSettingsRow(state.settings));
 };
 
-// Loads everything for the signed-in user. An empty account gets the default categories and rules.
-export async function load() {
+// Loads the signed-in user's data, and the account totals. Transactions only with `allTransactions`
+// (otherwise the page fetches the ones it shows). An empty account gets the default categories and rules.
+export async function load({ allTransactions: everything = false, today, until } = {}) {
   missing.clear();
-  const checks = await Promise.all(Object.entries(NEW_COLUMNS).map(([t, cols]) => hasColumns(t, cols)));
-  schemaOutdated = checks.includes(false);
-  const [rows, settingsRows] = await Promise.all([
-    Promise.all(ORDER.map((t) => selectAll(t).catch((err) => {
+  allTransactions = everything;
+  // The schema check, every table and the totals load at the same time.
+  const [checks, rows, settingsRows, sums] = await Promise.all([
+    Promise.all(Object.entries(NEW_COLUMNS).map(([t, cols]) => hasColumns(t, cols))),
+    Promise.all(ORDER.map((t) => (t === 'transactions' && !everything ? Promise.resolve([]) : selectAll(t)).catch((err) => {
       if (!OPTIONAL.has(t)) throw err;
       missing.add(t);
       return [];
     }))),
     selectAll('settings', 'user_id'),
+    rpc('account_summaries', { p_today: today, p_until: until }).catch(() => null),
   ]);
+  schemaOutdated = checks.includes(false) || sums == null;
   const base = defaultState();
   state = { ...base, rates: {} };
   ORDER.forEach((t, i) => { state[t] = rows[i].map(TABLES[t].from); });
+  fromDb.clear();
+  state.transactions.forEach((t) => fromDb.add(t.id));
   state.rules = rows[ORDER.indexOf('rules')]
     .sort((a, b) => a.position - b.position).map(TABLES.rules.from);
   const s = settingsRows[0] ?? {};
@@ -142,6 +161,7 @@ export async function load() {
     backupEvery: s.backup_every ?? 7, // days between backup reminders; 0 = no reminders
   };
   snapshot();
+  setSummaries(sums ?? []);
   const empty = !state.accounts.length && !state.categories.length && !state.rules.length;
   if (empty) {
     state.categories = base.categories;
@@ -149,6 +169,106 @@ export async function load() {
     persist();
   }
   return state;
+}
+
+// ── Transactions in use, and account totals ─────────────────────────────────
+
+const fromRow = (r) => TABLES.transactions.from(r);
+
+// Counts changes made in memory (each persist), so a fetch can tell whether anything changed while
+// it was on its way.
+let edits = 0;
+export const editToken = () => edits;
+// Transactions that came from the database (as opposed to added here since the page loaded).
+const fromDb = new Set();
+export const isFromDatabase = (id) => fromDb.has(id);
+
+// Adds transactions fetched from the database (rows as the database has them) to the ones in use,
+// skipping any already there, or deleted here and not saved yet. They're counted in the totals
+// already. With `token` (editToken() from before the fetch): if anything changed since, adds nothing
+// and returns null, as the rows may be out of date.
+export function addTransactions(rows, token = edits) {
+  if (token !== edits) return null;
+  const have = new Set(state.transactions.map((t) => t.id));
+  for (const id of saved.transactions.keys()) have.add(id);
+  const added = [];
+  for (const r of rows) {
+    if (have.has(r.id)) continue;
+    const t = fromRow(r);
+    fromDb.add(t.id);
+    state.transactions.push(t);
+    saved.transactions.set(t.id, JSON.stringify(TABLES.transactions.to(t)));
+    base.set(t.id, brief(t));
+    have.add(t.id);
+    added.push(t);
+  }
+  return added;
+}
+
+// Loads every transaction (waiting for pending saves first), for the pages and tools that need them.
+export async function loadAllTransactions() {
+  if (allTransactions) return;
+  await settle();
+  addTransactions(await selectAll('transactions'));
+  allTransactions = true;
+}
+
+// A transaction's part in its account's totals.
+const brief = (t) => ({ accountId: t.accountId, amount: t.amount, date: t.date });
+let summaries = new Map(); // accountId → { balance, count, past, planned, plannedCount } per the database
+let base = new Map(); // transaction id → brief, as counted in `summaries`
+
+function setSummaries(list) {
+  summaries = new Map(list.map((x) => [x.accountId, {
+    balance: Number(x.balance), count: Number(x.count), past: Number(x.past), planned: Number(x.planned), plannedCount: Number(x.plannedCount),
+  }]));
+  // What the database had when it counted: the transactions in use as last saved.
+  base = new Map([...saved.transactions].map(([id, json]) => {
+    const r = JSON.parse(json);
+    return [id, { accountId: r.account_id, amount: r.amount, date: r.date }];
+  }));
+}
+
+// Asks the database for the totals again (after a save). Waits for a save in progress, so the
+// totals and what's counted as saved match.
+export async function refreshSummaries(today, until) {
+  if (running) await running.catch(() => {});
+  const list = await rpc('account_summaries', { p_today: today, p_until: until });
+  if (running || timer) return false; // something changed meanwhile: the next save asks again
+  setSummaries(list);
+  return true;
+}
+
+// Each account's totals right now: the database's, plus whatever changed here since it counted.
+// `balance` and `past` count up to `today`, `planned` what's dated after it up to `until`.
+export function accountTotals(today, until) {
+  const out = new Map();
+  const at = (id) => {
+    if (!out.has(id)) {
+      const s = summaries.get(id);
+      out.set(id, { balance: s?.balance ?? 0, count: s?.count ?? 0, past: s?.past ?? 0, planned: s?.planned ?? 0, plannedCount: s?.plannedCount ?? 0 });
+    }
+    return out.get(id);
+  };
+  for (const id of summaries.keys()) at(id);
+  const apply = (b, sign) => {
+    const x = at(b.accountId);
+    x.count += sign;
+    if (b.date <= today) { x.balance += sign * b.amount; x.past += sign; } else {
+      x.plannedCount += sign;
+      if (b.date <= until) x.planned += sign * b.amount;
+    }
+  };
+  const now = new Set();
+  for (const t of state.transactions) {
+    now.add(t.id);
+    const was = base.get(t.id);
+    if (was && was.accountId === t.accountId && was.amount === t.amount && was.date === t.date) continue;
+    if (was) apply(was, -1);
+    apply(brief(t), 1);
+  }
+  for (const [id, was] of base) if (!now.has(id)) apply(was, -1);
+  return out;
 }
 
 // Rows to write and ids to delete, per table.
@@ -176,6 +296,7 @@ async function flush() {
   if (!changes.size) { listener('saved'); return; }
   listener('saving');
   const userId = currentUser()?.id;
+  const sentSettings = toSettingsRow(state.settings);
   running = (async () => {
     for (const t of ORDER) {
       const c = changes.get(t);
@@ -185,7 +306,7 @@ async function flush() {
       const c = changes.get(t);
       if (c?.del.length) await remove(t, c.del);
     }
-    if (changes.has('settings')) await upsert('settings', [{ user_id: userId, ...toSettingsRow(state.settings) }], 'user_id');
+    if (changes.has('settings')) await upsert('settings', [{ user_id: userId, ...sentSettings }], 'user_id');
   })();
   try {
     await running;
@@ -195,10 +316,12 @@ async function flush() {
       c.up.forEach((row) => saved[t].set(row.id, JSON.stringify(row)));
       c.del.forEach((id) => saved[t].delete(id));
     }
-    if (changes.has('settings')) savedSettings = JSON.stringify(toSettingsRow(state.settings));
+    // Settings changed while saving (a rate fetched, say) aren't marked saved: the next round sends them.
+    if (changes.has('settings')) savedSettings = JSON.stringify(sentSettings);
     running = null;
     listener(diff().size ? 'saving' : 'saved');
     if (diff().size) schedule(0);
+    savedListener(new Set(changes.keys()));
   } catch (err) {
     running = null;
     listener('error', err);
@@ -211,8 +334,20 @@ function schedule(ms) {
   timer = setTimeout(flush, ms);
 }
 
+// Sends whatever is waiting right away, before leaving the page. Gives up after a few rounds (say,
+// the database is unreachable); the browser then warns before the page closes.
+export async function settle() {
+  for (let i = 0; i < 5 && (timer || running || diff().size); i += 1) {
+    if (running) { await running.catch(() => {}); continue; }
+    clearTimeout(timer);
+    timer = null;
+    await flush();
+  }
+}
+
 // Debounced so a burst of edits (an import, reordering rules) becomes one round of requests.
 export function persist() {
+  edits += 1;
   listener('saving');
   schedule(400);
   return true;
@@ -231,6 +366,7 @@ export async function clearTables(tables) {
       await removeAll(t);
       state[t] = [];
       saved[t] = new Map();
+      if (t === 'transactions') { setSummaries([]); allTransactions = true; }
     }
   } catch (err) {
     listener('error', err);
