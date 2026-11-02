@@ -42,12 +42,12 @@ const TABLES = {
     to: (s) => ({
       id: s.id, description: s.description, amount: s.amount, kind: s.kind, account_id: s.accountId,
       to_account_id: s.toAccountId ?? null, category_id: s.categoryId ?? null, every: s.every, unit: s.unit,
-      anchor_day: s.anchorDay ?? null, next_date: s.nextDate, end_date: s.endDate ?? null,
+      anchor_day: s.anchorDay ?? null, next_date: s.nextDate, end_date: s.endDate ?? null, subscription: Boolean(s.subscription),
     }),
     from: (r) => ({
       id: r.id, description: r.description, amount: Number(r.amount), kind: r.kind, accountId: r.account_id,
       toAccountId: r.to_account_id, categoryId: r.category_id, every: r.every, unit: r.unit,
-      anchorDay: r.anchor_day, nextDate: r.next_date, endDate: r.end_date,
+      anchorDay: r.anchor_day, nextDate: r.next_date, endDate: r.end_date, ...(r.subscription && { subscription: true }),
     }),
   },
   people: {
@@ -98,7 +98,7 @@ export const missingTables = () => [...missing];
 
 // Columns added after the first release. Saving needs them, so their absence is reported to the
 // app, which asks for schema.sql to be run again.
-const NEW_COLUMNS = { accounts: ['credit_limit', 'card_network'], categories: ['parent_id'], transactions: ['category_ids', 'kind', 'splits', 'holding_id'], settings: ['fx', 'last_backup_at', 'backup_every', 'eodhd_api_key', 'hidden_suggestions'], holdings: ['price_history'] };
+const NEW_COLUMNS = { accounts: ['credit_limit', 'card_network'], categories: ['parent_id'], transactions: ['category_ids', 'kind', 'splits', 'holding_id'], settings: ['fx', 'last_backup_at', 'backup_every', 'eodhd_api_key', 'hidden_suggestions'], holdings: ['price_history'], schedules: ['subscription'] };
 let schemaOutdated = false;
 export const needsSchemaUpdate = () => schemaOutdated || missing.size > 0;
 

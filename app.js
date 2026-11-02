@@ -8,7 +8,7 @@ import {
   parseCsv, toCsv, guessDateFormat, guessDecimal, guessMapping, importRows, IMPORT_FIELDS, findTransferPairs,
   detectBuxferFile, buxferImport, isFtExport, ftImport, isFundMovements, fundMovementsToFt, lotSummary,
   UNITS, frequencyLabel, addInterval, occurrences, forecast, scheduledEffect, scheduledTransactions, advanceSchedule,
-  splitsOf, scaleSplits, DIVIDENDS, suggestSchedules, lotFlows, returnSummary, rulesFromHistory,
+  splitsOf, scaleSplits, DIVIDENDS, suggestSchedules, lotFlows, returnSummary, rulesFromHistory, findSubscriptions, withMarkedSchedules,
 } from './model.js';
 import {
   fetchRate, fetchRateRange, fetchQuote, fetchQuoteAV, fetchHistory, alphaVantageCovers, searchSymbols, today,
@@ -42,6 +42,7 @@ function urlOf(v) {
     if (v.name === 'settings' && v.section) q.set('section', v.section);
     if (v.name === 'settings' && v.section === 'import' && v.kind) q.set('kind', v.kind);
     if (v.name === 'insights' && v.tab === 'networth') q.set('tab', 'networth');
+    if (v.name === 'scheduled' && v.tab === 'subscriptions') q.set('tab', 'subscriptions');
     if (v.name === 'ious' && v.personId) q.set('person', v.personId);
     if (v.name === 'search' && v.q) q.set('q', v.q);
   }
@@ -59,6 +60,7 @@ function viewFromUrl() {
   if (PAGES.includes(page)) {
     return {
       ...(page === 'settings' && q.get('kind') && { kind: q.get('kind') }),
+      ...(page === 'scheduled' && q.get('tab') === 'subscriptions' && { tab: 'subscriptions' }),
       name: page, ...(q.get('section') && { section: q.get('section') }), ...(q.get('person') && { personId: q.get('person') }),
       ...(page === 'search' && q.get('q') && { q: q.get('q') }),
     };
@@ -3559,6 +3561,9 @@ function openScheduleDialog(existing = null, preset = {}) {
   const unit = select(UNITS.map((u) => [u, `${u}(s)`]), s.unit ?? 'month');
   const next = input({ type: 'date', required: true, value: s.nextDate ?? today() });
   const end = input({ type: 'date', value: s.endDate ?? null });
+  // Marked as a subscription: listed under Scheduled → Subscriptions (expenses only).
+  const subBox = h('input', { type: 'checkbox', checked: Boolean(s.subscription) });
+  const subField = h('label', { class: 'fin-check' }, subBox, ' This is a subscription');
   const fromField = field('Account', from);
   const toField = field('To account', to);
   const catField = field('Category', cat);
@@ -3568,6 +3573,7 @@ function openScheduleDialog(existing = null, preset = {}) {
     toField.hidden = !transfer;
     to.required = transfer;
     catField.hidden = transfer;
+    subField.hidden = kind.value !== 'expense';
   };
   kind.addEventListener('change', sync);
   sync();
@@ -3585,6 +3591,7 @@ function openScheduleDialog(existing = null, preset = {}) {
         categoryId: kind.value === 'transfer' ? null : cat.value || null,
         every: Math.max(1, Math.round(Number(every.value))), unit: unit.value,
         anchorDay: Number(next.value.slice(8, 10)), nextDate: next.value, endDate: end.value || null,
+        subscription: kind.value === 'expense' && subBox.checked,
       };
       if (existing) Object.assign(existing, fields);
       else state.schedules.push({ id: newId(), ...fields });
@@ -3601,6 +3608,7 @@ function openScheduleDialog(existing = null, preset = {}) {
         h('div', { class: 'fin-inline', role: 'group', 'aria-labelledby': 'sched-every-l' },
           every, unit)),
       field('Next date', next), field('Ends on', end, 'Optional. Leave empty to repeat until you stop it.')),
+    subField,
     error,
     h('div', { class: 'fin-dialog-actions' },
       button('Cancel', close),
@@ -3735,13 +3743,129 @@ function suggestionsCard() {
       })))));
 }
 
+// ── subscriptions ────────────────────────────────────────────────────────────
+
+// Subscriptions found in the payments that repeat (model.js findSubscriptions), over the last three
+// years and a bit, in groups of two or more so a yearly plan shows after two charges; plus schedules
+// marked as subscriptions. undefined while the database works it out.
+function subscriptionsFound() {
+  const groups = ask('recurring_candidates', { p_since: daysFromToday(-1200), p_today: today(), p_min: 2 });
+  if (!groups) return undefined;
+  const found = findSubscriptions(groups, { today: today(), hidden: state.settings.hiddenSuggestions ?? [] });
+  return withMarkedSchedules(found, state.schedules, today())
+    .filter((x) => state.accounts.some((a) => a.id === x.accountId && !a.archived));
+}
+const subCurrency = (x) => state.accounts.find((a) => a.id === x.accountId)?.currency ?? 'EUR';
+const subEur = (x, minor) => convert(minor, latestRate(subCurrency(x)) ?? 1);
+
+function subscriptionsPanel() {
+  const list = subscriptionsFound();
+  if (list === undefined) return h('section', { class: 'fin-card' }, loader('Looking for subscriptions…'));
+  const active = list.filter((x) => x.status === 'active');
+  const stopped = list.filter((x) => x.status === 'stopped');
+  const monthly = active.reduce((sum, x) => sum + subEur(x, x.monthly), 0);
+  const rises = active.filter((x) => x.priceChange && x.priceChange.to > x.priceChange.from);
+  const hiddenCount = (state.settings.hiddenSuggestions ?? []).filter((id) => id.startsWith('sub|')).length;
+  // Found ones are hidden; a schedule marked as one is unmarked (and hidden too, if it was also found).
+  const hide = (x) => {
+    const sc = x.marked && state.schedules.find((y) => y.id === x.scheduleId);
+    if (sc) sc.subscription = false;
+    if (!x.id.startsWith('sched|')) state.settings.hiddenSuggestions = [...(state.settings.hiddenSuggestions ?? []), x.id];
+    persist(); render('sched-add');
+    say(`“${x.description}” isn’t treated as a subscription any more.`);
+  };
+  const name = (x) => h('td', {}, x.description,
+    h('span', { class: 'fin-sub' }, [x.categoryId && catLabel(x.categoryId), accountName(x.accountId)].filter(Boolean).join(' · ')));
+  const find = (x) => pageLink('Find', { name: 'search', q: x.description }, 'fin-link fin-link-sm');
+  const year = (d) => (d.slice(0, 4) != thisYear ? ` ${d.slice(0, 4)}` : '');
+  return h('div', {},
+    h('dl', { class: 'fin-stats' },
+      h('div', {}, h('dt', {}, 'A month'), h('dd', { class: 'fin-neg' }, money(monthly, 'EUR')),
+        h('p', { class: 'fin-stat-note' }, `${active.length} subscription${active.length === 1 ? '' : 's'}, yearly ones spread over 12 months`)),
+      h('div', {}, h('dt', {}, 'A year'), h('dd', { class: 'fin-neg' }, money(active.reduce((sum, x) => sum + subEur(x, x.yearly), 0), 'EUR')),
+        h('p', { class: 'fin-stat-note' }, 'at today’s prices, in EUR')),
+      h('div', {}, h('dt', {}, 'Went up'), h('dd', { class: rises.length ? 'fin-neg' : '' }, String(rises.length)),
+        h('p', { class: 'fin-stat-note' }, rises.length
+          // Each rise as a monthly cost: the rise's share of the price, of what it costs a month.
+          ? `+${money(rises.reduce((sum, x) => sum + subEur(x, Math.round(((x.priceChange.to - x.priceChange.from) / x.amount) * x.monthly)), 0), 'EUR')} a month in all`
+          : 'no price rises seen'))),
+    h('section', { class: 'fin-card', 'aria-labelledby': 'subs-h' },
+      h('div', { class: 'fin-card-head' }, h('h3', { id: 'subs-h', class: 'fin-label' }, 'Active ', h('span', { class: 'fin-count' }, String(active.length)))),
+      active.length === 0
+        ? h('p', { class: 'fin-empty fin-pad' }, 'No subscriptions found. They show here once one has been charged three times for the same price.')
+        : h('div', { class: 'fin-scroll' }, h('table', { class: 'fin-table fin-subs' },
+          h('caption', { class: 'fin-sr' }, 'Active subscriptions, dearest first'),
+          h('thead', {}, h('tr', {}, ['Subscription', 'Price', 'A month', 'Last charged', 'Next'].map((t, i) =>
+            h('th', { scope: 'col', class: i === 1 || i === 2 ? 'fin-r' : null }, t)), h('th', { scope: 'col' }, h('span', { class: 'fin-sr' }, 'Actions')))),
+          h('tbody', {}, active.map((x) => {
+            const cur = subCurrency(x);
+            const up = x.priceChange && x.priceChange.to > x.priceChange.from;
+            return h('tr', {},
+              name(x),
+              h('td', { class: 'fin-r fin-num' }, money(x.amount, cur), h('span', { class: 'fin-sub' }, frequencyLabel(x).toLowerCase()),
+                x.priceChange && h('span', { class: `fin-chip fin-chip-inline ${up ? 'fin-chip-up' : 'fin-chip-down'}` },
+                  `${up ? '↑' : '↓'} from ${money(x.priceChange.from, cur)} in ${new Date(`${x.priceChange.date}T00:00:00`).toLocaleDateString(undefined, { month: 'short', year: 'numeric' })}`)),
+              h('td', { class: 'fin-r fin-num' }, money(subEur(x, x.monthly), 'EUR')),
+              x.lastDate
+                ? h('td', { class: 'fin-nowrap' }, h('time', { datetime: x.lastDate }, shortDate(x.lastDate)), year(x.lastDate),
+                  h('span', { class: 'fin-sub' }, `${x.count} charges since ${shortDate(x.firstDate)}${year(x.firstDate)}`))
+                : h('td', { class: 'fin-muted' }, 'Not seen yet'),
+              h('td', { class: 'fin-nowrap' }, h('time', { datetime: x.nextDate }, shortDate(x.nextDate)), year(x.nextDate),
+                x.scheduleId && h('span', { class: 'fin-sub' }, x.marked ? 'marked in its schedule' : 'scheduled')),
+              h('td', { class: 'fin-r' }, h('div', { class: 'fin-actions fin-row-actions' },
+                !x.scheduleId && button('Schedule…', () => openScheduleDialog(null, { ...x, kind: 'expense', subscription: true }), 'secondary fin-btn-sm', { 'aria-label': `Schedule ${x.description}`, 'aria-haspopup': 'dialog' }),
+                x.scheduleId && button('Edit schedule', () => openScheduleDialog(state.schedules.find((y) => y.id === x.scheduleId)), 'secondary fin-btn-sm', { 'aria-label': `Edit the schedule of ${x.description}`, 'aria-haspopup': 'dialog' }),
+                find(x),
+                button('Not a subscription', () => hide(x), 'secondary fin-btn-sm', { 'aria-label': `${x.description} isn’t a subscription` }))));
+          }))))),
+    stopped.length > 0 && h('section', { class: 'fin-card', 'aria-labelledby': 'subs-stop-h' },
+      h('div', { class: 'fin-card-head' }, h('h3', { id: 'subs-stop-h', class: 'fin-label' }, 'Looks cancelled ', h('span', { class: 'fin-count' }, String(stopped.length)))),
+      h('p', { class: 'fin-hint fin-pad-x' }, 'These were charged regularly but the last one is well overdue. If you didn’t cancel one, check it’s still being paid.'),
+      h('div', { class: 'fin-scroll' }, h('table', { class: 'fin-table' },
+        h('caption', { class: 'fin-sr' }, 'Subscriptions that look cancelled'),
+        h('thead', {}, h('tr', {}, ['Subscription', 'Price', 'Last charged', 'Was due'].map((t, i) =>
+          h('th', { scope: 'col', class: i === 1 ? 'fin-r' : null }, t)), h('th', { scope: 'col' }, h('span', { class: 'fin-sr' }, 'Actions')))),
+        h('tbody', {}, stopped.map((x) => h('tr', {},
+          name(x),
+          h('td', { class: 'fin-r fin-num' }, money(x.amount, subCurrency(x)), h('span', { class: 'fin-sub' }, frequencyLabel(x).toLowerCase())),
+          h('td', { class: 'fin-nowrap' }, x.lastDate ? [h('time', { datetime: x.lastDate }, shortDate(x.lastDate)), year(x.lastDate)] : '—'),
+          h('td', { class: 'fin-nowrap' }, h('time', { datetime: x.nextDate }, shortDate(x.nextDate)), year(x.nextDate),
+            x.marked && h('span', { class: 'fin-sub' }, 'its schedule has ended')),
+          h('td', { class: 'fin-r' }, h('div', { class: 'fin-actions fin-row-actions' },
+            find(x),
+            button('Not a subscription', () => hide(x), 'secondary fin-btn-sm', { 'aria-label': `${x.description} isn’t a subscription` }))))))))),
+    h('p', { class: 'fin-hint fin-mt' }, 'Found in the last three years of payments: something charged at a steady rhythm (weekly, monthly, quarterly or yearly; a yearly one after two charges) for the same price each time, give or take 5% for foreign-currency charges, or with one price change. You can also tick “This is a subscription” on any schedule. Rent or a loan can look like one too; say “Not a subscription” and it won’t show again.',
+      hiddenCount > 0 && [' ', h('button', {
+        type: 'button', class: 'fin-link fin-link-sm',
+        onclick: () => {
+          state.settings.hiddenSuggestions = (state.settings.hiddenSuggestions ?? []).filter((id) => !id.startsWith('sub|'));
+          persist(); render(); say('Hidden subscriptions are back.');
+        },
+      }, `Show the ${hiddenCount} you hid`)]));
+}
+
 function renderSchedules() {
   const list = [...state.schedules].sort((a, b) => a.nextDate.localeCompare(b.nextDate));
+  const subs = view.tab === 'subscriptions';
+  const pick = (t) => { view = { name: 'scheduled', ...(t === 'subscriptions' && { tab: t }) }; render(`sched-tab-${t}`); };
+  const tabs = h('div', { class: 'fin-tabs', role: 'group', 'aria-label': 'Scheduled view' },
+    [['schedules', 'Schedules'], ['subscriptions', 'Subscriptions']].map(([t, label]) => h('button', {
+      type: 'button', class: 'fin-tab', 'aria-pressed': String(subs === (t === 'subscriptions')), 'data-key': `sched-tab-${t}`, onclick: () => pick(t),
+    }, label)));
+  if (subs) {
+    return h('div', {},
+      h('div', { class: 'fin-account-head' },
+        h('div', {}, h('h2', { class: 'fin-title' }, 'Scheduled'),
+          h('p', { class: 'fin-meta' }, 'Subscriptions found in your payments: what they cost, price rises, and ones that seem to have stopped.')),
+        button('Schedule a transaction', () => openScheduleDialog(), 'primary', { 'data-key': 'sched-add', 'aria-haspopup': 'dialog' })),
+      tabs, h('div', { class: 'fin-insights' }, subscriptionsPanel()));
+  }
   return h('div', {},
     h('div', { class: 'fin-account-head' },
       h('div', {}, h('h2', { class: 'fin-title' }, 'Scheduled'),
         h('p', { class: 'fin-meta' }, 'Recurring transactions. When one is due it shows on its account, where you enter or skip it.')),
       button('Schedule a transaction', () => openScheduleDialog(), 'primary', { 'data-key': 'sched-add', 'aria-haspopup': 'dialog' })),
+    tabs,
     suggestionsCard(),
     h('section', { class: 'fin-card' },
       list.length === 0
@@ -3757,7 +3881,8 @@ function renderSchedules() {
             return h('tr', { class: due ? 'fin-due' : null },
               h('td', { class: 'fin-nowrap' }, h('time', { datetime: s.nextDate }, shortDate(s.nextDate)),
                 due && h('span', { class: 'fin-chip fin-chip-inline fin-chip-due' }, due)),
-              h('td', {}, s.description, s.categoryId && h('span', { class: 'fin-sub' }, catLabel(s.categoryId))),
+              h('td', {}, s.description, s.subscription && h('span', { class: 'fin-chip fin-chip-inline' }, 'Subscription'),
+                s.categoryId && h('span', { class: 'fin-sub' }, catLabel(s.categoryId))),
               h('td', {}, scheduleAccounts(s)),
               h('td', { class: `fin-r fin-num ${s.kind === 'transfer' ? '' : tone(shown)}` }, s.kind === 'transfer' ? money(s.amount, cur) : signed(shown, cur)),
               h('td', { class: 'fin-nowrap' }, frequencyLabel(s), s.endDate && h('span', { class: 'fin-sub' }, `until ${shortDate(s.endDate)}`)),
@@ -3814,7 +3939,16 @@ function renderOverview() {
         h('div', {}, h('dt', {}, 'Spent this month'), h('dd', { class: 'fin-neg' }, r ? money(r.expenses, 'EUR') : '…'),
           h('p', { class: 'fin-stat-note' }, r && p ? vsLast(r.expenses, p.expenses) : 'working it out…')),
         h('div', {}, h('dt', {}, 'Income this month'), h('dd', { class: 'fin-pos' }, r ? money(r.income, 'EUR') : '…'),
-          h('p', { class: 'fin-stat-note' }, r && p ? vsLast(r.income, p.income) : 'working it out…'))),
+          h('p', { class: 'fin-stat-note' }, r && p ? vsLast(r.income, p.income) : 'working it out…')),
+        // What the subscriptions found cost a month (yearly ones spread over twelve).
+        (() => {
+          const subs = subscriptionsFound()?.filter((x) => x.status === 'active');
+          return h('div', {}, h('dt', {}, 'Subscriptions'),
+            h('dd', { class: 'fin-neg' }, subs ? money(subs.reduce((sum, x) => sum + subEur(x, x.monthly), 0), 'EUR') : '…'),
+            h('p', { class: 'fin-stat-note' }, subs
+              ? [`a month, ${subs.length} found · `, pageLink('See them', { name: 'scheduled', tab: 'subscriptions' }, 'fin-link fin-link-sm')]
+              : 'working it out…'));
+        })()),
       comingUpCard(),
       h('div', { class: 'fin-overview-grid' },
         r && p ? monthCategoriesCard(r, p, sameDays) : h('section', { class: 'fin-card' }, loader('Working out this month…')),
@@ -5120,6 +5254,7 @@ function paletteItems(query) {
     { group: 'Pages', label: 'Overview', words: 'home start today', run: go({ name: 'overview' }) },
     { group: 'Pages', label: 'Search transactions', words: 'find filter', run: go({ name: 'search' }) },
     { group: 'Pages', label: 'Scheduled', words: 'recurring bills reminders', run: go({ name: 'scheduled' }) },
+    { group: 'Pages', label: 'Subscriptions', words: 'recurring netflix spotify streaming cancel', run: go({ name: 'scheduled', tab: 'subscriptions' }) },
     { group: 'Pages', label: 'Insights: income and spending', words: 'charts categories budget', run: go({ name: 'insights' }) },
     { group: 'Pages', label: 'Insights: net worth', words: 'wealth history allocation', run: go({ name: 'insights', tab: 'networth' }) },
     { group: 'Pages', label: 'IOUs', words: 'loans owe people friends', run: go({ name: 'ious' }) },

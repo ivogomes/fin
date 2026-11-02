@@ -165,6 +165,8 @@ alter table transactions add column if not exists splits jsonb;
 alter table transactions add column if not exists holding_id text;
 -- Suggested schedules turned down ("Not recurring"), so they aren't offered again.
 alter table settings add column if not exists hidden_suggestions jsonb not null default '[]';
+-- A schedule marked as a subscription (Scheduled → Subscriptions lists it).
+alter table schedules add column if not exists subscription boolean not null default false;
 
 -- ── Calculations done in the database ─────────────────────────────────────────
 -- The app doesn't load every transaction on every page: these functions return what a page shows.
@@ -518,10 +520,11 @@ language sql stable as $$
 $$;
 
 -- Payments that may repeat: transactions from p_since to p_today grouped by account, description
--- (normalised) and direction, with their dates and amounts oldest first, for groups of three or more.
--- Transfers and special kinds are left out. The app decides which look regular (model.js
--- suggestSchedules; recurringGroups gives the same groups).
-create or replace function recurring_candidates(p_since date, p_today date) returns jsonb
+-- (normalised) and direction, with their dates and amounts oldest first, for groups of p_min or more
+-- (three; two finds yearly subscriptions). Transfers and special kinds are left out. The app decides
+-- which look regular (model.js suggestSchedules and findSubscriptions; recurringGroups gives the same groups).
+drop function if exists recurring_candidates(date, date);
+create or replace function recurring_candidates(p_since date, p_today date, p_min int default 3) returns jsonb
 language sql stable as $$
   select coalesce(jsonb_agg(jsonb_build_object(
     'accountId', account_id, 'key', key, 'sign', sign, 'description', description,
@@ -536,7 +539,7 @@ language sql stable as $$
     where user_id = auth.uid() and transfer_id is null and kind is null and amount <> 0
       and trim(description) <> '' and date between p_since and p_today
     group by account_id, fin_norm(description), sign(amount)
-    having count(*) >= 3
+    having count(*) >= p_min
   ) g
 $$;
 

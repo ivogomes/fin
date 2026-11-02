@@ -710,8 +710,8 @@ export function advanceSchedule(rec) {
 // Transactions grouped by account, description (case and accents ignored) and direction, with their
 // dates and amounts oldest first, between `since` and `until`: groups of three or more. Transfers and
 // special kinds (refunds, openings, dividends) are left out. The database's recurring_candidates
-// gives the same.
-export function recurringGroups(transactions, { since, until }) {
+// gives the same; `min` is how many a group needs (three, or two for yearly subscriptions).
+export function recurringGroups(transactions, { since, until, min = 3 }) {
   const map = new Map();
   const sorted = [...transactions].sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id));
   for (const t of sorted) {
@@ -726,7 +726,7 @@ export function recurringGroups(transactions, { since, until }) {
     g.categoryIds = categoriesOf(t);
     map.set(id, g);
   }
-  return [...map.values()].filter((g) => g.dates.length >= 3);
+  return [...map.values()].filter((g) => g.dates.length >= min);
 }
 
 // How often something can repeat, with how many days a date may drift (weekends, short months).
@@ -737,6 +737,19 @@ const RHYTHMS = [
   { every: 3, unit: 'month', days: 91.31, slack: 8 },
   { every: 1, unit: 'year', days: 365.25, slack: 12 },
 ];
+
+// How often `dates` (three or more, oldest first) repeat when they're evenly spaced, or null. With
+// `twiceYearly`, two dates a year apart are enough (a yearly plan seen twice).
+function rhythmOf(dates, { twiceYearly = false } = {}) {
+  if (dates.length < (twiceYearly ? 2 : 3)) return null;
+  const gaps = dates.slice(1).map((d, i) => (utc(d) - utc(dates[i])) / 864e5);
+  const list = dates.length === 2 ? RHYTHMS.filter((r) => r.unit === 'year') : RHYTHMS;
+  return list.find((r) => gaps.every((gap) => Math.abs(gap - r.days) <= r.slack)) ?? null;
+}
+
+// How many times a year a rhythm ({ every, unit }) comes round.
+const UNIT_DAYS = { day: 1, week: 7, month: 30.44, year: 365.25 };
+export const timesAYear = ({ every, unit }) => 365.25 / (UNIT_DAYS[unit] * (every || 1));
 
 // Schedules worth suggesting from `recurringGroups`: the latest dates (up to six) are evenly spaced
 // by a week, two weeks, a month, a quarter or a year; the last one is at most about two of those
@@ -751,9 +764,7 @@ export function suggestSchedules(groups, { schedules = [], today, hidden = [] })
     if (hidden.includes(id) || scheduled.has(`${g.accountId}|${g.key}`)) continue;
     const dates = g.dates.slice(-6);
     const amounts = g.amounts.slice(-6).map((a) => Math.abs(Number(a)));
-    if (dates.length < 3) continue;
-    const gaps = dates.slice(1).map((d, i) => (utc(d) - utc(dates[i])) / 864e5);
-    const rhythm = RHYTHMS.find((r) => gaps.every((gap) => Math.abs(gap - r.days) <= r.slack));
+    const rhythm = rhythmOf(dates);
     if (!rhythm) continue;
     const last = dates.at(-1);
     if ((utc(today) - utc(last)) / 864e5 > rhythm.days * 2 + rhythm.slack) continue;
@@ -772,6 +783,85 @@ export function suggestSchedules(groups, { schedules = [], today, hidden = [] })
     });
   }
   return out.sort((a, b) => a.nextDate.localeCompare(b.nextDate) || a.description.localeCompare(b.description));
+}
+
+// Subscriptions among `recurringGroups` (over a few years, with groups of two, so yearly ones show
+// after two charges): money going out at a steady rhythm (see RHYTHMS; two charges only count when
+// they're a year apart) for the same price each time, give or take 5% (a foreign-currency
+// charge), or with one price change. Each: { id, accountId, description, categoryId, amount (the
+// latest), every, unit, monthly and yearly (what it costs a month and a year, in its currency),
+// firstDate, lastDate, nextDate, count, status ('active', or 'stopped' when the next charge is well
+// overdue), priceChange ({ from, to, date } or null) }. Ones stopped over a year ago and `hidden`
+// ones (their ids) are left out. Active first, the dearest first.
+export function findSubscriptions(groups, { today, hidden = [] }) {
+  const near = (a, b) => Math.abs(a - b) <= Math.max(1, b * 0.05);
+  const out = [];
+  for (const g of groups) {
+    if (g.sign >= 0) continue;
+    const id = `sub|${g.accountId}|${g.key}`;
+    if (hidden.includes(id)) continue;
+    const dates = g.dates.slice(-6);
+    const amounts = g.amounts.slice(-6).map((a) => Math.abs(Number(a)));
+    const rhythm = rhythmOf(dates, { twiceYearly: true });
+    if (!rhythm) continue;
+    // The latest price, how far back it goes, and the one before it (if it changed once).
+    const amount = amounts.at(-1);
+    let from = amounts.length - 1;
+    while (from > 0 && near(amounts[from - 1], amount)) from -= 1;
+    const before = amounts.slice(0, from);
+    if (before.length && !before.every((a) => near(a, before.at(-1)))) continue; // changes all the time: a bill
+    const lastDate = dates.at(-1);
+    const since = (utc(today) - utc(lastDate)) / 864e5;
+    if (since > 400) continue;
+    const anchorDay = Number(lastDate.slice(8, 10));
+    let nextDate = addInterval(lastDate, rhythm, anchorDay);
+    const status = since > rhythm.days + rhythm.slack * 2 ? 'stopped' : 'active';
+    if (status === 'active') while ((utc(today) - utc(nextDate)) / 864e5 > rhythm.slack) nextDate = addInterval(nextDate, rhythm, anchorDay);
+    const perYear = timesAYear(rhythm);
+    out.push({
+      id, accountId: g.accountId, description: g.description, categoryId: g.categoryIds?.[0] ?? null,
+      amount, every: rhythm.every, unit: rhythm.unit,
+      monthly: Math.round((amount * perYear) / 12), yearly: Math.round(amount * perYear),
+      firstDate: g.dates[0], lastDate, nextDate, count: g.dates.length, status,
+      priceChange: before.length ? { from: before.at(-1), to: amount, date: dates[from] } : null,
+    });
+  }
+  return sortSubscriptions(out);
+}
+const sortSubscriptions = (list) => list.sort(
+  (a, b) => (a.status === b.status ? 0 : a.status === 'active' ? -1 : 1) || b.monthly - a.monthly || a.description.localeCompare(b.description),
+);
+
+// The subscriptions to show: those found, plus schedules marked as subscriptions (`subscription`).
+// A marked schedule with a match found (same account and description) takes its price, rhythm and
+// next date from the schedule and keeps what was found (last charge, price change); one without is
+// shown from the schedule alone. One past its end date has stopped. Each gets `scheduleId` when it
+// has a schedule, marked or not.
+export function withMarkedSchedules(found, schedules, today) {
+  const key = (accountId, description) => `${accountId}|${normalize(description)}`;
+  const out = found.map((x) => ({ ...x }));
+  const index = new Map(out.map((x) => [key(x.accountId, x.description), x]));
+  for (const sc of schedules) {
+    if (sc.kind === 'transfer') continue;
+    const k = key(sc.accountId, sc.description);
+    const hit = index.get(k);
+    if (hit) hit.scheduleId = sc.id;
+    if (!sc.subscription) continue;
+    const perYear = timesAYear(sc);
+    const fromSchedule = {
+      amount: sc.amount, every: sc.every, unit: sc.unit,
+      monthly: Math.round((sc.amount * perYear) / 12), yearly: Math.round(sc.amount * perYear),
+      nextDate: sc.nextDate, status: sc.endDate && sc.endDate < today ? 'stopped' : 'active', marked: true, scheduleId: sc.id,
+    };
+    if (hit) Object.assign(hit, fromSchedule);
+    else {
+      out.push({
+        id: `sched|${sc.id}`, accountId: sc.accountId, description: sc.description, categoryId: sc.categoryId ?? null,
+        firstDate: null, lastDate: null, count: 0, priceChange: null, ...fromSchedule,
+      });
+    }
+  }
+  return sortSubscriptions(out);
 }
 
 // ── Insights ─────────────────────────────────────────────────────────────────

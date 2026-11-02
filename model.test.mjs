@@ -12,7 +12,7 @@ import {
   periodRange, granularity, insights, completeMonths, holdingHistory, accountRuns, historyPoints, incomeCategories, REFUNDS_UNMATCHED, netWorthHistory, isFtExport, ftImport, lotSummary, investedHistory,
   descriptionIndex, suggestDescriptions, filterTransactions, ruleSuggestion,
   parseFrequency, addInterval, occurrences, forecast, scheduledTransactions, advanceSchedule,
-  splitsOf, scaleSplits, DIVIDENDS, recurringGroups, suggestSchedules, xirr, lotFlows, returnSummary, rulesFromHistory,
+  splitsOf, scaleSplits, DIVIDENDS, recurringGroups, suggestSchedules, xirr, lotFlows, returnSummary, rulesFromHistory, findSubscriptions, withMarkedSchedules, timesAYear,
 } from './model.js';
 
 test('periods: presets relative to today, Monday weeks, granularity', () => {
@@ -954,4 +954,48 @@ test('rules from history: exact names, shared words when numbers vary, only when
     ['Green Grocer', 'contains', 'food', 3, 3, 1],
     ['Netflix', 'equals', 'fun', 3, 3, 1],
   ]);
+});
+
+test('subscriptions: steady prices, one price rise, yearly ones, stopped ones; bills and income left out', () => {
+  const g = (key, sign, dates, amounts) => ({ accountId: 'a', key, sign, description: key, categoryIds: ['c'], dates, amounts });
+  const groups = [
+    g('streaming', -1, ['2026-06-03', '2026-07-03', '2026-08-03', '2026-09-03', '2026-10-03'], [-999, -999, -999, -1299, -1299]),
+    g('cloud', -1, ['2023-11-20', '2024-11-20', '2025-11-20'], [-2999, -2999, -2999]),
+    g('music', -1, ['2026-03-10', '2026-04-10', '2026-05-10'], [-1099, -1099, -1099]), // stopped in May
+    g('power', -1, ['2026-07-15', '2026-08-15', '2026-09-15', '2026-10-15'], [-6000, -4500, -7200, -5100]), // a bill
+    g('usd app', -1, ['2026-08-01', '2026-09-01', '2026-10-01'], [-1000, -1030, -990]), // currency wobble
+    g('salary', 1, ['2026-08-25', '2026-09-25', '2026-10-25'], [300000, 300000, 300000]),
+  ];
+  const list = findSubscriptions(groups, { today: '2026-11-02' });
+  assert.deepEqual(list.map((x) => [x.description, x.status, x.unit, x.monthly, x.nextDate]), [
+    ['streaming', 'active', 'month', 1299, '2026-11-03'],
+    ['usd app', 'active', 'month', 990, '2026-11-01'],
+    ['cloud', 'active', 'year', 250, '2026-11-20'],
+    ['music', 'stopped', 'month', 1099, '2026-06-10'],
+  ]);
+  assert.deepEqual(list[0].priceChange, { from: 999, to: 1299, date: '2026-09-03' });
+  assert.equal(list.find((x) => x.description === 'cloud').yearly, 2999);
+  assert.equal(findSubscriptions(groups, { today: '2026-11-02', hidden: [list[0].id] }).length, 3);
+});
+
+test('subscriptions: a yearly plan after two charges; marked schedules join or stand alone', () => {
+  const g = (key, dates, amounts) => ({ accountId: 'a', key, sign: -1, description: key, categoryIds: [], dates, amounts });
+  const found = findSubscriptions([
+    g('domain', ['2024-12-01', '2025-11-28'], [-1500, -1500]), // two charges a year apart
+    g('twice', ['2026-09-01', '2026-10-01'], [-500, -500]), // two a month apart: not enough
+  ], { today: '2026-11-02' });
+  assert.deepEqual(found.map((x) => [x.description, x.unit, x.nextDate, x.monthly]), [['domain', 'year', '2026-11-28', 125]]);
+  const schedules = [
+    { id: 's1', kind: 'expense', accountId: 'a', description: 'DOMAIN', amount: 1800, every: 1, unit: 'year', nextDate: '2026-11-28', subscription: true },
+    { id: 's2', kind: 'expense', accountId: 'a', description: 'Gym', amount: 3000, every: 1, unit: 'month', nextDate: '2026-11-05', subscription: true },
+    { id: 's3', kind: 'expense', accountId: 'a', description: 'Old box', amount: 900, every: 1, unit: 'month', nextDate: '2026-06-01', endDate: '2026-06-30', subscription: true },
+    { id: 's4', kind: 'expense', accountId: 'a', description: 'Rent', amount: 90000, every: 1, unit: 'month', nextDate: '2026-11-01' },
+  ];
+  const all = withMarkedSchedules(found, schedules, '2026-11-02');
+  assert.deepEqual(all.map((x) => [x.description, x.status, x.amount, x.monthly, x.scheduleId, x.lastDate]), [
+    ['Gym', 'active', 3000, 3000, 's2', null],
+    ['domain', 'active', 1800, 150, 's1', '2025-11-28'], // the schedule's price, what was found kept
+    ['Old box', 'stopped', 900, 900, 's3', null],
+  ]);
+  assert.ok(Math.abs(timesAYear({ every: 2, unit: 'week' }) - 26.09) < 0.01);
 });
