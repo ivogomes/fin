@@ -1,0 +1,2806 @@
+import {
+  CURRENCIES, ACCOUNT_TYPES, ACCOUNT_TYPE_LABELS, toMinor, formatMoney, categorize, convert, rateFor, defaultState,
+  normalize, categoryPath, categoriesOf, sortedCategories,
+  IOU_KINDS, IOU_TYPES, personBalances, personHistory, PERIODS, periodRange, insights, netWorthHistory, investedHistory,
+  accountBalance, holdingValue, investmentValue, netWorth, withRunningBalance, newId,
+  crossConvert, batchRow, makeTransfer,
+  parseCsv, toCsv, guessDateFormat, guessDecimal, guessMapping, importRows, IMPORT_FIELDS, findTransferPairs,
+  detectBuxferFile, buxferImport, isFtExport, ftImport, lotSummary,
+  UNITS, frequencyLabel, addInterval, occurrences, forecast, scheduledEffect, scheduledTransactions, advanceSchedule,
+} from './model.js';
+import { fetchRate, fetchRateRange, fetchQuote, fetchQuoteAV, alphaVantageCovers, searchSymbols, today } from './market.js';
+import { load, persist, onStatus, hasPendingChanges, legacyData, forgetLegacyData, missingTables, clearTables, needsSchemaUpdate } from './store.js';
+import { configured, currentUser, completeSignIn, sendSignInLink, signOut, SignedOut } from './cloud.js';
+
+// Set once the signed-in user's data has loaded (see boot() at the bottom).
+let state = null;
+// view: { name: 'account', id } | { name: 'settings' }
+let view = { name: 'account', id: null };
+let editingTxId = null;
+const TX_PAGE_SIZE = 100;
+let txPage = 0; // 0 = the newest 100; reset when another account is selected
+const collapsed = new Set(readPref('finance:collapsed', ['archived'])); // the archive starts closed
+
+const side = document.getElementById('side');
+const main = document.getElementById('app');
+const dialog = document.getElementById('account-dialog');
+const txDialog = document.getElementById('tx-dialog');
+const status = document.getElementById('status');
+
+// ── helpers ──────────────────────────────────────────────────────────────────
+
+function h(tag, attrs = {}, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (v == null || v === false) continue;
+    if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
+    else if (k === 'class') el.className = v;
+    else if (v === true) el.setAttribute(k, '');
+    else el.setAttribute(k, v);
+  }
+  el.append(...kids.flat().filter((x) => x != null && x !== false));
+  return el;
+}
+
+function readPref(key, fallback) {
+  try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; }
+}
+function writePref(key, value) {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* per-viewer convenience only */ }
+}
+
+const say = (msg) => { status.textContent = ''; setTimeout(() => { status.textContent = msg; }, 30); };
+const category = (id) => state.categories.find((c) => c.id === id);
+// A category as shown everywhere: "Parent / Child" for children.
+const catLabel = (id) => { const c = category(id); return c ? categoryPath(c, state.categories) : ''; };
+// Options for a category <select>: parents followed by their children.
+// A colour group (0–7) per top-level category, so a family's chips share a colour. Colours go round
+// in alphabetical order of the top-level categories, so neighbours in the list never share one.
+function hueOf(id) {
+  const c = category(id);
+  const top = c?.parentId ? category(c.parentId) ?? c : c;
+  if (!top) return '0';
+  if (!hueOrder) {
+    hueOrder = new Map(state.categories.filter((x) => !x.parentId)
+      .sort((x, y) => x.name.localeCompare(y.name)).map((x, i) => [x.id, String(i % 8)]));
+  }
+  return hueOrder.get(top.id) ?? '0';
+}
+let hueOrder = null; // reset on every render, like iouByTx
+const catOptions = () => sortedCategories(state.categories).map((c) => [c.id, categoryPath(c, state.categories)]);
+const money = (minor, cur) => formatMoney(minor, cur);
+const signed = (minor, cur) =>
+  new Intl.NumberFormat(undefined, { style: 'currency', currency: cur, signDisplay: 'exceptZero' }).format(minor / 100);
+const tone = (minor) => (minor > 0 ? 'fin-pos' : minor < 0 ? 'fin-neg' : '');
+const latestRate = (cur) => (cur === 'EUR' ? 1 : state.rates[`${cur}:latest`]?.rate ?? null);
+
+const thisYear = new Date().getFullYear();
+const shortDate = (iso) => {
+  const d = new Date(`${iso}T00:00:00`);
+  return d.toLocaleDateString(undefined, d.getFullYear() === thisYear
+    ? { day: 'numeric', month: 'short' }
+    : { day: 'numeric', month: 'short', year: 'numeric' });
+};
+
+function field(label, control, hint) {
+  const id = `f-${newId().slice(0, 8)}`;
+  control.id = id;
+  return h('div', { class: 'fin-field' },
+    h('label', { for: id }, label), control, hint && h('p', { class: 'fin-hint' }, hint));
+}
+
+const input = (attrs) => h('input', { class: 'fin-input', ...attrs });
+const select = (options, value, attrs = {}) =>
+  h('select', { class: 'fin-input', ...attrs },
+    options.map(([v, label]) => h('option', { value: v, selected: v === value }, label)));
+const button = (label, onclick, kind = 'secondary', attrs = {}) =>
+  h('button', { type: 'button', class: `fin-btn ${kind === 'primary' ? 'btn-primary' : kind}`, onclick, ...attrs }, label);
+
+// Line icons (24px grid, drawn with the text colour) for compact row actions.
+const ICONS = {
+  edit: ['M4 20h4L18.5 9.5a2.1 2.1 0 0 0-3-3L5 17v3Z', 'M13.5 6.5l3 3'],
+  trash: ['M4 7h16', 'M9.5 7V4.5h5V7', 'M6.5 7l1 12.5h9l1-12.5', 'M10 11v5M14 11v5'],
+  plus: ['M12 5v14M5 12h14'],
+  refund: ['M9 14 4 9l5-5', 'M4 9h10.5a5.5 5.5 0 0 1 0 11H11'],
+  // Account types
+  'type-cash': ['M3 7h18v10H3Z', 'M12 9.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5Z', 'M6.5 10v4M17.5 10v4'],
+  'type-checking': ['M3 10 12 4.5l9 5.5', 'M5.5 10.5v7M10 10.5v7M14 10.5v7M18.5 10.5v7', 'M3 20h18'],
+  'type-credit': ['M3 6h18v12H3Z', 'M3 10h18', 'M7 14.5h4'],
+  'type-investment': ['M3 17l6-6 4 4 8-8', 'M15 7h6v6'],
+  'type-savings': ['M5 7.5c0-1.4 3.1-2.5 7-2.5s7 1.1 7 2.5-3.1 2.5-7 2.5-7-1.1-7-2.5Z', 'M5 7.5v4.5c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5V7.5', 'M5 12v4.5C5 17.9 8.1 19 12 19s7-1.1 7-2.5V12'],
+  'type-archived': ['M3 5h18v4H3Z', 'M5 9v10h14V9', 'M10 13h4'],
+};
+function icon(name) {
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('class', 'fin-icon');
+  for (const d of ICONS[name]) {
+    const path = document.createElementNS(NS, 'path');
+    path.setAttribute('d', d);
+    svg.append(path);
+  }
+  return svg;
+}
+// An icon-only button; `label` is its accessible name and tooltip.
+const iconButton = (name, label, onclick, { danger = false, ...attrs } = {}) =>
+  h('button', { type: 'button', class: `fin-icon-btn${danger ? ' fin-icon-btn--danger' : ''}`, 'aria-label': label, title: label, onclick, ...attrs }, icon(name));
+
+const monthLabel = (ym) => new Date(`${ym}-01T00:00:00`).toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+
+// ── rates and prices ─────────────────────────────────────────────────────────
+
+async function ensureRate(currency, date) {
+  const known = rateFor(currency, state.rates, date);
+  if (known != null) return known;
+  try {
+    const rate = await fetchRate(currency, date);
+    state.rates[`${currency}:${date}`] = rate;
+    return rate;
+  } catch { return null; }
+}
+
+async function refreshRates() {
+  const used = new Set(state.accounts.map((a) => a.currency));
+  state.holdings.forEach((x) => used.add(x.currency));
+  used.delete('EUR');
+  let failed = false;
+  // Today's rate is saved with your settings: fetched on the first visit of the day, then reused on
+  // every load and every device until tomorrow.
+  const fx = state.settings.fx ?? (state.settings.fx = {});
+  let fetched = false;
+  for (const cur of used) {
+    if (fx[cur]?.date === today()) {
+      state.rates[`${cur}:latest`] = fx[cur];
+      state.rates[`${cur}:${today()}`] = fx[cur].rate;
+      continue;
+    }
+    const rate = await ensureRate(cur, today());
+    if (rate == null) {
+      failed = true;
+      if (fx[cur]) state.rates[`${cur}:latest`] = fx[cur]; // yesterday's, until today's loads
+      continue;
+    }
+    state.rates[`${cur}:latest`] = fx[cur] = { rate, date: today() };
+    fetched = true;
+  }
+  if (fetched) persist();
+  // Fill in transactions that have no rate yet (saved offline, or imported). Many at once are
+  // priced from one date-range request per currency instead of one request per date.
+  const missing = state.transactions.filter((t) => t.rate == null);
+  const currencyOf = (t) => state.accounts.find((a) => a.id === t.accountId)?.currency;
+  for (const cur of new Set(missing.map(currencyOf))) {
+    if (!cur) continue;
+    const list = missing.filter((t) => currencyOf(t) === cur);
+    if (cur === 'EUR') { list.forEach((t) => { t.rate = 1; }); continue; }
+    if (list.length > 3) {
+      const dates = list.map((t) => t.date).sort();
+      // Start a week early so a weekend or holiday at the start still has an earlier rate.
+      const from = new Date(Date.parse(dates[0]) - 7 * 864e5).toISOString().slice(0, 10);
+      try {
+        const byDate = await fetchRateRange(cur, from, dates.at(-1));
+        const days = Object.keys(byDate).sort();
+        for (const t of list) {
+          const day = days.filter((d) => d <= t.date).at(-1);
+          if (day) { t.rate = byDate[day]; state.rates[`${cur}:${t.date}`] = byDate[day]; }
+        }
+      } catch { failed = true; }
+    } else {
+      for (const t of list) {
+        const rate = await ensureRate(cur, t.date);
+        if (rate != null) t.rate = rate;
+      }
+    }
+  }
+  if (missing.length) persist();
+  if (failed) say('Exchange rates unavailable right now. Showing the last known values.');
+  render();
+}
+
+// Each holding keeps its own `priceError` (the provider's message) so a failure shows on its row
+// instead of disappearing.
+async function refreshPrices(only) {
+  const targets = only ?? state.holdings;
+  if (!targets.length) return;
+  say('Fetching prices…');
+  let failed = 0;
+  for (const x of targets) {
+    try {
+      // Non-US listings go to Alpha Vantage when a key is set; everything else to Twelve Data.
+      const viaAV = alphaVantageCovers(x.mic) && state.settings.avApiKey;
+      const q = viaAV
+        ? await fetchQuoteAV(x.symbol, x.mic, state.settings.avApiKey)
+        : await fetchQuote(x.symbol, state.settings.quoteApiKey, x.mic);
+      Object.assign(x, {
+        price: q.price, name: x.name ?? q.name, currency: q.currency ?? x.currency,
+        source: viaAV ? 'Alpha Vantage' : 'Twelve Data', priceAt: new Date().toISOString(),
+      });
+      delete x.priceError;
+    } catch (err) {
+      failed += 1;
+      x.priceError = err.message;
+    }
+  }
+  persist();
+  await refreshRates(); // a quote may be in a currency we have no rate for yet
+  say(failed
+    ? `${failed} of ${targets.length} price${targets.length === 1 ? '' : 's'} could not be fetched.`
+    : 'Prices updated.');
+}
+
+// Prices from an earlier day are refreshed when the page opens (needs the API key).
+function stalePrices() {
+  if (!state.settings.quoteApiKey && !state.settings.avApiKey) return [];
+  return state.holdings.filter((x) => !x.manual && (!x.priceAt || x.priceAt.slice(0, 10) !== today() || x.priceError));
+}
+
+// ── values ───────────────────────────────────────────────────────────────────
+
+function accountValue(account) {
+  return account.type === 'investment'
+    ? investmentValue(account, state.holdings, state.transactions, (c) => latestRate(c) ?? 1).total
+    : accountBalance(account, state.transactions);
+}
+
+// Group total in EUR. Accounts still waiting for a rate are left out and counted.
+function groupTotal(list) {
+  let total = 0;
+  let missing = 0;
+  for (const a of list) {
+    const rate = latestRate(a.currency);
+    if (rate == null) missing += 1;
+    else total += convert(accountValue(a), rate);
+  }
+  return { total, missing };
+}
+
+// ── side panel ───────────────────────────────────────────────────────────────
+
+// Accounts are listed alphabetically everywhere (case and accents ignored).
+const byName = (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+
+function renderSide() {
+  const nw = netWorth(state, latestRate);
+  return [
+    // The net-worth card opens its own page: net worth over time and by account type.
+    h('button', {
+      type: 'button', class: 'fin-side-head fin-side-head--link', 'data-key': 'networth',
+      'aria-current': view.name === 'networth' ? 'page' : null,
+      onclick: () => { view = { name: 'networth' }; render('networth'); say('Net worth.'); },
+    },
+      h('span', { class: 'fin-side-title' }, 'Net worth'),
+      h('span', { class: 'fin-num' }, money(nw.total, 'EUR')),
+      h('span', { class: 'fin-side-more' }, 'See over time ›')),
+    nw.unconverted > 0 && h('p', { class: 'fin-side-note' }, `${nw.unconverted} account(s) left out until exchange rates load.`),
+    state.accounts.length === 0 && h('p', { class: 'fin-side-note' }, 'No accounts yet.'),
+    ACCOUNT_TYPES.map((type) => {
+      const list = state.accounts.filter((a) => a.type === type && !a.archived).sort(byName);
+      if (!list.length) return null;
+      const { total } = groupTotal(list);
+      return accountGroup(type, ACCOUNT_TYPE_LABELS[type], h('span', { class: `fin-num ${tone(total)}` }, money(total, 'EUR')), list);
+    }),
+    (() => {
+      const archived = state.accounts.filter((a) => a.archived).sort(byName);
+      return archived.length > 0 && accountGroup('archived', 'Archived', h('span', { class: 'fin-group-count' }, String(archived.length)), archived);
+    })(),
+    h('div', { class: 'fin-side-foot' }, button('Add account', () => openAccountDialog(), 'secondary', { 'data-key': 'add-account' })),
+  ];
+}
+
+function accountGroup(key, label, total, list) {
+  const holdsCurrent = view.name === 'account' && list.some((a) => a.id === view.id);
+  // Each type has its own icon and tint, so the groups are easy to tell apart at a glance.
+  return h('details', {
+    class: `fin-group fin-group--${key}`, open: holdsCurrent || !collapsed.has(key),
+    ontoggle: (e) => {
+      if (e.target.open) collapsed.delete(key); else collapsed.add(key);
+      writePref('finance:collapsed', [...collapsed]);
+    },
+  },
+    h('summary', { class: 'fin-group-head' },
+      h('span', { class: 'fin-group-icon' }, icon(`type-${key}`)),
+      h('span', { class: 'fin-group-label' }, label), total),
+    h('ul', { class: 'fin-accounts' }, list.map((a) => {
+      const value = accountValue(a);
+      const current = view.name === 'account' && view.id === a.id;
+      return h('li', {},
+        h('button', {
+          type: 'button', class: 'fin-account', 'data-key': `acc-${a.id}`,
+          'aria-current': current ? 'page' : null,
+          onclick: () => selectAccount(a.id),
+        },
+          h('span', { class: 'fin-account-name' }, a.name),
+          // No + on positive balances here: less text, and the negative ones (in red) stand out.
+          h('span', { class: `fin-num ${tone(value)}` }, money(value, a.currency))));
+    })));
+}
+
+function selectAccount(id) {
+  if (view.id !== id) txPage = 0;
+  // Stay on Insights when moving between accounts, so they're easy to compare.
+  view = { name: 'account', id, tab: view.name === 'account' ? view.tab : undefined };
+  editingTxId = null;
+  state.settings.lastAccountId = id;
+  persist();
+  render();
+  say(`Showing ${state.accounts.find((a) => a.id === id)?.name}.`);
+}
+
+// ── account dialog ───────────────────────────────────────────────────────────
+
+// Add an account, or edit `existing`. The currency is fixed once an account has transactions or
+// holdings, because their amounts are stored in that currency.
+function openAccountDialog(existing = null) {
+  const used = existing && (state.transactions.some((t) => t.accountId === existing.id)
+    || state.holdings.some((x) => x.accountId === existing.id));
+  const name = input({ type: 'text', required: true, autocomplete: 'off', value: existing?.name });
+  const type = select(ACCOUNT_TYPES.map((t) => [t, ACCOUNT_TYPE_LABELS[t]]), existing?.type ?? 'checking');
+  const cur = select(CURRENCIES.map((c) => [c, c]), existing?.currency ?? 'EUR', { disabled: used });
+  const returnKey = existing ? 'edit-account' : document.activeElement?.dataset?.key;
+  const close = () => { dialog.close(); render(returnKey); };
+  dialog.replaceChildren(h('form', {
+    onsubmit: async (e) => {
+      e.preventDefault();
+      if (existing) {
+        Object.assign(existing, { name: name.value.trim(), type: type.value, currency: cur.value });
+        persist(); close(); say(`Saved ${existing.name}.`);
+      } else {
+        const account = { id: newId(), name: name.value.trim(), type: type.value, currency: cur.value };
+        state.accounts.push(account);
+        dialog.close();
+        selectAccount(account.id);
+        say(`Added account ${account.name}.`);
+      }
+      await refreshRates();
+    },
+  },
+    h('h2', { id: 'account-dialog-h', class: 'fin-dialog-title' }, existing ? 'Edit account' : 'Add account'),
+    field('Name', name), field('Type', type),
+    field('Currency', cur, used
+      ? 'Fixed, because this account already has transactions.'
+      : 'USD amounts are converted to EUR at the daily rate.'),
+    h('div', { class: 'fin-dialog-actions' },
+      button('Cancel', close),
+      h('button', { type: 'submit', class: 'fin-btn btn-primary' }, existing ? 'Save' : 'Add account'))));
+  dialog.showModal();
+  name.focus();
+}
+
+function setArchived(account, archived) {
+  if (archived) {
+    const value = accountValue(account);
+    if (value !== 0 && !confirm(`${account.name} still has a balance of ${signed(value, account.currency)}. Archived accounts don't count toward net worth. Archive it anyway?`)) return;
+  }
+  account.archived = archived;
+  persist();
+  render(archived ? 'unarchive-account' : 'archive-account');
+  say(archived ? `${account.name} archived. Its transactions are kept.` : `${account.name} restored.`);
+}
+
+// ── main: account ────────────────────────────────────────────────────────────
+
+function renderWelcome() {
+  return h('div', { class: 'fin-welcome' },
+    h('h2', { class: 'fin-title' }, 'Start with an account'),
+    h('p', { class: 'fin-empty' }, 'Add your checking accounts, credit cards and investments. Accounts are in EUR unless you pick USD.'),
+    button('Add account', () => openAccountDialog(), 'primary'));
+}
+
+function renderAccount(account) {
+  const value = accountValue(account);
+  const inv = account.type === 'investment'
+    ? investmentValue(account, state.holdings, state.transactions, (c) => latestRate(c) ?? 1)
+    : null;
+  const rate = latestRate(account.currency);
+  return h('div', {},
+    h('div', { class: 'fin-account-head' },
+      h('div', {},
+        h('h2', { class: 'fin-title' }, account.name),
+        h('p', { class: 'fin-meta' }, `${ACCOUNT_TYPE_LABELS[account.type]} · ${account.currency}`, account.archived && ' · Archived')),
+      h('div', { class: 'fin-actions' },
+        button('Edit', () => openAccountDialog(account), 'secondary', { 'data-key': 'edit-account' }),
+        account.archived
+          ? button('Unarchive', () => setArchived(account, false), 'secondary', { 'data-key': 'unarchive-account' })
+          : button('Archive', () => setArchived(account, true), 'secondary', { 'data-key': 'archive-account' }),
+        button('Delete', () => {
+          if (!confirm(`Delete "${account.name}" and everything in it?`)) return;
+          state.accounts = state.accounts.filter((a) => a.id !== account.id);
+          const gone = new Set(state.transactions.filter((t) => t.accountId === account.id).map((t) => t.id));
+          state.ious = state.ious.filter((e) => !gone.has(e.transactionId));
+          state.transactions = state.transactions.filter((t) => t.accountId !== account.id);
+          const goneHoldings = new Set(state.holdings.filter((x) => x.accountId === account.id).map((x) => x.id));
+          state.lots = state.lots.filter((l) => !goneHoldings.has(l.holdingId));
+          state.holdings = state.holdings.filter((x) => x.accountId !== account.id);
+          state.schedules = state.schedules.filter((s) => s.accountId !== account.id && s.toAccountId !== account.id);
+          view = { name: 'account', id: state.accounts[0]?.id };
+          persist(); render(); say('Account deleted.');
+        }, 'danger', { 'aria-label': `Delete account ${account.name}` }))),
+    account.archived && h('p', { class: 'fin-notice' },
+      'This account is archived. It is hidden from the account groups and left out of net worth. Its transactions are kept.'),
+    h('dl', { class: 'fin-stats' },
+      h('div', {}, h('dt', {}, inv?.hasHoldings ? 'Value' : 'Balance'), h('dd', { class: `fin-num ${tone(value)}` }, signed(value, account.currency))),
+      account.currency !== 'EUR' && h('div', {}, h('dt', {}, 'In EUR'),
+        h('dd', { class: 'fin-num' }, rate == null ? 'rate pending' : signed(convert(value, rate), 'EUR'))),
+      // For investments, the transactions are the money paid in; the gain is value minus that.
+      inv?.hasHoldings && h('div', {}, h('dt', {}, 'Invested'), h('dd', { class: 'fin-num' }, money(inv.invested, account.currency))),
+      inv?.hasHoldings && h('div', {}, h('dt', {}, 'Gain'),
+        h('dd', { class: `fin-num ${tone(value - inv.invested)}` }, signed(value - inv.invested, account.currency),
+          inv.invested > 0 && h('span', { class: 'fin-stat-sub' }, ` ${((value - inv.invested) / inv.invested * 100).toFixed(1)}%`))),
+      // Like Buxfer's forecast: the balance once everything scheduled in the next 30 days happens.
+      state.schedules.some((s) => scheduledEffect(s, account.id) !== 0) && (() => {
+        const next = forecast(account.id, value, state.schedules, daysFromToday(FORECAST_DAYS));
+        return h('div', {}, h('dt', {}, `Forecast, ${FORECAST_DAYS} days`),
+          h('dd', { class: `fin-num ${tone(next)}` }, signed(next, account.currency)));
+      })()),
+    accountTabs(),
+    view.tab === 'insights'
+      ? (account.type === 'investment' ? investmentInsights(account) : insightsPanel(new Set([account.id])))
+      : [account.type === 'investment' && holdingsSection(account), upcomingSection(account), transactionsSection(account)]);
+}
+
+// Transactions or Insights for the selected account.
+function accountTabs() {
+  const tab = view.tab === 'insights' ? 'insights' : 'transactions';
+  const pick = (t) => { view = { ...view, tab: t }; render(`tab-${t}`); };
+  return h('div', { class: 'fin-tabs', role: 'group', 'aria-label': 'Account view' },
+    ['transactions', 'insights'].map((t) => h('button', {
+      type: 'button', class: 'fin-tab', 'aria-pressed': String(tab === t), 'data-key': `tab-${t}`, onclick: () => pick(t),
+    }, t === 'transactions' ? 'Transactions' : 'Insights')));
+}
+
+// Only one page of rows is put in the DOM. The running balance is still worked out over all of the
+// account's transactions, so every page shows the true balance after each row.
+function pager(page, pages, total, where) {
+  const go = (p, key) => {
+    txPage = Math.min(Math.max(p, 0), pages - 1);
+    render(key);
+    const first = txPage * TX_PAGE_SIZE + 1;
+    say(`Showing transactions ${first} to ${Math.min(first + TX_PAGE_SIZE - 1, total)} of ${total}.`);
+    if (where === 'bottom') document.getElementById('tx-h')?.scrollIntoView({ block: 'start' });
+  };
+  const first = page * TX_PAGE_SIZE + 1;
+  const last = Math.min(first + TX_PAGE_SIZE - 1, total);
+  return h('nav', { class: 'fin-pager', 'aria-label': `Transaction pages${where === 'bottom' ? ', bottom' : ''}` },
+    h('span', { class: 'fin-muted fin-num' }, `${first}–${last} of ${total}`),
+    button('« First', () => go(0, `pg-first-${where}`), 'secondary fin-btn-sm', { disabled: page === 0, 'data-key': `pg-first-${where}` }),
+    button('‹ Previous', () => go(page - 1, `pg-prev-${where}`), 'secondary fin-btn-sm', { disabled: page === 0, 'data-key': `pg-prev-${where}` }),
+    h('span', { class: 'fin-muted' }, `Page ${page + 1} of ${pages}`),
+    button('Next ›', () => go(page + 1, `pg-next-${where}`), 'secondary fin-btn-sm', { disabled: page === pages - 1, 'data-key': `pg-next-${where}` }),
+    button('Last »', () => go(pages - 1, `pg-last-${where}`), 'secondary fin-btn-sm', { disabled: page === pages - 1, 'data-key': `pg-last-${where}` }));
+}
+
+function transactionsSection(account) {
+  const all = withRunningBalance(account.id, state.transactions);
+  const pages = Math.max(1, Math.ceil(all.length / TX_PAGE_SIZE));
+  txPage = Math.min(txPage, pages - 1); // e.g. after deleting the last row of the last page
+  const rows = all.slice(txPage * TX_PAGE_SIZE, (txPage + 1) * TX_PAGE_SIZE);
+  const foreign = account.currency !== 'EUR';
+  return h('section', { class: 'fin-card', 'aria-labelledby': 'tx-h' },
+    h('div', { class: 'fin-card-head' },
+      h('h3', { id: 'tx-h', class: 'fin-label' }, 'Transactions ', h('span', { class: 'fin-count' }, String(all.length))),
+      button('Add transactions', () => openTxDialog('multi', account), 'primary', { 'data-key': 'tx-add', 'aria-haspopup': 'dialog' })),
+    pages > 1 && pager(txPage, pages, all.length, 'top'),
+    rows.length === 0
+      ? h('p', { class: 'fin-empty fin-pad' }, 'No transactions yet.')
+      : h('div', { class: 'fin-scroll' }, h('table', { class: 'fin-table' },
+        h('caption', { class: 'fin-sr' }, `Transactions for ${account.name}, newest first, page ${txPage + 1} of ${pages}`),
+        h('thead', {}, h('tr', {},
+          h('th', { scope: 'col' }, 'Date'),
+          h('th', { scope: 'col', class: 'fin-r' }, 'Amount'),
+          h('th', { scope: 'col', class: 'fin-r' }, 'Balance'),
+          h('th', { scope: 'col' }, 'Description'),
+          h('th', { scope: 'col' }, 'Categories'),
+          foreign && h('th', { scope: 'col', class: 'fin-r' }, 'In EUR'),
+          h('th', { scope: 'col' }, h('span', { class: 'fin-sr' }, 'Actions')))),
+        h('tbody', {}, rows.flatMap((t, i) => {
+          // A heading row at the start of each month makes a long list easier to scan.
+          const month = t.date.slice(0, 7);
+          const heading = (i === 0 || rows[i - 1].date.slice(0, 7) !== month) && h('tr', { class: 'fin-month' },
+            h('th', { colspan: foreign ? 7 : 6, scope: 'colgroup' }, monthLabel(month)));
+          // The row being edited turns into a full-width form, so the edit happens in place.
+          if (t.id === editingTxId) {
+            return [heading, h('tr', { class: 'fin-edit-row' },
+              h('td', { colspan: foreign ? 7 : 6 }, transactionForm(account, state.transactions.find((x) => x.id === t.id))))];
+          }
+          const label = `${t.description}, ${shortDate(t.date)}`;
+          return [heading, h('tr', {},
+            h('td', { class: 'fin-nowrap' }, h('time', { datetime: t.date }, shortDate(t.date))),
+            h('td', { class: `fin-r fin-num ${tone(t.amount)}` },
+              t.kind === 'refund' && h('span', { class: 'fin-refund', title: 'Refund' }, icon('refund'), h('span', { class: 'fin-sr' }, 'Refund: ')),
+              signed(t.amount, account.currency)),
+            h('td', { class: 'fin-r fin-num fin-muted' }, money(t.balance, account.currency)),
+            h('td', {},
+              t.description,
+              t.memo && h('span', { class: 'fin-sub' }, t.memo)),
+            h('td', {}, categoryCell(t)),
+            foreign && h('td', { class: 'fin-r fin-num fin-muted' }, t.rate == null ? 'pending' : signed(convert(t.amount, t.rate), 'EUR')),
+            h('td', { class: 'fin-r' }, h('div', { class: 'fin-row-actions' },
+              iconButton('edit', `Edit ${label}`, () => {
+                editingTxId = t.id;
+                render('tx-desc-edit');
+              }, { 'data-key': `tx-edit-${t.id}` }),
+              iconButton('trash', `Delete ${label}`, () => {
+                // Deleting either side of a transfer deletes both, so the accounts stay balanced.
+                state.transactions = state.transactions.filter((x) => x.id !== t.id && (!t.transferId || x.transferId !== t.transferId));
+                // Its IOU entries go with it: the loan or repayment didn't happen after all.
+                state.ious = state.ious.filter((e) => e.transactionId !== t.id);
+                persist(); render(); say(t.transferId ? 'Transfer deleted from both accounts.' : 'Transaction deleted.');
+              }, { danger: true }))))];
+        })))),
+    pages > 1 && pager(txPage, pages, all.length, 'bottom'));
+}
+
+const transferPartner = (tx) =>
+  tx.transferId && state.transactions.find((x) => x.transferId === tx.transferId && x.id !== tx.id);
+const accountName = (id) => state.accounts.find((a) => a.id === id)?.name ?? 'a deleted account';
+// Accounts you can pick in a form: the active ones, plus `keep` even if it is archived.
+const pickableAccounts = (keep) => state.accounts.filter((a) => !a.archived || a.id === keep).sort(byName);
+
+// Inline edit of one transaction. For one side of a transfer, the other side follows: same date,
+// description and memo, and its amount scales with this one (so cross-currency transfers
+// keep their exchange rate).
+function transactionForm(account, tx) {
+  const partner = transferPartner(tx);
+  let kind = tx.kind === 'refund' ? 'refund' : tx.amount > 0 ? 'income' : 'expense';
+  const desc = input({ type: 'text', required: true, autocomplete: 'off', 'data-key': 'tx-desc-edit', value: tx.description });
+  const amount = input({ type: 'number', step: '0.01', min: '0.01', required: true, inputmode: 'decimal', value: String(Math.abs(tx.amount) / 100) });
+  const date = input({ type: 'date', required: true, value: tx.date });
+  const cats = categoryPicker(categoriesOf(tx), { label: `Categories of ${tx.description}` });
+  const memo = h('textarea', { class: 'fin-input', rows: '2' });
+  memo.value = tx.memo ?? '';
+  const cancel = () => { editingTxId = null; render(`tx-edit-${tx.id}`); };
+  const KINDS = { expense: 'Expense', income: 'Income', refund: 'Refund' };
+  const kinds = Object.keys(KINDS).map((k) =>
+    h('button', {
+      type: 'button', class: 'fin-seg-btn', 'aria-pressed': String(k === kind),
+      onclick: () => { kind = k; kinds.forEach((b, i) => b.setAttribute('aria-pressed', String(Object.keys(KINDS)[i] === kind))); },
+    }, KINDS[k]));
+
+  return h('form', {
+    class: 'fin-tx-form',
+    'aria-label': `Edit ${tx.description}`,
+    onkeydown: (e) => { if (e.key === 'Escape') { e.preventDefault(); cancel(); } },
+    onsubmit: async (e) => {
+      e.preventDefault();
+      const sign = tx.transferId ? Math.sign(tx.amount) : kind === 'expense' ? -1 : 1;
+      const next = toMinor(amount.value) * sign;
+      const dateMoved = tx.date !== date.value;
+      const shared = { date: date.value, description: desc.value.trim(), memo: memo.value.trim() };
+      if (partner) {
+        const ratio = partner.amount / tx.amount;
+        const partnerCurrency = state.accounts.find((a) => a.id === partner.accountId)?.currency ?? 'EUR';
+        Object.assign(partner, shared, {
+          amount: Math.round(next * ratio),
+          rate: !dateMoved && partner.rate != null ? partner.rate : await ensureRate(partnerCurrency, date.value),
+        });
+      }
+      Object.assign(tx, shared, {
+        amount: next,
+        kind: tx.transferId ? tx.kind : kind === 'refund' ? 'refund' : tx.kind === 'opening' ? 'opening' : undefined,
+        categoryIds: tx.transferId ? [] : cats.value(),
+        // Keep the stored rate unless the date moved.
+        rate: !dateMoved && tx.rate != null ? tx.rate : await ensureRate(account.currency, date.value),
+      });
+      editingTxId = null;
+      persist(); render(`tx-edit-${tx.id}`);
+      say(partner ? `Transfer updated in both ${account.name} and ${accountName(partner.accountId)}.` : 'Transaction updated.');
+    },
+  },
+    tx.transferId
+      ? h('p', { class: 'fin-hint fin-edit-note' }, `Transfer ${tx.amount < 0 ? 'to' : 'from'} ${accountName(partner?.accountId)}. Changes apply to both sides.`)
+      : h('div', { class: 'fin-seg', role: 'group', 'aria-label': 'Transaction type' }, kinds),
+    h('div', { class: 'fin-grid' },
+      field('Description', desc), field(`Amount (${account.currency})`, amount),
+      field('Date', date)),
+    !tx.transferId && pickerField('Categories', cats),
+    h('div', { class: 'fin-grid' }, field('Memo', memo)),
+    h('div', { class: 'fin-actions' },
+      h('button', { type: 'submit', class: 'fin-btn btn-primary' }, 'Save changes'),
+      button('Cancel', cancel)));
+}
+
+// IOU entries per transaction, built once per render (there can be tens of thousands of rows).
+let iouByTx = null;
+function iousOf(transactionId) {
+  if (!iouByTx) {
+    iouByTx = new Map();
+    for (const e of state.ious) {
+      if (!e.transactionId) continue;
+      if (!iouByTx.has(e.transactionId)) iouByTx.set(e.transactionId, []);
+      iouByTx.get(e.transactionId).push(e);
+    }
+  }
+  return iouByTx.get(transactionId) ?? [];
+}
+
+// "Loan · Íris/Sérgio", linking to that person's IOUs.
+function iouLabel(entries) {
+  const type = IOU_TYPES[entries[0].kind] ?? (entries[0].amount > 0 ? 'Loan' : 'Settlement');
+  const people = [...new Set(entries.map((e) => e.personId))];
+  return h('button', {
+    type: 'button', class: 'fin-tag fin-tag--iou',
+    onclick: () => { view = { name: 'ious', personId: people[0] }; render('person-h'); },
+  }, `${type} · ${people.map(personName).join(', ')}`);
+}
+
+function categoryCell(t) {
+  if (t.transferId) {
+    const partner = transferPartner(t);
+    return h('span', { class: 'fin-tag fin-tag--transfer' }, `${t.amount < 0 ? 'To' : 'From'} ${accountName(partner?.accountId)}`);
+  }
+  // Loans, settlements and paying for a friend are shown by their type instead of categories, like
+  // transfers. A shared bill is a real expense: it keeps its categories, with the IOU underneath.
+  const ious = iousOf(t.id);
+  if (ious.length && ious[0].kind !== 'shared_bill') return iouLabel(ious);
+  // Changes save straight away; the picker redraws itself, so the table keeps its place and focus.
+  const picker = categoryPicker(categoriesOf(t), {
+    label: `Categories of ${t.description}, ${shortDate(t.date)}`,
+    compact: true,
+    onChange: (ids, change) => { t.categoryIds = ids; persist(); say(change); },
+  }).el;
+  return ious.length ? h('div', {}, picker, h('div', { class: 'fin-sub' }, iouLabel(ious))) : picker;
+}
+
+// Chosen categories as removable chips, plus a menu to add another. `value()` reads the choice;
+// `onChange(ids, message)` runs on every change.
+function categoryPicker(selected, { label, compact = false, onChange } = {}) {
+  const ids = [...selected];
+  const wrap = h('div', { class: `fin-cats${compact ? ' fin-cats-compact' : ''}`, role: 'group', 'aria-label': label });
+  const paint = (focus) => {
+    const add = select([['', ids.length ? '+' : '+ Category'], ...catOptions().filter(([id]) => !ids.includes(id))], '',
+      { 'aria-label': `Add a category (${label})`, class: 'fin-input fin-input-sm fin-cat-add' });
+    add.addEventListener('change', () => {
+      if (!add.value) return;
+      ids.push(add.value);
+      onChange?.([...ids], `Added ${catLabel(add.value)}.`);
+      paint('add');
+    });
+    const chips = ids.map((id, i) => h('span', { class: 'fin-cat-chip', 'data-hue': hueOf(id) },
+      h('span', {}, catLabel(id) || 'Deleted category'),
+      h('button', {
+        type: 'button', class: 'fin-cat-x', 'aria-label': `Remove ${catLabel(id) || 'category'}`,
+        onclick: () => {
+          ids.splice(i, 1);
+          onChange?.([...ids], `Removed ${catLabel(id)}.`);
+          paint(i);
+        },
+      }, '×')));
+    wrap.replaceChildren(...chips, add);
+    // After removing a chip, focus the next one (or the menu), so keyboard users don't lose their place.
+    if (focus === 'add') add.focus();
+    else if (typeof focus === 'number') (wrap.querySelectorAll('.fin-cat-x')[focus] ?? add).focus();
+  };
+  paint();
+  return { el: wrap, value: () => [...ids] };
+}
+
+// A labelled form row for a category picker (a group, so the label is its accessible name).
+function pickerField(label, picker) {
+  const id = `f-${newId().slice(0, 8)}`;
+  picker.el.removeAttribute('aria-label');
+  picker.el.setAttribute('aria-labelledby', id);
+  return h('div', { class: 'fin-field fin-mb' }, h('span', { class: 'fin-field-label', id }, label), picker.el);
+}
+
+// ── add transactions dialog ──────────────────────────────────────────────────
+
+// Two modes, as in Buxfer: "multi" is a grid of quick rows; "single" has every field, including transfers.
+function openTxDialog(mode, account) {
+  const close = () => { txDialog.close(); render('tx-add'); };
+  const swap = (next) => { txDialog.replaceChildren(next === 'multi' ? multiTxForm(account, close, swap) : singleTxForm(account, close, swap)); txDialog.querySelector('input, select')?.focus(); };
+  swap(mode);
+  if (!txDialog.open) txDialog.showModal();
+  txDialog.querySelector('input[type="text"]')?.focus();
+}
+
+function dialogHead(title, close) {
+  return h('div', { class: 'fin-dialog-head' },
+    h('h2', { id: 'tx-dialog-h', class: 'fin-dialog-title' }, title),
+    button('×', close, 'secondary fin-btn-icon', { 'aria-label': 'Close' }));
+}
+
+const categoryOptions = (autoLabel = 'Auto') => [['', autoLabel], ...catOptions()];
+
+function multiTxForm(account, close, swap) {
+  const accounts = pickableAccounts(account.id);
+  const rows = [];
+  const body = h('tbody');
+  const error = h('p', { class: 'fin-error', role: 'alert' });
+
+  const addRow = () => {
+    const n = rows.length + 1;
+    const r = {
+      desc: input({ type: 'text', autocomplete: 'off', 'aria-label': `Description, row ${n}` }),
+      cat: select(categoryOptions(), '', { 'aria-label': `Category, row ${n}` }),
+      sign: select([['-', '− Expense'], ['+', '+ Income'], ['r', '↩ Refund']], '-', { 'aria-label': `Expense, income or refund, row ${n}`, class: 'fin-input fin-sign' }),
+      amount: input({ type: 'number', step: '0.01', min: '0.01', inputmode: 'decimal', 'aria-label': `Amount, row ${n}` }),
+      date: input({ type: 'date', value: rows.at(-1)?.date.value || today(), 'aria-label': `Date, row ${n}` }),
+      acc: select(accounts.map((a) => [a.id, a.name]), rows.at(-1)?.acc.value ?? account.id, { 'aria-label': `Account, row ${n}` }),
+    };
+    // While the category is on Auto, its label shows what the rules would pick.
+    r.desc.addEventListener('input', () => {
+      const id = categorize(r.desc.value, state.rules);
+      r.cat.options[0].textContent = id ? `Auto: ${catLabel(id)}` : 'Auto';
+    });
+    rows.push(r);
+    body.append(h('tr', {},
+      h('td', {}, r.desc), h('td', {}, r.cat),
+      h('td', {}, h('div', { class: 'fin-amount' }, r.sign, r.amount)),
+      h('td', {}, r.date), h('td', {}, r.acc)));
+    return r;
+  };
+  for (let i = 0; i < 5; i += 1) addRow();
+
+  return h('form', {
+    onsubmit: async (e) => {
+      e.preventDefault();
+      const ready = [];
+      for (const [i, r] of rows.entries()) {
+        const res = batchRow({
+          description: r.desc.value, amount: r.amount.value, sign: r.sign.value,
+          date: r.date.value, accountId: r.acc.value, categoryId: r.cat.value,
+        }, state.rules);
+        if (res.skip) continue;
+        if (res.error) {
+          error.textContent = `Row ${i + 1} ${res.error}.`;
+          (res.error.includes('description') ? r.desc : res.error.includes('date') ? r.date : r.amount).focus();
+          return;
+        }
+        ready.push(res.tx);
+      }
+      if (!ready.length) { error.textContent = 'Fill in at least one row.'; rows[0].desc.focus(); return; }
+      for (const tx of ready) {
+        const cur = state.accounts.find((a) => a.id === tx.accountId).currency;
+        state.transactions.push({ id: newId(), ...tx, rate: await ensureRate(cur, tx.date) });
+      }
+      persist(); close();
+      say(`Added ${ready.length} transaction${ready.length === 1 ? '' : 's'}.`);
+    },
+  },
+    dialogHead('Add transactions', close),
+    h('div', { class: 'fin-scroll' }, h('table', { class: 'fin-batch' },
+      h('thead', {}, h('tr', {}, ['Description', 'Category', 'Amount', 'Date', 'Account'].map((t) => h('th', { scope: 'col' }, t)))),
+      body)),
+    button('Add row', () => addRow().desc.focus(), 'secondary fin-btn-sm'),
+    h('p', { class: 'fin-hint' }, 'Empty rows are skipped. Leave the category on Auto to use your rules.'),
+    error,
+    h('div', { class: 'fin-dialog-foot' },
+      h('button', { type: 'submit', class: 'fin-btn btn-primary' }, 'Add transactions'),
+      h('span', { class: 'fin-muted' }, 'or'),
+      h('button', { type: 'button', class: 'fin-link', onclick: () => swap('single') }, 'Add a single transaction')));
+}
+
+function singleTxForm(account, close, swap) {
+  const accounts = pickableAccounts(account.id);
+  const accountOptions = accounts.map((a) => [a.id, `${a.name} (${a.currency})`]);
+  const type = select([['expense', 'Expense'], ['income', 'Income'], ['refund', 'Refund (money back on an expense)'], ['transfer', 'Transfer']], 'expense');
+  const desc = input({ type: 'text', autocomplete: 'off' });
+  let suggest = () => {};
+  const cats = categoryPicker([], { label: 'Categories', onChange: () => suggest() });
+  const amount = input({ type: 'number', step: '0.01', min: '0.01', required: true, inputmode: 'decimal' });
+  const date = input({ type: 'date', required: true, value: today() });
+  const from = select(accountOptions, account.id);
+  const other = accounts.find((a) => a.id !== account.id);
+  const to = select([['', 'Choose an account'], ...accountOptions], other?.id ?? '');
+  const received = input({ type: 'number', step: '0.01', min: '0.01', inputmode: 'decimal' });
+  const memo = h('textarea', { class: 'fin-input', rows: '3' });
+  const REPEATS = { never: null, week: { every: 1, unit: 'week' }, month: { every: 1, unit: 'month' }, year: { every: 1, unit: 'year' } };
+  const repeat = select([['never', 'Never'], ['week', 'Every week'], ['month', 'Every month'], ['year', 'Every year']], 'never');
+  const error = h('p', { class: 'fin-error', role: 'alert' });
+  const hint = h('p', { class: 'fin-hint', 'aria-live': 'polite' });
+
+  const amountField = field(`Amount (${account.currency})`, amount);
+  const fromField = field('Account', from);
+  const toField = field('To account', to);
+  const receivedField = field('Amount received', received, 'Filled in from the daily rate. Change it to match what actually arrived.');
+  const catField = pickerField('Categories', cats);
+  const acc = (id) => state.accounts.find((a) => a.id === id);
+  let receivedTouched = false;
+
+  // Show the fields each type needs, and keep the received amount in step for cross-currency transfers.
+  const sync = async () => {
+    const transfer = type.value === 'transfer';
+    const a = acc(from.value);
+    const b = acc(to.value);
+    const cross = transfer && a && b && a.currency !== b.currency;
+    fromField.querySelector('label').textContent = transfer ? 'From account' : 'Account';
+    toField.hidden = !transfer;
+    to.required = transfer;
+    catField.hidden = transfer;
+    receivedField.hidden = !cross;
+    received.required = Boolean(cross);
+    desc.required = !transfer;
+    receivedField.querySelector('label').textContent = cross ? `Amount received (${b.currency})` : 'Amount received';
+    amountField.querySelector('label').textContent = `Amount (${a?.currency ?? 'EUR'})`;
+    if (cross && !receivedTouched && Number(amount.value) > 0) {
+      const [ra, rb] = await Promise.all([ensureRate(a.currency, date.value), ensureRate(b.currency, date.value)]);
+      if (ra != null && rb != null && !receivedTouched) received.value = (crossConvert(toMinor(amount.value), ra, rb) / 100).toFixed(2);
+    }
+  };
+  suggest = () => {
+    if (type.value === 'transfer' || cats.value().length || !desc.value.trim()) { hint.textContent = ''; return; }
+    const id = categorize(desc.value, state.rules);
+    hint.textContent = id ? `Category from rules: ${catLabel(id)}` : 'No rule matches. It will be uncategorized.';
+  };
+  [type, from, to, amount, date].forEach((el) => el.addEventListener(el.tagName === 'SELECT' ? 'change' : 'input', sync));
+  received.addEventListener('input', () => { receivedTouched = received.value !== ''; });
+  desc.addEventListener('input', suggest);
+  type.addEventListener('change', suggest);
+
+  // Repeat: also creates a schedule whose next date is one interval after this transaction.
+  const scheduleFrom = (fields) => {
+    const freq = REPEATS[repeat.value];
+    if (!freq) return '';
+    const nextDate = addInterval(date.value, freq, Number(date.value.slice(8, 10)));
+    state.schedules.push({ id: newId(), ...fields, ...freq, anchorDay: Number(date.value.slice(8, 10)), nextDate, endDate: null });
+    return ` Repeats ${frequencyLabel(freq).toLowerCase()}, next on ${shortDate(nextDate)}.`;
+  };
+
+  const form = h('form', {
+    onsubmit: async (e) => {
+      e.preventDefault();
+      error.textContent = '';
+      const a = acc(from.value);
+      const sent = toMinor(amount.value);
+      const common = { date: date.value, memo: memo.value.trim() };
+      if (type.value === 'transfer') {
+        const b = acc(to.value);
+        if (!b || b.id === a.id) { error.textContent = 'Pick a different account to transfer to.'; to.focus(); return; }
+        const legs = makeTransfer({
+          from: a, to: b, sent,
+          received: a.currency === b.currency ? sent : toMinor(received.value),
+          description: desc.value.trim(), ...common,
+        });
+        legs[0].rate = await ensureRate(a.currency, date.value);
+        legs[1].rate = await ensureRate(b.currency, date.value);
+        state.transactions.push(...legs);
+        const repeats = scheduleFrom({ description: legs[0].description, amount: sent, kind: 'transfer', accountId: a.id, toAccountId: b.id, categoryId: null });
+        persist(); close(); say(`Transferred from ${a.name} to ${b.name}.${repeats}`);
+        return;
+      }
+      // None picked: the rules choose one, as in the quick form.
+      const categoryIds = cats.value().length ? cats.value() : [categorize(desc.value, state.rules)].filter(Boolean);
+      state.transactions.push({
+        id: newId(), accountId: a.id, description: desc.value.trim(),
+        amount: sent * (type.value === 'expense' ? -1 : 1),
+        categoryIds, rate: await ensureRate(a.currency, date.value), ...common,
+        ...(type.value === 'refund' ? { kind: 'refund' } : {}),
+      });
+      const repeats = scheduleFrom({ description: desc.value.trim(), amount: sent, kind: type.value === 'expense' ? 'expense' : 'income', accountId: a.id, toAccountId: null, categoryId: categoryIds[0] ?? null });
+      persist(); close(); say(`Transaction added.${repeats}`);
+    },
+  },
+    dialogHead('Add transaction', close),
+    h('div', { class: 'fin-grid fin-grid-2' },
+      field('Type', type),
+      field('Description', desc),
+      catField, field('Date', date),
+      amountField, receivedField,
+      fromField, toField,
+      field('Repeat', repeat, 'Adds a schedule: each next date shows on the account to enter or skip.')),
+    hint,
+    h('div', { class: 'fin-grid' }, field('Memo', memo)),
+    error,
+    h('div', { class: 'fin-dialog-foot' },
+      h('button', { type: 'submit', class: 'fin-btn btn-primary' }, 'Add transaction'),
+      h('span', { class: 'fin-muted' }, 'or'),
+      h('button', { type: 'button', class: 'fin-link', onclick: () => swap('multi') }, 'Add several transactions')));
+  sync();
+  return form;
+}
+
+// Search-as-you-type for a stock or ETF listing (ARIA combobox with a listbox popup).
+// `picked()` returns the chosen listing, or null until one is chosen from the list.
+function symbolPicker(onPick) {
+  const listId = `sym-${newId().slice(0, 8)}`;
+  const box = input({
+    type: 'text', autocomplete: 'off', spellcheck: 'false', role: 'combobox',
+    'aria-autocomplete': 'list', 'aria-expanded': 'false', 'aria-controls': listId,
+    placeholder: 'Ticker or name, e.g. VWCE or Apple',
+  });
+  const listbox = h('ul', { id: listId, role: 'listbox', class: 'fin-options', hidden: true, 'aria-label': 'Matches' });
+  const note = h('p', { class: 'fin-hint', 'aria-live': 'polite' });
+  let results = [];
+  let active = -1;
+  let chosen = null;
+  let timer;
+  let inflight;
+
+  const open = (on) => { listbox.hidden = !on; box.setAttribute('aria-expanded', String(on)); if (!on) box.removeAttribute('aria-activedescendant'); };
+  const highlight = (i) => {
+    active = i;
+    [...listbox.children].forEach((li, j) => li.setAttribute('aria-selected', String(j === i)));
+    const li = listbox.children[i];
+    if (li) { box.setAttribute('aria-activedescendant', li.id); li.scrollIntoView({ block: 'nearest' }); }
+  };
+  const choose = (r) => {
+    chosen = r;
+    box.value = `${r.symbol} · ${r.name}`;
+    note.textContent = `${r.exchange} (${r.country}) · ${r.type} · priced in ${r.currency}`;
+    open(false);
+    onPick?.(r);
+  };
+  const paint = () => {
+    listbox.replaceChildren(...results.map((r, i) => h('li', {
+      id: `${listId}-${i}`, role: 'option', class: 'fin-option', 'aria-selected': 'false',
+      onmousedown: (e) => e.preventDefault(), // keep focus in the input
+      onclick: () => choose(r),
+    },
+      h('span', { class: 'fin-option-main' }, h('strong', {}, r.symbol), ` ${r.name}`),
+      h('span', { class: 'fin-sub' }, `${r.exchange} · ${r.country} · ${r.type} · ${r.currency}`))));
+    active = -1;
+    open(results.length > 0);
+  };
+  const search = async (q) => {
+    inflight?.abort();
+    inflight = new AbortController();
+    try {
+      results = await searchSymbols(q, inflight.signal);
+      note.textContent = results.length ? `${results.length} matches. Use the arrow keys to choose.` : 'No matches.';
+      paint();
+    } catch (err) {
+      if (err.name !== 'AbortError') note.textContent = 'Search is unavailable right now.';
+    }
+  };
+
+  box.addEventListener('input', () => {
+    chosen = null;
+    clearTimeout(timer);
+    const q = box.value.trim();
+    if (q.length < 2) { results = []; paint(); note.textContent = ''; return; }
+    timer = setTimeout(() => search(q), 250);
+  });
+  box.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown' && results.length) { e.preventDefault(); open(true); highlight(Math.min(active + 1, results.length - 1)); }
+    else if (e.key === 'ArrowUp' && results.length) { e.preventDefault(); highlight(Math.max(active - 1, 0)); }
+    else if (e.key === 'Enter' && !listbox.hidden && active >= 0) { e.preventDefault(); choose(results[active]); }
+    else if (e.key === 'Escape' && !listbox.hidden) { e.preventDefault(); e.stopPropagation(); open(false); }
+  });
+  box.addEventListener('blur', () => setTimeout(() => open(false), 100));
+
+  return { box, el: h('div', { class: 'fin-combo' }, box, listbox), note, picked: () => chosen };
+}
+
+// A holding is priced live unless the provider can't (wrong plan, no ticker), in which case you type
+// the price. Manual holdings are skipped by automatic refreshes until you ask for a live price again.
+function priceCell(x) {
+  if (!x.manual && !x.priceError) return x.price == null ? 'no price' : money(Math.round(x.price * 100), x.currency);
+  const priceIn = input({
+    type: 'number', step: 'any', min: '0', inputmode: 'decimal', class: 'fin-input fin-input-sm fin-price',
+    value: x.price == null ? null : String(x.price), 'aria-label': `Price of ${x.symbol} in ${x.currency}`,
+    'data-key': `price-${x.id}`,
+  });
+  priceIn.addEventListener('change', () => {
+    const value = Number(priceIn.value);
+    if (!(value >= 0) || priceIn.value === '') return;
+    Object.assign(x, { price: value, manual: true, priceAt: new Date().toISOString() });
+    delete x.priceError;
+    persist(); render(); say(`Price of ${x.symbol} set to ${money(Math.round(value * 100), x.currency)}.`);
+  });
+  return h('div', { class: 'fin-price-edit' },
+    priceIn,
+    x.manual && h('span', { class: 'fin-sub' }, 'Entered by hand · ',
+      h('button', {
+        type: 'button', class: 'fin-link fin-link-sm',
+        onclick: () => { x.manual = false; refreshPrices([x]); },
+      }, 'try live price')));
+}
+
+// ── editing a holding ────────────────────────────────────────────────────────
+
+// Exchanges a holding can be priced on (MIC → name). Non-US ones are priced through Alpha Vantage.
+const EXCHANGES = [
+  ['XETR', 'Xetra'], ['XFRA', 'Frankfurt'], ['XLON', 'London'], ['XPAR', 'Paris'], ['XAMS', 'Amsterdam'],
+  ['XMIL', 'Milan'], ['XTSE', 'Toronto'], ['XNAS', 'NASDAQ'], ['XNGS', 'NASDAQ (Global Select)'], ['XNYS', 'NYSE'],
+];
+
+function openHoldingDialog(x) {
+  const hasLots = lotsOfHolding(x.id).length > 0;
+  const name = input({ type: 'text', required: true, autocomplete: 'off', value: x.name ?? x.symbol });
+  const symbol = input({ type: 'text', required: true, autocomplete: 'off', spellcheck: 'false', value: x.symbol });
+  const known = EXCHANGES.some(([mic]) => mic === x.mic);
+  const exchange = select([['', 'Not listed (price by hand)'], ...EXCHANGES, ...(x.mic && !known ? [[x.mic, x.exchange ?? x.mic]] : [])], x.mic ?? '');
+  const currency = input({ type: 'text', required: true, autocomplete: 'off', maxlength: '3', value: x.currency, spellcheck: 'false' });
+  const units = input({ type: 'number', step: 'any', min: '0', required: true, inputmode: 'decimal', value: String(x.quantity), disabled: hasLots });
+  const price = input({ type: 'number', step: 'any', min: '0', inputmode: 'decimal', value: x.price == null ? null : String(x.price) });
+  const source = select([['live', 'Live, from market data'], ['manual', 'Entered by hand']], x.manual ? 'manual' : 'live');
+  const accounts = state.accounts.filter((a) => a.type === 'investment' && (!a.archived || a.id === x.accountId)).sort(byName);
+  const account = select(accounts.map((a) => [a.id, a.name]), x.accountId);
+  // Picking another listing fills in its ticker, name, exchange and currency.
+  const picker = symbolPicker((r) => {
+    symbol.value = r.symbol;
+    name.value = r.name;
+    currency.value = r.currency;
+    if (![...exchange.options].some((o) => o.value === r.mic)) exchange.append(h('option', { value: r.mic }, r.exchange));
+    exchange.value = r.mic;
+    source.value = 'live';
+  });
+  const findField = field('Find a different listing', picker.box);
+  findField.replaceChild(picker.el, picker.box);
+  picker.el.prepend(picker.box);
+  findField.append(picker.note);
+  const close = () => { dialog.close(); render(`hold-edit-${x.id}`); };
+
+  dialog.replaceChildren(h('form', {
+    onsubmit: async (e) => {
+      e.preventDefault();
+      const listingChanged = symbol.value.trim().toUpperCase() !== x.symbol || (exchange.value || null) !== (x.mic ?? null);
+      Object.assign(x, {
+        name: name.value.trim(),
+        symbol: symbol.value.trim().toUpperCase(),
+        mic: exchange.value || null,
+        exchange: exchange.value ? exchange.selectedOptions[0].textContent : null,
+        currency: currency.value.trim().toUpperCase(),
+        accountId: account.value,
+        manual: source.value === 'manual',
+        ...(hasLots ? {} : { quantity: Number(units.value) }),
+      });
+      if (price.value !== '' && Number(price.value) !== x.price) {
+        Object.assign(x, { price: Number(price.value), priceAt: new Date().toISOString() });
+      }
+      if (listingChanged) delete x.priceError;
+      if (account.value !== view.id) view = { name: 'account', id: account.value };
+      persist(); close();
+      say(`Saved ${x.symbol}.`);
+      // A new listing, or switching to live prices, fetches a price straight away.
+      if (!x.manual && (listingChanged || x.priceError || x.price == null)) await refreshPrices([x]);
+    },
+  },
+    h('h2', { id: 'account-dialog-h', class: 'fin-dialog-title' }, `Edit ${x.symbol}`),
+    findField,
+    h('div', { class: 'fin-grid fin-grid-2' },
+      field('Name', name), field('Ticker', symbol),
+      field('Exchange', exchange), field('Currency', currency, 'Three letters, e.g. EUR or USD.'),
+      field('Units', units, hasLots ? 'Calculated from its buys and sells. Change those under Lots.' : null),
+      field(`Price per unit (${x.currency})`, price),
+      field('Price', source, 'Live prices need the API keys in Settings → Market data.'),
+      field('Account', account)),
+    h('div', { class: 'fin-dialog-actions' },
+      button('Cancel', close),
+      h('button', { type: 'submit', class: 'fin-btn btn-primary' }, 'Save'))));
+  dialog.showModal();
+  name.focus();
+}
+
+// ── lots: a holding's buys and sells ─────────────────────────────────────────
+
+let openLotsId = null;
+const lotsOfHolding = (id) => state.lots.filter((l) => l.holdingId === id).sort((a, b) => a.date.localeCompare(b.date));
+// A holding with lots takes its units from them.
+function recalcHolding(x) {
+  const own = lotsOfHolding(x.id);
+  if (own.length) x.quantity = lotSummary(own).quantity;
+}
+
+function lotsPanel(x) {
+  const own = lotsOfHolding(x.id);
+  const kind = select([['buy', 'Buy'], ['sell', 'Sell']], 'buy');
+  const date = input({ type: 'date', required: true, value: today(), 'data-key': `lot-date-${x.id}` });
+  const units = input({ type: 'number', step: 'any', min: '0', required: true, inputmode: 'decimal' });
+  const price = input({ type: 'number', step: 'any', min: '0', required: true, inputmode: 'decimal' });
+  const fees = input({ type: 'number', step: 'any', min: '0', inputmode: 'decimal', value: '0' });
+  return h('div', { class: 'fin-tx-form', 'aria-label': `Buys and sells of ${x.symbol}` },
+    own.length === 0
+      ? h('p', { class: 'fin-hint fin-mb' }, `No buys or sells for ${x.symbol} yet. Add them here, or import an FT.com export in Settings. Once it has lots, its units come from them.`)
+      : h('div', { class: 'fin-scroll fin-mb' }, h('table', { class: 'fin-table fin-lots' },
+        h('caption', { class: 'fin-sr' }, `Buys and sells of ${x.symbol}`),
+        h('thead', {}, h('tr', {}, ['Date', '', 'Units', 'Price', 'Fees', 'Total'].map((t, i) => h('th', { scope: 'col', class: i > 1 ? 'fin-r' : null }, t)),
+          h('th', { scope: 'col' }, h('span', { class: 'fin-sr' }, 'Actions')))),
+        h('tbody', {}, [...own].reverse().map((l) => h('tr', {},
+          h('td', { class: 'fin-nowrap' }, shortDate(l.date), l.date.slice(0, 4) != thisYear && ` ${l.date.slice(0, 4)}`),
+          h('td', {}, h('span', { class: `fin-chip ${l.kind === 'sell' ? 'fin-chip-sell' : 'fin-chip-buy'}` }, l.kind === 'sell' ? 'Sell' : 'Buy')),
+          h('td', { class: 'fin-r fin-num' }, String(l.quantity)),
+          h('td', { class: 'fin-r fin-num' }, money(Math.round(l.price * 100), x.currency)),
+          h('td', { class: 'fin-r fin-num fin-muted' }, l.fees ? money(Math.round(l.fees * 100), x.currency) : '—'),
+          h('td', { class: 'fin-r fin-num' }, money(Math.round((l.quantity * l.price + (l.kind === 'sell' ? -(l.fees ?? 0) : (l.fees ?? 0))) * 100), x.currency)),
+          h('td', { class: 'fin-r' }, h('div', { class: 'fin-row-actions' }, iconButton('trash', `Delete the ${l.kind} of ${l.quantity} on ${shortDate(l.date)}`, () => {
+            state.lots = state.lots.filter((y) => y.id !== l.id);
+            recalcHolding(x);
+            persist(); render(`lots-${x.id}`); say(`Deleted. ${x.symbol} now has ${x.quantity} units.`);
+          }, { danger: true })))))))),
+    h('form', {
+      onsubmit: (e) => {
+        e.preventDefault();
+        state.lots.push({ id: newId(), holdingId: x.id, date: date.value, kind: kind.value, quantity: Number(units.value), price: Number(price.value), fees: Number(fees.value) || 0 });
+        recalcHolding(x);
+        persist(); render(`lot-date-${x.id}`); say(`Added. ${x.symbol} now has ${x.quantity} units.`);
+      },
+    },
+      h('div', { class: 'fin-grid' },
+        field('Buy or sell', kind), field('Date', date), field('Units', units),
+        field(`Price per unit (${x.currency})`, price), field(`Fees (${x.currency})`, fees)),
+      h('button', { type: 'submit', class: 'fin-btn btn-primary fin-btn-sm' }, `Add to ${x.symbol}`)));
+}
+
+function holdingsSection(account) {
+  const list = state.holdings.filter((x) => x.accountId === account.id);
+  const picker = symbolPicker();
+  const qty = input({ type: 'number', step: 'any', min: '0', required: true, inputmode: 'decimal' });
+  const symField = field('Stock or ETF', picker.box);
+  // field() wraps the bare input; swap in the combobox wrapper and its description.
+  symField.replaceChild(picker.el, picker.box);
+  picker.el.prepend(picker.box);
+  symField.append(picker.note);
+  const error = h('p', { class: 'fin-error', role: 'alert' });
+  return h('section', { class: 'fin-card', 'aria-labelledby': 'hold-h' },
+    h('div', { class: 'fin-card-head' },
+      h('h3', { id: 'hold-h', class: 'fin-label' }, 'Holdings ', h('span', { class: 'fin-count' }, String(list.length))),
+      list.some((x) => !x.manual) && button('Refresh prices', () => refreshPrices(list.filter((x) => !x.manual)), 'secondary', { 'data-key': 'refresh-prices' })),
+    list.some((x) => !x.manual && alphaVantageCovers(x.mic)) && !state.settings.avApiKey && h('p', { class: 'fin-notice fin-notice-in' },
+      'Non-US listings are priced through Alpha Vantage. Add its free API key in Settings.'),
+    list.some((x) => !x.manual && !alphaVantageCovers(x.mic)) && !state.settings.quoteApiKey && h('p', { class: 'fin-notice fin-notice-in' },
+      'US listings are priced through Twelve Data. Add its free API key in Settings.'),
+    (() => {
+      const times = list.map((x) => x.priceAt).filter(Boolean).sort();
+      return times.length > 0 && h('p', { class: 'fin-hint fin-pad-x' },
+        `Prices as of ${new Date(times[0]).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}`);
+    })(),
+    list.length === 0
+      ? h('p', { class: 'fin-empty fin-pad' }, 'No holdings yet.')
+      : h('div', { class: 'fin-scroll' }, h('table', { class: 'fin-table' },
+        h('caption', { class: 'fin-sr' }, 'Holdings'),
+        h('thead', {}, h('tr', {},
+          ['Symbol', 'Name', 'Exchange', 'Units', 'Price', 'Value', 'Cost', 'Gain'].map((t, i) => h('th', { scope: 'col', class: i > 2 ? 'fin-r' : null }, t)),
+          h('th', { scope: 'col' }, h('span', { class: 'fin-sr' }, 'Actions')))),
+        h('tbody', {}, list.flatMap((x) => {
+          const v = holdingValue(x);
+          const own = lotsOfHolding(x.id);
+          const sum = own.length ? lotSummary(own) : null;
+          const gain = sum && v != null ? v - sum.cost : null;
+          const open = openLotsId === x.id;
+          const row = h('tr', {},
+            h('td', {}, x.symbol),
+            h('td', {}, x.name ?? '', x.priceError && h('span', { class: 'fin-sub fin-row-error' },
+              `No live price: ${x.priceError.replace(/\s*Consider upgrading.*$/i, '')} Enter the price by hand for now.`)),
+            h('td', { class: 'fin-muted' }, x.exchange ?? (x.mic ? '' : 'not set')),
+            h('td', { class: 'fin-r fin-num' }, String(x.quantity)),
+            h('td', { class: 'fin-r fin-num' }, priceCell(x)),
+            h('td', { class: 'fin-r fin-num' }, v == null ? '—' : money(v, x.currency)),
+            h('td', { class: 'fin-r fin-num fin-muted' }, sum ? money(sum.cost, x.currency) : '—',
+              sum?.avgPrice != null && h('span', { class: 'fin-sub' }, `avg ${money(Math.round(sum.avgPrice * 100), x.currency)}`)),
+            h('td', { class: `fin-r fin-num ${gain == null ? '' : tone(gain)}` }, gain == null ? '—' : signed(gain, x.currency),
+              gain != null && sum.cost > 0 && h('span', { class: 'fin-sub' }, `${gain >= 0 ? '+' : ''}${((gain / sum.cost) * 100).toFixed(1)}%`)),
+            h('td', { class: 'fin-r' }, h('div', { class: 'fin-row-actions fin-row-actions--keep' },
+              iconButton('edit', `Edit ${x.symbol}`, () => openHoldingDialog(x), { 'data-key': `hold-edit-${x.id}` }),
+              button(own.length ? `Lots (${own.length})` : 'Add lots', () => { openLotsId = open ? null : x.id; render(`lots-${x.id}`); },
+                'secondary fin-btn-sm', { 'aria-expanded': String(open), 'data-key': `lots-${x.id}` }),
+              iconButton('trash', `Remove ${x.symbol}`, () => {
+                if (own.length && !confirm(`Remove ${x.symbol} and its ${own.length} buys and sells?`)) return;
+                state.holdings = state.holdings.filter((y) => y.id !== x.id);
+                state.lots = state.lots.filter((l) => l.holdingId !== x.id);
+                persist(); render();
+              }, { danger: true }))));
+          return [row, open && h('tr', { class: 'fin-edit-row' }, h('td', { colspan: 9 }, lotsPanel(x)))];
+        })))),
+    h('form', {
+      class: 'fin-tx-form',
+      onsubmit: async (e) => {
+        e.preventDefault();
+        const r = picker.picked();
+        if (!r) { error.textContent = 'Choose a listing from the search results.'; picker.box.focus(); return; }
+        const holding = {
+          id: newId(), accountId: account.id, symbol: r.symbol, mic: r.mic, exchange: r.exchange,
+          name: r.name, currency: r.currency, quantity: Number(qty.value), price: null,
+        };
+        state.holdings.push(holding);
+        persist(); render();
+        say(`Added ${r.symbol} on ${r.exchange}.`);
+        await refreshPrices([holding]);
+      },
+    },
+      h('div', { class: 'fin-grid fin-grid-hold' }, symField, field('Quantity', qty)),
+      error,
+      h('button', { type: 'submit', class: 'fin-btn btn-primary' }, 'Add holding')));
+}
+
+// ── IOUs ─────────────────────────────────────────────────────────────────────
+
+const personName = (id) => state.people.find((p) => p.id === id)?.name ?? 'Someone';
+// What a balance means, from your side.
+const owesText = (minor) => (minor > 0 ? 'owes you' : minor < 0 ? 'you owe' : 'settled');
+
+// Lend, get paid back, borrow or pay back. With an account, the money also moves there as a
+// transaction linked to the entry; without one (cash, or outside your accounts) only the IOU changes.
+function openIouDialog(preset = {}) {
+  const people = [...state.people].sort((a, b) => a.name.localeCompare(b.name));
+  const listId = `people-${newId().slice(0, 6)}`;
+  const person = input({ type: 'text', required: true, autocomplete: 'off', list: listId, value: preset.personId ? personName(preset.personId) : null });
+  const kind = select(Object.entries(IOU_KINDS).map(([k, v]) => [k, v.label]), preset.kind ?? 'lent');
+  const amount = input({ type: 'number', step: '0.01', min: '0.01', required: true, inputmode: 'decimal' });
+  const date = input({ type: 'date', required: true, value: today() });
+  const desc = input({ type: 'text', autocomplete: 'off' });
+  const accounts = pickableAccounts(null).filter((a) => a.currency === 'EUR');
+  const acc = select([['', 'No account (cash, or outside your accounts)'], ...accounts.map((a) => [a.id, a.name])], preset.accountId ?? '');
+  const returnKey = document.activeElement?.dataset?.key;
+  const close = () => { dialog.close(); render(returnKey); };
+
+  dialog.replaceChildren(h('form', {
+    onsubmit: async (e) => {
+      e.preventDefault();
+      // An existing person by name (case and accents ignored), or a new one.
+      let p = state.people.find((x) => normalize(x.name) === normalize(person.value));
+      if (!p) { p = { id: newId(), name: person.value.trim() }; state.people.push(p); }
+      const k = IOU_KINDS[kind.value];
+      const minor = toMinor(amount.value);
+      const text = desc.value.trim() || `${IOU_TYPES[k.type]} · ${p.name}`;
+      let transactionId = null;
+      if (acc.value) {
+        const t = {
+          id: newId(), accountId: acc.value, date: date.value, description: text, amount: minor * k.account,
+          categoryIds: [], memo: '', rate: 1,
+        };
+        state.transactions.push(t);
+        transactionId = t.id;
+      }
+      state.ious.push({ id: newId(), personId: p.id, date: date.value, description: text, amount: minor * k.iou, transactionId, kind: k.type });
+      persist(); close();
+      const bal = personBalances(state.ious).get(p.id) ?? 0;
+      say(`Saved. ${p.name} ${owesText(bal)}${bal ? ` ${money(Math.abs(bal), 'EUR')}` : ''}.`);
+    },
+  },
+    h('h2', { id: 'account-dialog-h', class: 'fin-dialog-title' }, 'Add an IOU'),
+    h('datalist', { id: listId }, people.map((p) => h('option', { value: p.name }))),
+    h('div', { class: 'fin-grid fin-grid-2' },
+      field('Person', person, 'Pick someone or type a new name.'),
+      field('What happened', kind),
+      field('Amount (EUR)', amount), field('Date', date),
+      field('Description', desc, 'Optional.'),
+      field('Account', acc, 'Where the money left or arrived. EUR accounts only.')),
+    h('div', { class: 'fin-dialog-actions' },
+      button('Cancel', close),
+      h('button', { type: 'submit', class: 'fin-btn btn-primary' }, 'Save'))));
+  dialog.showModal();
+  (preset.personId ? kind : person).focus();
+}
+
+function deleteIou(e) {
+  const linked = e.transactionId && state.transactions.find((t) => t.id === e.transactionId);
+  const msg = linked
+    ? `Delete this entry? The ${accountName(linked.accountId)} transaction it came with is deleted too.`
+    : 'Delete this entry?';
+  if (!confirm(msg)) return;
+  state.ious = state.ious.filter((x) => x.id !== e.id);
+  if (linked) state.transactions = state.transactions.filter((t) => t.id !== linked.id);
+  persist(); render('iou-add'); say('Entry deleted.');
+}
+
+function renderIous() {
+  if (view.personId && state.people.some((p) => p.id === view.personId)) return renderPerson(view.personId);
+  const balances = personBalances(state.ious);
+  const people = [...state.people].sort((a, b) =>
+    Math.abs(balances.get(b.id) ?? 0) - Math.abs(balances.get(a.id) ?? 0) || a.name.localeCompare(b.name));
+  const owedToYou = [...balances.values()].filter((v) => v > 0).reduce((s, v) => s + v, 0);
+  const youOwe = [...balances.values()].filter((v) => v < 0).reduce((s, v) => s - v, 0);
+  // Settled people (balance 0) are hidden unless the switch is on; the choice is kept on this device.
+  const showSettled = readPref('finance:showSettled', false);
+  const settledCount = people.filter((p) => !(balances.get(p.id) ?? 0)).length;
+  const shown = showSettled ? people : people.filter((p) => balances.get(p.id) ?? 0);
+  return h('div', {},
+    h('div', { class: 'fin-account-head' },
+      h('div', {}, h('h2', { class: 'fin-title' }, 'IOUs'),
+        h('p', { class: 'fin-meta' }, 'Money you lent or borrowed, per person.')),
+      button('Add an IOU', () => openIouDialog(), 'primary', { 'data-key': 'iou-add', 'aria-haspopup': 'dialog' })),
+    h('dl', { class: 'fin-stats' },
+      h('div', {}, h('dt', {}, 'Owed to you'), h('dd', { class: 'fin-num fin-pos' }, money(owedToYou, 'EUR'))),
+      h('div', {}, h('dt', {}, 'You owe'), h('dd', { class: `fin-num ${youOwe ? 'fin-neg' : ''}` }, money(youOwe, 'EUR')))),
+    h('section', { class: 'fin-card' },
+      people.length > 0 && h('div', { class: 'fin-card-head' },
+        h('h3', { class: 'fin-label' }, 'People ', h('span', { class: 'fin-count' }, String(shown.length))),
+        settledCount > 0 && h('label', { class: 'fin-switch' },
+          h('input', {
+            type: 'checkbox', role: 'switch', checked: showSettled, 'data-key': 'show-settled',
+            onchange: (e) => { writePref('finance:showSettled', e.target.checked); render('show-settled'); },
+          }),
+          h('span', { class: 'fin-switch-track', 'aria-hidden': 'true' }),
+          `Show settled (${settledCount})`)),
+      people.length === 0
+        ? h('p', { class: 'fin-empty fin-pad' }, 'No IOUs yet. Add one, or import Buxfer’s transactions, whose IOU column comes in here.')
+        : shown.length === 0
+          ? h('p', { class: 'fin-empty fin-pad' }, `Everyone is settled. Turn on “Show settled” to see the ${settledCount} ${settledCount === 1 ? 'person' : 'people'}.`)
+          : h('ul', { class: 'fin-people' }, shown.map((p) => {
+          const bal = balances.get(p.id) ?? 0;
+          return h('li', {}, h('button', {
+            type: 'button', class: 'fin-row', 'data-key': `person-${p.id}`,
+            onclick: () => { view = { name: 'ious', personId: p.id }; render('person-h'); },
+          },
+            h('span', { class: 'fin-row-name' }, p.name),
+            h('span', { class: `fin-num ${bal > 0 ? 'fin-pos' : bal < 0 ? 'fin-neg' : 'fin-muted'}` },
+              bal ? `${owesText(bal)} ${money(Math.abs(bal), 'EUR')}` : 'settled')));
+        }))));
+}
+
+function renderPerson(personId) {
+  const p = state.people.find((x) => x.id === personId);
+  const rows = personHistory(personId, state.ious);
+  const bal = rows[0]?.balance ?? 0;
+  const back = () => { view = { name: 'ious' }; render(`person-${personId}`); };
+  return h('div', {},
+    h('div', { class: 'fin-bar' }, button('‹ All people', back, 'secondary fin-btn-sm')),
+    h('div', { class: 'fin-account-head' },
+      h('div', {},
+        h('h2', { class: 'fin-title', id: 'person-h', tabindex: '-1', 'data-key': 'person-h' }, p.name),
+        h('p', { class: 'fin-meta' }, bal ? `${p.name} ${owesText(bal)} ${money(Math.abs(bal), 'EUR')}` : 'All settled')),
+      h('div', { class: 'fin-actions' },
+        button('Add an IOU', () => openIouDialog({ personId, kind: bal > 0 ? 'repaid' : 'lent' }), 'primary', { 'data-key': 'iou-add' }),
+        button('Rename', () => {
+          const name = prompt('New name', p.name)?.trim();
+          if (!name || name === p.name) return;
+          p.name = name; persist(); render('person-h'); say(`Renamed to ${name}.`);
+        }),
+        button('Delete', () => {
+          if (!confirm(`Delete ${p.name} and their ${rows.length} entries? Linked transactions in your accounts are kept.`)) return;
+          state.ious = state.ious.filter((e) => e.personId !== personId);
+          state.people = state.people.filter((x) => x.id !== personId);
+          persist(); view = { name: 'ious' }; render('iou-add'); say(`Deleted ${p.name}.`);
+        }, 'danger'))),
+    h('section', { class: 'fin-card' },
+      rows.length === 0 ? h('p', { class: 'fin-empty fin-pad' }, 'No entries.') :
+        h('div', { class: 'fin-scroll' }, h('table', { class: 'fin-table' },
+          h('caption', { class: 'fin-sr' }, `IOU entries with ${p.name}, newest first`),
+          h('thead', {}, h('tr', {},
+            h('th', { scope: 'col' }, 'Date'), h('th', { scope: 'col', class: 'fin-r' }, 'Amount'),
+            h('th', { scope: 'col', class: 'fin-r' }, 'Balance'), h('th', { scope: 'col' }, 'Description'),
+            h('th', { scope: 'col' }, 'Account'), h('th', { scope: 'col' }, h('span', { class: 'fin-sr' }, 'Actions')))),
+          h('tbody', {}, rows.map((e) => {
+            const t = e.transactionId && state.transactions.find((x) => x.id === e.transactionId);
+            return h('tr', {},
+              h('td', { class: 'fin-nowrap' }, h('time', { datetime: e.date }, shortDate(e.date))),
+              h('td', { class: `fin-r fin-num ${tone(e.amount)}` }, signed(e.amount, 'EUR')),
+              h('td', { class: 'fin-r fin-num fin-muted' }, money(e.balance, 'EUR')),
+              h('td', {}, e.description),
+              h('td', {}, t ? accountName(t.accountId) : h('span', { class: 'fin-muted' }, '—')),
+              h('td', { class: 'fin-r' }, h('div', { class: 'fin-row-actions' }, iconButton('trash', `Delete ${e.description}, ${shortDate(e.date)}`, () => deleteIou(e), { danger: true }))));
+          }))))),
+    h('p', { class: 'fin-hint fin-mt' }, 'Positive amounts mean they owe you more; negative, less (or that you owe them).'));
+}
+
+// ── insights ─────────────────────────────────────────────────────────────────
+
+let insightsPeriod = readPref('finance:period', { preset: 'this-month' });
+const compactEUR = (minor) => new Intl.NumberFormat(undefined, { style: 'currency', currency: 'EUR', notation: 'compact', maximumFractionDigits: 1 }).format(minor / 100);
+
+function bucketLabel(key, unit, multiYear) {
+  if (unit === 'year') return key;
+  if (unit === 'month') {
+    return new Date(`${key}-01T00:00:00`).toLocaleDateString(undefined, multiYear ? { month: 'short', year: '2-digit' } : { month: 'short' });
+  }
+  return new Date(`${key}T00:00:00`).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+}
+const bucketTitle = (key, unit) =>
+  unit === 'week' ? `Week of ${shortDate(key)}` : unit === 'month' ? monthLabel(key) : unit === 'year' ? key : shortDate(key);
+
+// Period picker: presets plus a custom range. Remembered on this device.
+function periodControls(range) {
+  const preset = select(Object.entries(PERIODS), insightsPeriod.preset, { 'data-key': 'period' });
+  preset.addEventListener('change', () => {
+    insightsPeriod = { ...insightsPeriod, preset: preset.value, from: range.from, to: range.to };
+    writePref('finance:period', insightsPeriod);
+    render('period');
+  });
+  const custom = insightsPeriod.preset === 'custom';
+  const dateIn = (key) => {
+    const el = input({ type: 'date', value: range[key], 'data-key': `period-${key}` });
+    el.addEventListener('change', () => {
+      if (!el.value) return;
+      insightsPeriod = { ...insightsPeriod, [key]: el.value };
+      writePref('finance:period', insightsPeriod);
+      render(`period-${key}`);
+    });
+    return el;
+  };
+  return h('div', { class: 'fin-period' },
+    field('Period', preset),
+    custom && field('From', dateIn('from')),
+    custom && field('To', dateIn('to')),
+    h('p', { class: 'fin-period-range' }, `${shortDate(range.from)} – ${shortDate(range.to)}${range.from.slice(0, 4) !== range.to.slice(0, 4) || range.to.slice(0, 4) != thisYear ? ` ${range.to.slice(0, 4)}` : ''}`));
+}
+
+// Income and spending per bucket as paired columns. One y-axis from 0; a readout above the plot
+// shows the hovered or focused bucket, and the same numbers are in the table below the chart.
+function incomeSpendChart(r) {
+  const NS = 'http://www.w3.org/2000/svg';
+  const el = (tag, attrs = {}) => {
+    const n = document.createElementNS(NS, tag);
+    for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+    return n;
+  };
+  const W = 760; const H = 230; const L = 52; const R = 8; const T = 10; const B = 26;
+  const plotW = W - L - R; const plotH = H - T - B;
+  const series = r.series;
+  const top = Math.max(1, ...series.map((b) => Math.max(b.income, b.expenses)));
+  // A clean top tick: 1, 2, 2.5 or 5 times a power of ten.
+  const mag = 10 ** Math.floor(Math.log10(top));
+  const niceTop = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((v) => v >= top);
+  const y = (v) => T + plotH - (Math.max(0, v) / niceTop) * plotH;
+  const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, class: 'fin-chart', role: 'group', 'aria-label': `Income and spending by ${r.unit}` });
+
+  for (let i = 0; i <= 4; i += 1) {
+    const v = (niceTop / 4) * i;
+    svg.append(el('line', { x1: L, x2: W - R, y1: y(v), y2: y(v), class: i ? 'fin-grid-line' : 'fin-axis-line' }));
+    const label = el('text', { x: L - 8, y: y(v) + 4, class: 'fin-tick', 'text-anchor': 'end' });
+    label.textContent = compactEUR(v);
+    svg.append(label);
+  }
+
+  const slot = plotW / series.length;
+  const barW = Math.max(2, Math.min(24, (slot - 8) / 2 - 1));
+  const every = Math.ceil(series.length / 12); // at most ~12 x labels
+  const multiYear = r.from.slice(0, 4) !== r.to.slice(0, 4);
+  const readout = h('p', { class: 'fin-readout', 'aria-live': 'polite' });
+  const showTotal = () => {
+    readout.replaceChildren(h('span', { class: 'fin-muted' }, 'Hover or focus a column for its numbers.'));
+  };
+  const bar = (x, v, cls) => {
+    const y0 = T + plotH;
+    const yv = y(v);
+    const hgt = y0 - yv;
+    if (hgt < 0.5) return null;
+    const rr = Math.min(4, barW / 2, hgt);
+    // Rounded at the data end, square on the baseline.
+    return el('path', { class: cls, d: `M${x},${y0}V${yv + rr}Q${x},${yv} ${x + rr},${yv}H${x + barW - rr}Q${x + barW},${yv} ${x + barW},${yv + rr}V${y0}Z` });
+  };
+
+  series.forEach((b, i) => {
+    const cx = L + slot * i + slot / 2;
+    const g = el('g', { class: 'fin-col' });
+    const hit = el('rect', {
+      x: L + slot * i, y: T, width: slot, height: plotH, class: 'fin-hit', tabindex: '0',
+      'aria-label': `${bucketTitle(b.key, r.unit)}: income ${money(b.income, 'EUR')}, spending ${money(b.expenses, 'EUR')}`,
+    });
+    g.append(hit);
+    const inBar = bar(cx - barW - 1, b.income, 'fin-mark-in');
+    const outBar = bar(cx + 1, b.expenses, 'fin-mark-out');
+    if (inBar) g.append(inBar);
+    if (outBar) g.append(outBar);
+    const show = () => {
+      svg.querySelectorAll('.fin-col.is-active').forEach((n) => n.classList.remove('is-active'));
+      g.classList.add('is-active');
+      readout.replaceChildren(
+        h('strong', {}, bucketTitle(b.key, r.unit)), ' ',
+        h('span', { class: 'fin-key fin-key-in' }), h('strong', { class: 'fin-num' }, money(b.income, 'EUR')), ' income ',
+        h('span', { class: 'fin-key fin-key-out' }), h('strong', { class: 'fin-num' }, money(b.expenses, 'EUR')), ' spent',
+        h('span', { class: 'fin-muted' }, ` · net ${signed(b.income - b.expenses, 'EUR')}`));
+    };
+    hit.addEventListener('pointerenter', show);
+    hit.addEventListener('focus', show);
+    svg.append(g);
+    if (i % every === 0) {
+      const t = el('text', { x: cx, y: H - 8, class: 'fin-tick', 'text-anchor': 'middle' });
+      t.textContent = bucketLabel(b.key, r.unit, multiYear);
+      svg.append(t);
+    }
+  });
+  svg.addEventListener('pointerleave', () => {
+    svg.querySelectorAll('.fin-col.is-active').forEach((n) => n.classList.remove('is-active'));
+    showTotal();
+  });
+  showTotal();
+
+  const table = h('details', { class: 'fin-chart-table' },
+    h('summary', {}, 'Show as a table'),
+    h('div', { class: 'fin-scroll' }, h('table', { class: 'fin-table' },
+      h('caption', { class: 'fin-sr' }, `Income and spending by ${r.unit}`),
+      h('thead', {}, h('tr', {}, h('th', { scope: 'col' }, r.unit[0].toUpperCase() + r.unit.slice(1)),
+        h('th', { scope: 'col', class: 'fin-r' }, 'Income'), h('th', { scope: 'col', class: 'fin-r' }, 'Spending'), h('th', { scope: 'col', class: 'fin-r' }, 'Net'))),
+      h('tbody', {}, series.map((b) => h('tr', {},
+        h('th', { scope: 'row' }, bucketTitle(b.key, r.unit)),
+        h('td', { class: 'fin-r fin-num' }, money(b.income, 'EUR')),
+        h('td', { class: 'fin-r fin-num' }, money(b.expenses, 'EUR')),
+        h('td', { class: `fin-r fin-num ${tone(b.income - b.expenses)}` }, signed(b.income - b.expenses, 'EUR'))))))));
+
+  return h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'chart-h' },
+    h('div', { class: 'fin-chart-head' },
+      h('h3', { id: 'chart-h', class: 'fin-label' }, `Income and spending by ${r.unit}`),
+      h('ul', { class: 'fin-legend', 'aria-label': 'Legend' },
+        h('li', {}, h('span', { class: 'fin-key fin-key-in' }), 'Income'),
+        h('li', {}, h('span', { class: 'fin-key fin-key-out' }), 'Spending'))),
+    readout,
+    h('div', { class: 'fin-chart-wrap' }, svg),
+    table);
+}
+
+// Spending (or income) per top-level category, largest first, each opening onto its subcategories.
+function categoryBreakdown(title, rows, total, mark) {
+  const max = Math.max(1, ...rows.map((c) => c.amount));
+  const name = (id) => (id ? catLabel(id) || 'Deleted category' : 'Uncategorised');
+  const barSvg = (amount) => {
+    const NS = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(NS, 'svg');
+    svg.setAttribute('class', 'fin-hbar');
+    svg.setAttribute('aria-hidden', 'true');
+    const rect = document.createElementNS(NS, 'rect');
+    rect.setAttribute('class', mark);
+    rect.setAttribute('x', '0');
+    rect.setAttribute('y', '0');
+    rect.setAttribute('height', '100%');
+    rect.setAttribute('rx', '3');
+    rect.setAttribute('width', `${Math.max(0.5, (Math.max(0, amount) / max) * 100)}%`);
+    svg.append(rect);
+    return svg;
+  };
+  const share = (amount) => (total > 0 ? `${Math.round((amount / total) * 100)}%` : '');
+  const line = (id, amount, child = false) => h('div', { class: `fin-break-row${child ? ' fin-break-child' : ''}` },
+    h('span', { class: 'fin-break-name' }, child ? (category(id)?.name ?? name(id)) : name(id)),
+    barSvg(amount),
+    h('span', { class: 'fin-num fin-break-amt' }, money(amount, 'EUR')),
+    h('span', { class: 'fin-num fin-break-pct fin-muted' }, share(amount)));
+  return h('section', { class: 'fin-card fin-pad', 'aria-label': title },
+    h('h3', { class: 'fin-label' }, title),
+    rows.length === 0 ? h('p', { class: 'fin-empty' }, 'Nothing in this period.') :
+      h('ul', { class: 'fin-break' }, rows.map((c) => h('li', {},
+        c.children.length
+          ? h('details', {},
+            h('summary', {}, line(c.id, c.amount)),
+            h('div', { class: 'fin-break-children' }, c.children.map((k) => line(k.id, k.amount, true)),
+              c.amount - c.children.reduce((s, k) => s + k.amount, 0) !== 0 &&
+                line(null, c.amount - c.children.reduce((s, k) => s + k.amount, 0), true)))
+          : line(c.id, c.amount)))));
+}
+
+// The whole Insights panel for some accounts (a Set of ids) or all of them (null).
+function insightsPanel(accountIds) {
+  const scope = accountIds ? state.transactions.filter((t) => accountIds.has(t.accountId)) : state.transactions;
+  const first = scope.reduce((min, t) => (t.date < min ? t.date : min), today());
+  const range = periodRange(insightsPeriod.preset, today(), { from: insightsPeriod.from, to: insightsPeriod.to, first });
+  if (range.from > range.to) [range.from, range.to] = [range.to, range.from];
+  const r = insights(state.transactions, {
+    ...range, accountIds, accounts: state.accounts, categories: state.categories, ious: state.ious,
+    rateOf: (c) => latestRate(c) ?? 1,
+  });
+  const rate = r.savingsRate == null ? '—' : `${Math.round(r.savingsRate * 100)}%`;
+  return h('div', { class: 'fin-insights' },
+    periodControls(range),
+    h('dl', { class: 'fin-stats' },
+      h('div', {}, h('dt', {}, 'Income'), h('dd', { class: 'fin-pos' }, money(r.income, 'EUR'))),
+      h('div', {}, h('dt', {}, 'Spending'), h('dd', { class: 'fin-neg' }, money(r.expenses, 'EUR')),
+        r.refunds > 0 && h('p', { class: 'fin-stat-note' }, `after ${money(r.refunds, 'EUR')} of refunds`)),
+      h('div', {}, h('dt', {}, 'Net'), h('dd', { class: tone(r.net) }, signed(r.net, 'EUR'))),
+      h('div', {}, h('dt', {}, 'Saved'), h('dd', {}, rate),
+        h('p', { class: 'fin-stat-note' }, 'of income'))),
+    r.count === 0
+      ? h('p', { class: 'fin-notice' }, 'No income or spending in this period. Transfers between your accounts don’t count.')
+      : [
+        incomeSpendChart(r),
+        h('div', { class: 'fin-break-grid' },
+          categoryBreakdown('Spending by category', r.spending, r.expenses, 'fin-mark-out'),
+          categoryBreakdown('Income by category', r.earning, r.income, 'fin-mark-in')),
+      ],
+    h('p', { class: 'fin-hint fin-mt' }, 'Transfers between your accounts and opening balances aren’t counted. Loans and repayments count only what isn’t owed back, refunds lower spending, and a transaction with several categories counts under its first one.'));
+}
+
+function renderInsights() {
+  return h('div', {},
+    h('div', { class: 'fin-account-head' },
+      h('div', {}, h('h2', { class: 'fin-title' }, 'Insights'),
+        h('p', { class: 'fin-meta' }, 'Income and spending across all your accounts, archived ones included.'))),
+    insightsPanel(null));
+}
+
+// ── net worth over time ──────────────────────────────────────────────────────
+
+// An investment account's market value today in EUR, or null when it has no holdings.
+function holdingsValueEUR(a) {
+  if (!state.holdings.some((x) => x.accountId === a.id)) return null;
+  return convert(accountValue(a), latestRate(a.currency) ?? 1);
+}
+
+// Once a day, keep what each investment account is worth at market prices, so the net-worth
+// history shows real values from today on instead of what was put in.
+function recordSnapshot() {
+  if (missingTables().includes('snapshots')) return;
+  const values = {};
+  for (const a of state.accounts) {
+    if (a.type !== 'investment' || a.archived) continue;
+    const v = holdingsValueEUR(a);
+    if (v != null) values[a.id] = v;
+  }
+  if (!Object.keys(values).length) return;
+  const existing = state.snapshots.find((x) => x.date === today());
+  if (existing && JSON.stringify(existing.values) === JSON.stringify(values)) return;
+  if (existing) existing.values = values;
+  else state.snapshots.push({ id: today(), date: today(), values });
+  persist();
+}
+
+// Net worth and investments over time, as two lines on one EUR axis. The readout above shows the
+// hovered or focused point; the table below has every value.
+// `labels` name the two lines (`total` and `investments` on each point) and the chart.
+function netWorthChart(points, unit, from, to, labels = { total: 'Net worth', investments: 'Investments', title: 'Net worth over time' }) {
+  const NS = 'http://www.w3.org/2000/svg';
+  const el = (tag, attrs = {}) => {
+    const n = document.createElementNS(NS, tag);
+    for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+    return n;
+  };
+  const W = 760; const H = 260; const L = 60; const R = 12; const T = 12; const B = 26;
+  const plotW = W - L - R; const plotH = H - T - B;
+  const values = points.flatMap((p) => [p.total, p.investments]);
+  const lo = Math.min(0, ...values);
+  const hi = Math.max(1, ...values);
+  // Clean ticks: a step of 1, 2, 2.5 or 5 times a power of ten, five or so across the range.
+  const raw = (hi - lo) / 4;
+  const mag = 10 ** Math.floor(Math.log10(raw));
+  const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((v) => v >= raw);
+  const bottom = Math.floor(lo / step) * step;
+  const top = Math.ceil(hi / step) * step;
+  const y = (v) => T + plotH - ((v - bottom) / (top - bottom)) * plotH;
+  const x = (i) => L + (points.length === 1 ? plotW / 2 : (plotW * i) / (points.length - 1));
+  const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, class: 'fin-chart', role: 'group', 'aria-label': `${labels.title}, by ${unit}` });
+
+  for (let v = bottom; v <= top + step / 2; v += step) {
+    svg.append(el('line', { x1: L, x2: W - R, y1: y(v), y2: y(v), class: v === 0 ? 'fin-axis-line' : 'fin-grid-line' }));
+    const t = el('text', { x: L - 8, y: y(v) + 4, class: 'fin-tick', 'text-anchor': 'end' });
+    t.textContent = compactEUR(v);
+    svg.append(t);
+  }
+  const path = (key) => points.map((p, i) => `${i ? 'L' : 'M'}${x(i)},${y(p[key])}`).join('');
+  // A light wash under the net-worth line, down to zero.
+  svg.append(el('path', { class: 'fin-area-net', d: `${path('total')}L${x(points.length - 1)},${y(Math.max(0, bottom))}L${x(0)},${y(Math.max(0, bottom))}Z` }));
+  svg.append(el('path', { class: 'fin-line fin-line-inv', d: path('investments') }));
+  svg.append(el('path', { class: 'fin-line fin-line-net', d: path('total') }));
+  const last = points.length - 1;
+  svg.append(el('circle', { class: 'fin-dot fin-dot-inv', cx: x(last), cy: y(points[last].investments), r: 4 }));
+  svg.append(el('circle', { class: 'fin-dot fin-dot-net', cx: x(last), cy: y(points[last].total), r: 4 }));
+
+  const multiYear = from.slice(0, 4) !== to.slice(0, 4);
+  const every = Math.ceil(points.length / 10);
+  const readout = h('p', { class: 'fin-readout', 'aria-live': 'polite' });
+  const rest = () => readout.replaceChildren(h('span', { class: 'fin-muted' }, 'Hover or focus the chart for the values at each point.'));
+  const guide = el('line', { class: 'fin-guide', y1: T, y2: T + plotH, x1: -10, x2: -10 });
+  svg.append(guide);
+  points.forEach((p, i) => {
+    const w = points.length === 1 ? plotW : plotW / (points.length - 1);
+    const hit = el('rect', {
+      x: Math.max(L, x(i) - w / 2), y: T, width: Math.min(w, W - R - Math.max(L, x(i) - w / 2)), height: plotH,
+      class: 'fin-hit', tabindex: '0',
+      'aria-label': `${bucketTitle(p.key, unit)}: ${labels.total.toLowerCase()} ${money(p.total, 'EUR')}, ${labels.investments.toLowerCase()} ${money(p.investments, 'EUR')}`,
+    });
+    const show = () => {
+      guide.setAttribute('x1', x(i));
+      guide.setAttribute('x2', x(i));
+      readout.replaceChildren(
+        h('strong', {}, bucketTitle(p.key, unit)), ' ',
+        h('span', { class: 'fin-key fin-key-net' }), h('strong', { class: 'fin-num' }, money(p.total, 'EUR')), ` ${labels.total.toLowerCase()} `,
+        h('span', { class: 'fin-key fin-key-inv' }), h('strong', { class: 'fin-num' }, money(p.investments, 'EUR')), ` ${labels.investments.toLowerCase()}`);
+    };
+    hit.addEventListener('pointerenter', show);
+    hit.addEventListener('focus', show);
+    svg.append(hit);
+    if (i % every === 0 || i === last) {
+      const t = el('text', { x: x(i), y: H - 8, class: 'fin-tick', 'text-anchor': i === 0 ? 'start' : i === last ? 'end' : 'middle' });
+      t.textContent = bucketLabel(p.key, unit, multiYear);
+      svg.append(t);
+    }
+  });
+  svg.addEventListener('pointerleave', () => { guide.setAttribute('x1', -10); guide.setAttribute('x2', -10); rest(); });
+  rest();
+
+  const table = h('details', { class: 'fin-chart-table' },
+    h('summary', {}, 'Show as a table'),
+    h('div', { class: 'fin-scroll' }, h('table', { class: 'fin-table' },
+      h('caption', { class: 'fin-sr' }, `${labels.title}, by ${unit}`),
+      h('thead', {}, h('tr', {}, h('th', { scope: 'col' }, 'At the end of'),
+        h('th', { scope: 'col', class: 'fin-r' }, labels.total), h('th', { scope: 'col', class: 'fin-r' }, labels.investments))),
+      h('tbody', {}, points.map((p) => h('tr', {},
+        h('th', { scope: 'row' }, bucketTitle(p.key, unit)),
+        h('td', { class: 'fin-r fin-num' }, money(p.total, 'EUR')),
+        h('td', { class: 'fin-r fin-num' }, money(p.investments, 'EUR'))))))));
+
+  return h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'nw-chart-h' },
+    h('div', { class: 'fin-chart-head' },
+      h('h3', { id: 'nw-chart-h', class: 'fin-label' }, labels.title),
+      h('ul', { class: 'fin-legend', 'aria-label': 'Legend' },
+        h('li', {}, h('span', { class: 'fin-key fin-key-net' }), labels.total),
+        h('li', {}, h('span', { class: 'fin-key fin-key-inv' }), labels.investments))),
+    readout,
+    h('div', { class: 'fin-chart-wrap' }, svg),
+    table);
+}
+
+// Insights for an investment account: its value against what was put in, over the period, and
+// each holding's value, cost and gain today.
+function investmentInsights(account) {
+  const own = state.holdings.filter((x) => x.accountId === account.id);
+  const ownLots = state.lots.filter((l) => own.some((x) => x.id === l.holdingId));
+  const first = [...state.transactions.filter((t) => t.accountId === account.id), ...ownLots]
+    .reduce((min, t) => (t.date < min ? t.date : min), today());
+  const range = periodRange(insightsPeriod.preset, today(), { from: insightsPeriod.from, to: insightsPeriod.to, first });
+  if (range.from > range.to) [range.from, range.to] = [range.to, range.from];
+  const to = range.to > today() ? today() : range.to;
+  const rateOf = (c) => latestRate(c) ?? 1;
+  const hist = netWorthHistory({ ...state, accounts: [account] }, { from: range.from, to, today: today(), holdingsValue: holdingsValueEUR, rateOf });
+  const invested = investedHistory(account, state, hist.points.map((p) => p.date), rateOf);
+  const pts = hist.points.map((p, i) => ({ key: p.key, date: p.date, total: p.total, investments: invested[i] }));
+  const now = pts.at(-1);
+  const gain = now.total - now.investments;
+  const change = now.total - pts[0].total;
+  const byLots = own.length > 0 && own.every((x) => lotsOfHolding(x.id).length);
+
+  const rows = own.map((x) => {
+    const value = convert(holdingValue(x) ?? 0, rateOf(x.currency));
+    const lotsX = lotsOfHolding(x.id);
+    const cost = lotsX.length ? convert(lotSummary(lotsX).cost, rateOf(x.currency)) : null;
+    return { x, value, cost, gain: cost == null ? null : value - cost };
+  }).sort((a, b) => b.value - a.value);
+  const totalValue = rows.reduce((s, r) => s + r.value, 0);
+
+  return h('div', { class: 'fin-insights' },
+    periodControls(range),
+    h('dl', { class: 'fin-stats' },
+      h('div', {}, h('dt', {}, 'Value today'), h('dd', {}, money(now.total, 'EUR'))),
+      h('div', {}, h('dt', {}, 'Invested'), h('dd', {}, money(now.investments, 'EUR')),
+        h('p', { class: 'fin-stat-note' }, byLots ? 'cost of the units held' : 'money moved into the account')),
+      h('div', {}, h('dt', {}, 'Gain'), h('dd', { class: tone(gain) }, signed(gain, 'EUR')),
+        now.investments > 0 && h('p', { class: 'fin-stat-note' }, `${gain >= 0 ? '+' : ''}${((gain / now.investments) * 100).toFixed(1)}%`)),
+      h('div', {}, h('dt', {}, `Change since ${shortDate(pts[0].date)}${pts[0].date.slice(0, 4) != thisYear ? ` ${pts[0].date.slice(0, 4)}` : ''}`),
+        h('dd', { class: tone(change) }, signed(change, 'EUR')),
+        h('p', { class: 'fin-stat-note' }, 'value, including new money'))),
+    pts.length > 1
+      ? netWorthChart(pts, hist.unit, range.from, to, { total: 'Value', investments: 'Invested', title: 'Value and money invested' })
+      : h('p', { class: 'fin-notice' }, 'Pick a longer period to see the account over time.'),
+    h('p', { class: 'fin-hint' },
+      'Value is at market prices today and on days the app has recorded (once a day, when you open it). Before that, ',
+      byLots ? 'it’s the units held then times the latest trade price by then.' : 'it’s the money put in, as there’s no price history; adding the buys and sells (Lots, or an FT.com import) gives real values over time.'),
+    rows.length > 0 && h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'inv-h' },
+      h('h3', { id: 'inv-h', class: 'fin-label' }, 'Holdings today'),
+      h('div', { class: 'fin-scroll' }, h('table', { class: 'fin-table' },
+        h('caption', { class: 'fin-sr' }, `Holdings of ${account.name}`),
+        h('thead', {}, h('tr', {}, ['Holding', 'Units', 'Value', 'Cost', 'Gain', 'Share'].map((t, i) => h('th', { scope: 'col', class: i ? 'fin-r' : null }, t)))),
+        h('tbody', {}, rows.map(({ x, value, cost, gain: g }) => h('tr', {},
+          h('td', {}, x.symbol, h('span', { class: 'fin-sub' }, x.name ?? '')),
+          h('td', { class: 'fin-r fin-num' }, String(x.quantity)),
+          h('td', { class: 'fin-r fin-num' }, money(value, 'EUR')),
+          h('td', { class: 'fin-r fin-num fin-muted' }, cost == null ? '—' : money(cost, 'EUR')),
+          h('td', { class: `fin-r fin-num ${g == null ? '' : tone(g)}` }, g == null ? '—' : signed(g, 'EUR'),
+            g != null && cost > 0 && h('span', { class: 'fin-sub' }, `${g >= 0 ? '+' : ''}${((g / cost) * 100).toFixed(1)}%`)),
+          h('td', { class: 'fin-r fin-num fin-muted' }, totalValue ? `${Math.round((value / totalValue) * 100)}%` : ''))))))));
+}
+
+function renderNetWorth() {
+  const first = state.transactions.reduce((min, t) => (t.date < min ? t.date : min), today());
+  const range = periodRange(insightsPeriod.preset, today(), { from: insightsPeriod.from, to: insightsPeriod.to, first });
+  if (range.from > range.to) [range.from, range.to] = [range.to, range.from];
+  const to = range.to > today() ? today() : range.to; // the future has no balances yet
+  const hist = netWorthHistory(state, {
+    from: range.from, to, today: today(), holdingsValue: holdingsValueEUR, rateOf: (c) => latestRate(c) ?? 1,
+  });
+  const pts = hist.points;
+  const now = pts.at(-1);
+  const start = pts[0];
+  const change = now.total - start.total;
+
+  // Today's split by account type (archived accounts are closed, so they're not part of it).
+  const byType = ACCOUNT_TYPES.map((type) => {
+    const value = state.accounts.filter((a) => a.type === type && !a.archived)
+      .reduce((sum, a) => sum + convert(accountValue(a), latestRate(a.currency) ?? 1), 0);
+    return { type, value };
+  }).filter((x) => x.value !== 0);
+  const assets = byType.filter((x) => x.value > 0).reduce((s, x) => s + x.value, 0);
+  const debts = byType.filter((x) => x.value < 0).reduce((s, x) => s - x.value, 0);
+
+  return h('div', {},
+    h('div', { class: 'fin-account-head' },
+      h('div', {}, h('h2', { class: 'fin-title', id: 'networth-h', tabindex: '-1' }, 'Net worth'),
+        h('p', { class: 'fin-meta' }, 'Everything you own minus what you owe, across all accounts, in EUR.'))),
+    h('div', { class: 'fin-insights' },
+      periodControls(range),
+      h('dl', { class: 'fin-stats' },
+        h('div', {}, h('dt', {}, 'Net worth today'), h('dd', {}, money(now.total, 'EUR'))),
+        h('div', {}, h('dt', {}, `Change since ${shortDate(start.date)}${start.date.slice(0, 4) != thisYear ? ` ${start.date.slice(0, 4)}` : ''}`),
+          h('dd', { class: tone(change) }, signed(change, 'EUR')),
+          start.total > 0 && h('p', { class: 'fin-stat-note' }, `${change >= 0 ? '+' : ''}${((change / start.total) * 100).toFixed(1)}%`)),
+        h('div', {}, h('dt', {}, 'Investments'), h('dd', {}, money(now.investments, 'EUR')),
+          now.total > 0 && h('p', { class: 'fin-stat-note' }, `${Math.round((now.investments / now.total) * 100)}% of net worth`)),
+        h('div', {}, h('dt', {}, 'Debts'), h('dd', { class: debts ? 'fin-neg' : '' }, money(debts, 'EUR')),
+          h('p', { class: 'fin-stat-note' }, 'credit cards and other negative balances'))),
+      pts.length > 1
+        ? netWorthChart(pts, hist.unit, range.from, to)
+        : h('p', { class: 'fin-notice' }, 'Pick a longer period to see net worth over time.'),
+      h('p', { class: 'fin-hint' },
+        hist.firstSnapshot
+          ? `Investments are at market value from ${shortDate(hist.firstSnapshot)} ${hist.firstSnapshot.slice(0, 4)}, recorded once a day when you open the app. Before that, holdings with buys and sells are valued as the units held times the latest trade price; others at what was put in, as there's no price history.`
+          : 'Investments are at market value today. Earlier, holdings with buys and sells are valued as the units held times the latest trade price; others at what was put in, as there\'s no price history. From today the app records market values once a day, so the history fills in.',
+        ' Closed (archived) accounts count until their last transaction.'),
+      h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'nw-type-h' },
+        h('h3', { id: 'nw-type-h', class: 'fin-label' }, 'By account type, today'),
+        h('ul', { class: 'fin-break' }, byType.map(({ type, value }) => h('li', {},
+          h('div', { class: `fin-break-row fin-type-row fin-group--${type}` },
+            h('span', { class: 'fin-break-name' }, h('span', { class: 'fin-group-icon' }, icon(`type-${type}`)), ACCOUNT_TYPE_LABELS[type]),
+            (() => {
+              const NS = 'http://www.w3.org/2000/svg';
+              const svg = document.createElementNS(NS, 'svg');
+              svg.setAttribute('class', 'fin-hbar');
+              svg.setAttribute('aria-hidden', 'true');
+              const rect = document.createElementNS(NS, 'rect');
+              rect.setAttribute('class', value < 0 ? 'fin-mark-out' : 'fin-mark-net');
+              rect.setAttribute('height', '100%');
+              rect.setAttribute('rx', '3');
+              rect.setAttribute('width', `${Math.max(0.5, (Math.abs(value) / Math.max(1, assets)) * 100)}%`);
+              svg.append(rect);
+              return svg;
+            })(),
+            h('span', { class: `fin-num fin-break-amt ${value < 0 ? 'fin-neg' : ''}` }, money(value, 'EUR')),
+            h('span', { class: 'fin-num fin-break-pct fin-muted' }, value > 0 && assets ? `${Math.round((value / assets) * 100)}%` : ''))))))));
+}
+
+// ── scheduled transactions ───────────────────────────────────────────────────
+
+const FORECAST_DAYS = 30;
+const daysFromToday = (n) => new Date(Date.now() + n * 864e5).toISOString().slice(0, 10);
+const scheduleAccounts = (s) => [accountName(s.accountId), s.kind === 'transfer' && accountName(s.toAccountId)].filter(Boolean).join(' → ');
+
+// Enter one due date: add its transaction(s) with that date and move the schedule on.
+async function enterScheduled(s, focusKey) {
+  const rows = scheduledTransactions(s, s.nextDate, state.accounts);
+  const currencyOf = (t) => state.accounts.find((a) => a.id === t.accountId)?.currency ?? 'EUR';
+  for (const t of rows) t.rate = await ensureRate(currencyOf(t), t.date);
+  // A transfer between currencies arrives converted at that day's rate.
+  if (rows.length === 2 && currencyOf(rows[0]) !== currencyOf(rows[1]) && rows[0].rate && rows[1].rate) {
+    rows[1].amount = crossConvert(-rows[0].amount, rows[0].rate, rows[1].rate);
+  }
+  state.transactions.push(...rows);
+  Object.assign(s, advanceSchedule(s));
+  persist(); render(focusKey);
+  say(`Added ${s.description}. Next one on ${shortDate(s.nextDate)}.`);
+}
+
+function skipScheduled(s, focusKey) {
+  const skipped = s.nextDate;
+  Object.assign(s, advanceSchedule(s));
+  persist(); render(focusKey);
+  say(`Skipped ${s.description} on ${shortDate(skipped)}. Next one on ${shortDate(s.nextDate)}.`);
+}
+
+function deleteScheduled(s) {
+  if (!confirm(`Stop the schedule “${s.description}”? Transactions already entered are kept.`)) return;
+  state.schedules = state.schedules.filter((x) => x.id !== s.id);
+  persist(); render('sched-add'); say('Schedule removed.');
+}
+
+const dueLabel = (date) => (date < today() ? 'Overdue' : date === today() ? 'Due today' : null);
+
+// Add a schedule, or edit `existing`. `preset` fills a new one (from the transaction form's Repeat).
+function openScheduleDialog(existing = null, preset = {}) {
+  const s = existing ?? preset;
+  const accounts = pickableAccounts(s.accountId);
+  const accountOptions = accounts.map((a) => [a.id, a.name]);
+  const kind = select([['expense', 'Expense'], ['income', 'Income'], ['transfer', 'Transfer']], s.kind ?? 'expense');
+  const desc = input({ type: 'text', required: true, autocomplete: 'off', value: s.description });
+  const amount = input({ type: 'number', step: '0.01', min: '0.01', required: true, inputmode: 'decimal', value: s.amount ? String(s.amount / 100) : null });
+  const from = select(accountOptions, s.accountId ?? view.id ?? accounts[0]?.id);
+  const to = select([['', 'Choose an account'], ...accountOptions], s.toAccountId ?? '');
+  const cat = select([['', 'None'], ...catOptions()], s.categoryId ?? '');
+  const every = input({ type: 'number', min: '1', step: '1', required: true, value: String(s.every ?? 1), inputmode: 'numeric' });
+  const unit = select(UNITS.map((u) => [u, `${u}(s)`]), s.unit ?? 'month');
+  const next = input({ type: 'date', required: true, value: s.nextDate ?? today() });
+  const end = input({ type: 'date', value: s.endDate ?? null });
+  const fromField = field('Account', from);
+  const toField = field('To account', to);
+  const catField = field('Category', cat);
+  const sync = () => {
+    const transfer = kind.value === 'transfer';
+    fromField.querySelector('label').textContent = transfer ? 'From account' : 'Account';
+    toField.hidden = !transfer;
+    to.required = transfer;
+    catField.hidden = transfer;
+  };
+  kind.addEventListener('change', sync);
+  sync();
+  const returnKey = existing ? `sched-edit-${existing.id}` : document.activeElement?.dataset?.key;
+  const close = () => { dialog.close(); render(returnKey); };
+  const error = h('p', { class: 'fin-error', role: 'alert' });
+
+  dialog.replaceChildren(h('form', {
+    onsubmit: (e) => {
+      e.preventDefault();
+      if (kind.value === 'transfer' && (!to.value || to.value === from.value)) { error.textContent = 'Pick a different account to transfer to.'; to.focus(); return; }
+      const fields = {
+        description: desc.value.trim(), amount: toMinor(amount.value), kind: kind.value,
+        accountId: from.value, toAccountId: kind.value === 'transfer' ? to.value : null,
+        categoryId: kind.value === 'transfer' ? null : cat.value || null,
+        every: Math.max(1, Math.round(Number(every.value))), unit: unit.value,
+        anchorDay: Number(next.value.slice(8, 10)), nextDate: next.value, endDate: end.value || null,
+      };
+      if (existing) Object.assign(existing, fields);
+      else state.schedules.push({ id: newId(), ...fields });
+      persist(); close();
+      say(existing ? 'Schedule saved.' : `Scheduled ${fields.description}, ${frequencyLabel(fields).toLowerCase()}, next on ${shortDate(fields.nextDate)}.`);
+    },
+  },
+    h('h2', { id: 'account-dialog-h', class: 'fin-dialog-title' }, existing ? 'Edit schedule' : 'Schedule a transaction'),
+    h('div', { class: 'fin-grid fin-grid-2' },
+      field('Type', kind), field('Description', desc), field('Amount', amount), catField,
+      fromField, toField,
+      h('div', { class: 'fin-field' },
+        h('span', { class: 'fin-field-label', id: 'sched-every-l' }, 'Repeats every'),
+        h('div', { class: 'fin-inline', role: 'group', 'aria-labelledby': 'sched-every-l' },
+          every, unit)),
+      field('Next date', next), field('Ends on', end, 'Optional. Leave empty to repeat until you stop it.')),
+    error,
+    h('div', { class: 'fin-dialog-actions' },
+      button('Cancel', close),
+      h('button', { type: 'submit', class: 'fin-btn btn-primary' }, existing ? 'Save' : 'Schedule'))));
+  every.setAttribute('aria-label', 'Number');
+  unit.setAttribute('aria-label', 'Unit');
+  dialog.showModal();
+  desc.focus();
+}
+
+// The schedules touching one account that fall within the forecast window, due ones first.
+function upcomingSection(account) {
+  const until = daysFromToday(FORECAST_DAYS);
+  const items = state.schedules
+    .filter((s) => scheduledEffect(s, account.id) !== 0)
+    .flatMap((s) => occurrences(s, until).map((date, i) => ({ s, date, first: i === 0 })))
+    .sort((a, b) => a.date.localeCompare(b.date));
+  if (!items.length) return null;
+  return h('section', { class: 'fin-card', 'aria-labelledby': 'up-h' },
+    h('div', { class: 'fin-card-head' },
+      h('h3', { id: 'up-h', class: 'fin-label' }, `Next ${FORECAST_DAYS} days `, h('span', { class: 'fin-count' }, String(items.length))),
+      button('Schedule…', () => openScheduleDialog(null, { accountId: account.id }), 'secondary fin-btn-sm', { 'data-key': 'up-add' })),
+    h('div', { class: 'fin-scroll' }, h('table', { class: 'fin-table' },
+      h('caption', { class: 'fin-sr' }, `Scheduled transactions for ${account.name} in the next ${FORECAST_DAYS} days`),
+      h('thead', {}, h('tr', {},
+        h('th', { scope: 'col' }, 'Date'), h('th', { scope: 'col', class: 'fin-r' }, 'Amount'),
+        h('th', { scope: 'col' }, 'Description'), h('th', { scope: 'col' }, h('span', { class: 'fin-sr' }, 'Actions')))),
+      h('tbody', {}, items.map(({ s, date, first }) => {
+        const effect = scheduledEffect(s, account.id);
+        const due = dueLabel(date);
+        return h('tr', { class: due ? 'fin-due' : null },
+          h('td', { class: 'fin-nowrap' }, h('time', { datetime: date }, shortDate(date)),
+            due && h('span', { class: 'fin-chip fin-chip-inline fin-chip-due' }, due)),
+          h('td', { class: `fin-r fin-num ${tone(effect)}` }, signed(effect, account.currency)),
+          h('td', {}, s.description, h('span', { class: 'fin-sub' },
+            `${frequencyLabel(s)}${s.kind === 'transfer' ? ` · ${scheduleAccounts(s)}` : ''}`)),
+          // Only the next date of a schedule can be entered or skipped; later ones follow from it.
+          h('td', { class: 'fin-r' }, first && h('div', { class: 'fin-actions fin-row-actions' },
+            button('Enter', () => enterScheduled(s, `up-enter-${s.id}`), 'secondary fin-btn-sm',
+              { 'aria-label': `Enter ${s.description} for ${shortDate(date)}`, 'data-key': `up-enter-${s.id}` }),
+            button('Skip', () => skipScheduled(s, `up-skip-${s.id}`), 'secondary fin-btn-sm',
+              { 'aria-label': `Skip ${s.description} on ${shortDate(date)}`, 'data-key': `up-skip-${s.id}` }))));
+      })))));
+}
+
+function renderSchedules() {
+  const list = [...state.schedules].sort((a, b) => a.nextDate.localeCompare(b.nextDate));
+  return h('div', {},
+    h('div', { class: 'fin-account-head' },
+      h('div', {}, h('h2', { class: 'fin-title' }, 'Scheduled'),
+        h('p', { class: 'fin-meta' }, 'Recurring transactions. When one is due it shows on its account, where you enter or skip it.')),
+      button('Schedule a transaction', () => openScheduleDialog(), 'primary', { 'data-key': 'sched-add', 'aria-haspopup': 'dialog' })),
+    h('section', { class: 'fin-card' },
+      list.length === 0
+        ? h('p', { class: 'fin-empty fin-pad' }, 'Nothing scheduled yet. Add one here, use Repeat when adding a single transaction, or import Buxfer’s reminders.csv.')
+        : h('div', { class: 'fin-scroll' }, h('table', { class: 'fin-table' },
+          h('caption', { class: 'fin-sr' }, 'Scheduled transactions'),
+          h('thead', {}, h('tr', {}, ['Next date', 'Description', 'Account', 'Amount', 'Repeats'].map((t, i) =>
+            h('th', { scope: 'col', class: i === 3 ? 'fin-r' : null }, t)), h('th', { scope: 'col' }, h('span', { class: 'fin-sr' }, 'Actions')))),
+          h('tbody', {}, list.map((s) => {
+            const due = dueLabel(s.nextDate);
+            const cur = state.accounts.find((a) => a.id === s.accountId)?.currency ?? 'EUR';
+            const shown = s.kind === 'expense' ? -s.amount : s.amount;
+            return h('tr', { class: due ? 'fin-due' : null },
+              h('td', { class: 'fin-nowrap' }, h('time', { datetime: s.nextDate }, shortDate(s.nextDate)),
+                due && h('span', { class: 'fin-chip fin-chip-inline fin-chip-due' }, due)),
+              h('td', {}, s.description, s.categoryId && h('span', { class: 'fin-sub' }, catLabel(s.categoryId))),
+              h('td', {}, scheduleAccounts(s)),
+              h('td', { class: `fin-r fin-num ${s.kind === 'transfer' ? '' : tone(shown)}` }, s.kind === 'transfer' ? money(s.amount, cur) : signed(shown, cur)),
+              h('td', { class: 'fin-nowrap' }, frequencyLabel(s), s.endDate && h('span', { class: 'fin-sub' }, `until ${shortDate(s.endDate)}`)),
+              h('td', { class: 'fin-r' }, h('div', { class: 'fin-actions fin-row-actions' },
+                due && button('Enter', () => enterScheduled(s, `sched-edit-${s.id}`), 'secondary fin-btn-sm', { 'aria-label': `Enter ${s.description}` }),
+                button('Edit', () => openScheduleDialog(s), 'secondary fin-btn-sm', { 'aria-label': `Edit ${s.description}`, 'data-key': `sched-edit-${s.id}` }),
+                button('Stop', () => deleteScheduled(s), 'danger fin-btn-sm', { 'aria-label': `Stop ${s.description}` }))));
+          }))))));
+}
+
+// ── main: settings ───────────────────────────────────────────────────────────
+
+// Settings are split into pages; while in Settings the left panel lists them instead of the accounts.
+const SETTINGS_PAGES = [
+  { key: 'categories', label: 'Categories', group: 'Organise', render: () => categoriesSection() },
+  { key: 'rules', label: 'Category rules', group: 'Organise', render: () => rulesSection() },
+  { key: 'market', label: 'Market data', group: 'Prices', render: () => marketSection() },
+  { key: 'buxfer', label: 'Import from Buxfer', group: 'Data', render: () => buxferSection() },
+  { key: 'import', label: 'Import CSV', group: 'Data', render: () => importSection() },
+  { key: 'ft', label: 'Import holdings (FT.com)', group: 'Data', render: () => ftSection() },
+  { key: 'link', label: 'Link transfers', group: 'Data', render: () => linkTransfersSection() },
+  { key: 'export', label: 'Export', group: 'Data', render: () => exportSection() },
+  { key: 'delete', label: 'Delete all data', group: 'Data', render: () => deleteAllSection() },
+  { key: 'account', label: 'Your account', group: 'Account', render: () => accountSection() },
+];
+let settingsPage = 'categories'; // remembered while the page stays open
+
+function settingsPageOf() {
+  return SETTINGS_PAGES.find((p) => p.key === (view.section ?? settingsPage)) ?? SETTINGS_PAGES[0];
+}
+
+function renderSettings() {
+  const page = settingsPageOf();
+  return h('div', { class: 'fin-settings-page' },
+    h('p', { class: 'fin-meta' }, `Settings · ${page.group}`),
+    h('h2', { class: 'fin-title', id: 'settings-h', tabindex: '-1', 'data-key': 'settings-h' }, page.label),
+    page.render());
+}
+
+function renderSettingsNav() {
+  const current = settingsPageOf().key;
+  const groups = [...new Set(SETTINGS_PAGES.map((p) => p.group))];
+  return [
+    h('div', { class: 'fin-side-head' }, h('h2', { class: 'fin-side-title' }, 'Settings')),
+    h('nav', { 'aria-label': 'Settings pages' }, groups.map((g) => h('div', { class: 'fin-group' },
+      h('h3', { class: 'fin-group-head fin-group-static' }, g),
+      h('ul', { class: 'fin-accounts' }, SETTINGS_PAGES.filter((p) => p.group === g).map((p) => h('li', {},
+        h('button', {
+          type: 'button', class: `fin-account${p.key === 'delete' ? ' fin-account-danger' : ''}`,
+          'data-key': `set-${p.key}`, 'aria-current': p.key === current ? 'page' : null,
+          onclick: () => openSettings(p.key, `set-${p.key}`),
+        }, h('span', { class: 'fin-account-name' }, p.label)))))))),
+  ];
+}
+
+function openSettings(key, focusKey) {
+  settingsPage = key;
+  view = { name: 'settings', section: key };
+  render(focusKey);
+  say(`${settingsPageOf().label} settings.`);
+}
+
+function accountSection() {
+  const email = currentUser()?.email;
+  return h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'settings-h' },
+    h('p', {}, email ? ['Signed in as ', h('strong', {}, email), '.'] : 'Signed in.'),
+    h('p', { class: 'fin-hint' }, 'Your data is saved to your account and loads on any device where you sign in with this email.'),
+    h('div', { class: 'fin-actions fin-mt' }, button('Sign out', () => signOutNow(), 'secondary', { 'data-key': 'sign-out' })));
+}
+
+function rulesSection() {
+  const pattern = input({ type: 'text', required: true, autocomplete: 'off', 'data-key': 'rule-add' });
+  const match = select([['contains', 'contains'], ['starts', 'starts with'], ['equals', 'is exactly']], 'contains');
+  const ruleCat = select(catOptions(), sortedCategories(state.categories)[0]?.id);
+  const matchLabel = { contains: 'contains', starts: 'starts with', equals: 'is exactly' };
+  const move = (i, d) => {
+    const j = i + d;
+    if (j < 0 || j >= state.rules.length) return;
+    [state.rules[i], state.rules[j]] = [state.rules[j], state.rules[i]];
+    persist(); render();
+  };
+  return h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'settings-h' },
+    h('p', { class: 'fin-hint' }, 'Checked top to bottom. The first rule that matches the description sets the category. Case and accents are ignored.'),
+    state.rules.length === 0 ? h('p', { class: 'fin-empty' }, 'No rules yet.') :
+      h('ol', { class: 'fin-rules' }, state.rules.map((r, i) => h('li', {},
+        h('span', {}, `If description ${matchLabel[r.match]} `, h('strong', {}, `“${r.pattern}”`), ' → ', catLabel(r.categoryId) || 'Unknown'),
+        h('span', { class: 'fin-actions' },
+          button('↑', () => move(i, -1), 'secondary fin-btn-sm', { 'aria-label': `Move rule ${r.pattern} up`, disabled: i === 0 }),
+          button('↓', () => move(i, 1), 'secondary fin-btn-sm', { 'aria-label': `Move rule ${r.pattern} down`, disabled: i === state.rules.length - 1 }),
+          button('Delete', () => { state.rules = state.rules.filter((x) => x.id !== r.id); persist(); render('rule-add'); }, 'danger fin-btn-sm', { 'aria-label': `Delete rule ${r.pattern}` }))))),
+    h('form', {
+      onsubmit: (e) => {
+        e.preventDefault();
+        state.rules.push({ id: newId(), pattern: pattern.value.trim(), match: match.value, categoryId: ruleCat.value });
+        persist(); render('rule-add'); say('Rule added.');
+      },
+    },
+      h('div', { class: 'fin-grid' }, field('Description', match), field('Text', pattern), field('Category', ruleCat)),
+      h('div', { class: 'fin-actions' },
+        h('button', { type: 'submit', class: 'fin-btn btn-primary' }, 'Add rule'),
+        button('Re-apply to uncategorized', () => {
+          let n = 0;
+          for (const t of state.transactions) {
+            if (t.transferId || categoriesOf(t).length) continue;
+            const id = categorize(t.description, state.rules);
+            if (id) { t.categoryIds = [id]; n += 1; }
+          }
+          persist(); render(); say(`Categorized ${n} transaction(s).`);
+        }))));
+}
+
+function marketSection() {
+  const key = input({ type: 'password', autocomplete: 'off', value: state.settings.quoteApiKey });
+  const avKey = input({ type: 'password', autocomplete: 'off', value: state.settings.avApiKey });
+  return h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'settings-h' },
+    h('form', {
+      onsubmit: async (e) => {
+        e.preventDefault();
+        state.settings.quoteApiKey = key.value.trim();
+        state.settings.avApiKey = avKey.value.trim();
+        persist();
+        say('API keys saved. Fetching prices…');
+        await refreshPrices(state.holdings.filter((x) => !x.manual));
+      },
+    },
+      h('p', { class: 'fin-hint' }, 'Both keys are free and saved with your account, so they work on every device. Prices refresh once a day when you open the page.'),
+      h('div', { class: 'fin-grid' },
+        field('Twelve Data API key', key, 'From twelvedata.com. Search, and prices for US listings.'),
+        field('Alpha Vantage API key', avKey, 'From alphavantage.co. Prices for Xetra, London and other non-US listings, which Twelve Data’s free plan excludes. 25 lookups a day.')),
+      h('button', { type: 'submit', class: 'fin-btn btn-primary' }, 'Save keys')));
+}
+
+// Start over: removes the data, keeps the sign-in and API keys. Needs DELETE typed to unlock.
+function deleteAllSection() {
+  const counts = `${state.accounts.length} accounts, ${state.transactions.length} transactions, ${state.holdings.length} holdings, ${state.schedules.length} schedules and ${state.people.length} people with their IOUs`;
+  const alsoCats = h('input', { type: 'checkbox', id: 'del-cats' });
+  const confirmIn = input({ type: 'text', autocomplete: 'off', spellcheck: 'false', 'aria-describedby': 'del-hint' });
+  const go = button('Delete all data', async () => {
+    const tables = ['accounts', 'transactions', 'holdings', 'lots', 'schedules', 'people', 'ious', 'snapshots', ...(alsoCats.checked ? ['categories', 'rules'] : [])];
+    go.disabled = true;
+    say('Deleting…');
+    try {
+      await clearTables(tables);
+    } catch (err) {
+      say(`Couldn’t delete everything: ${err.message}. Nothing was lost that you didn’t ask to delete; try again.`);
+      render('del-confirm');
+      return;
+    }
+    if (alsoCats.checked) {
+      // Start again from the defaults, like a new account.
+      const base = defaultState();
+      state.categories = base.categories;
+      state.rules = base.rules;
+      persist();
+    }
+    state.settings.lastAccountId = undefined;
+    editingTxId = null; importDraft = null; buxferDraft = null; txPage = 0;
+    settingsPage = 'buxfer';
+    view = { name: 'settings', section: 'buxfer' };
+    persist(); render('bux-file');
+    say('All data deleted. You can import again now.');
+  }, 'danger', { disabled: true, 'data-key': 'del-go' });
+  confirmIn.setAttribute('data-key', 'del-confirm');
+  confirmIn.addEventListener('input', () => { go.disabled = confirmIn.value.trim() !== 'DELETE'; });
+
+  return h('section', { class: 'fin-card fin-pad fin-danger-zone', 'aria-labelledby': 'del-h' },
+    h('h3', { id: 'del-h', class: 'fin-label' }, 'Delete all data'),
+    h('p', {}, `Permanently deletes ${counts} from your account, so you can import from scratch. Your sign-in and API keys stay. This can’t be undone; export first if you might want any of it back.`),
+    h('div', { class: 'fin-check' }, alsoCats,
+      h('label', { for: 'del-cats' }, `Also delete categories (${state.categories.length}) and category rules (${state.rules.length}), and start again from the defaults`)),
+    h('div', { class: 'fin-grid fin-mt' }, field('Type DELETE to confirm', confirmIn)),
+    h('p', { id: 'del-hint', class: 'fin-sr' }, 'The delete button turns on once DELETE is typed.'),
+    go);
+}
+
+// For transactions imported before transfers were recognised: find the two sides and link them,
+// after showing what will change.
+function linkTransfersSection() {
+  const pairs = findTransferPairs(state.transactions);
+  const accName = (id) => state.accounts.find((a) => a.id === id)?.name ?? '';
+  return h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'link-h' },
+    h('h3', { id: 'link-h', class: 'fin-label', tabindex: '-1', 'data-key': 'link-h' }, 'Link transfers'),
+    h('p', { class: 'fin-hint' }, 'Finds pairs of transactions on the same date with the same description and opposite amounts in two different accounts, and turns each pair into one transfer.'),
+    pairs.length === 0
+      ? h('p', { class: 'fin-empty' }, 'No unlinked transfers found.')
+      : [
+        h('p', {}, h('strong', {}, `${pairs.length} likely transfer${pairs.length === 1 ? '' : 's'}`)),
+        h('div', { class: 'fin-scroll' }, h('table', { class: 'fin-table' },
+          h('caption', { class: 'fin-sr' }, 'Transfers that will be linked'),
+          h('thead', {}, h('tr', {}, ['Date', 'Description', 'Amount', 'From', 'To'].map((t, i) =>
+            h('th', { scope: 'col', class: i === 2 ? 'fin-r' : null }, t)))),
+          h('tbody', {}, pairs.slice(0, 10).map(([out, inn]) => h('tr', {},
+            h('td', { class: 'fin-nowrap' }, shortDate(out.date)), h('td', {}, out.description),
+            h('td', { class: 'fin-r fin-num' }, decimal2(-out.amount)),
+            h('td', {}, accName(out.accountId)), h('td', {}, accName(inn.accountId))))))),
+        pairs.length > 10 && h('p', { class: 'fin-hint' }, `and ${pairs.length - 10} more.`),
+        h('div', { class: 'fin-actions fin-mt' }, button(`Link ${pairs.length} transfer${pairs.length === 1 ? '' : 's'}`, () => {
+          for (const [out, inn] of pairs) {
+            const transferId = newId();
+            for (const t of [out, inn]) { t.transferId = transferId; t.categoryIds = []; }
+          }
+          persist(); render('link-h');
+          say(`Linked ${pairs.length} transfers.`);
+        }, 'primary')),
+      ]);
+}
+
+// ── category management ──────────────────────────────────────────────────────
+
+let editingCatId = null;
+
+// Two levels, like Buxfer: a category is top-level or the child of a top-level one.
+function categoriesSection() {
+  const uses = new Map();
+  for (const t of state.transactions) for (const id of categoriesOf(t)) uses.set(id, (uses.get(id) ?? 0) + 1);
+  const childrenOf = (id) => state.categories.filter((c) => c.parentId === id);
+  const tops = sortedCategories(state.categories).filter((c) => !c.parentId || !category(c.parentId));
+  const topOptions = (except) => [['', 'None (top level)'], ...tops.filter((c) => c.id !== except).map((c) => [c.id, c.name])];
+
+  const remove = (c) => {
+    const kids = childrenOf(c.id);
+    const n = uses.get(c.id) ?? 0;
+    const rules = state.rules.filter((r) => r.categoryId === c.id).length;
+    const lines = [`Delete “${catLabel(c.id)}”?`];
+    if (n) lines.push(`It will be removed from ${n} transaction${n === 1 ? '' : 's'} (they stay, without this category).`);
+    if (rules) lines.push(`${rules} rule${rules === 1 ? '' : 's'} using it will be deleted.`);
+    if (kids.length) lines.push(`Its ${kids.length} subcategor${kids.length === 1 ? 'y moves' : 'ies move'} to the top level.`);
+    if (!confirm(lines.join('\n'))) return;
+    for (const t of state.transactions) if (categoriesOf(t).includes(c.id)) t.categoryIds = categoriesOf(t).filter((id) => id !== c.id);
+    for (const k of kids) k.parentId = null;
+    state.rules = state.rules.filter((r) => r.categoryId !== c.id);
+    for (const s of state.schedules) if (s.categoryId === c.id) s.categoryId = null;
+    state.categories = state.categories.filter((x) => x.id !== c.id);
+    persist(); render('cat-add'); say(`Deleted ${c.name}.`);
+  };
+
+  const row = (c) => {
+    const n = uses.get(c.id) ?? 0;
+    if (editingCatId === c.id) {
+      const name = input({ type: 'text', required: true, value: c.name, 'data-key': 'cat-edit-name' });
+      const hasKids = childrenOf(c.id).length > 0;
+      const parent = select(topOptions(c.id), c.parentId ?? '', { disabled: hasKids });
+      const cancel = () => { editingCatId = null; render(`cat-edit-${c.id}`); };
+      return h('li', { class: 'fin-cat-row fin-cat-editing' }, h('form', {
+        class: 'fin-cat-form',
+        onkeydown: (e) => { if (e.key === 'Escape') { e.preventDefault(); cancel(); } },
+        onsubmit: (e) => {
+          e.preventDefault();
+          const clash = state.categories.find((x) => x.id !== c.id && (x.parentId ?? '') === parent.value && normalize(x.name) === normalize(name.value));
+          if (clash) { say(`There's already a ${catLabel(clash.id)}.`); name.focus(); return; }
+          Object.assign(c, { name: name.value.trim(), parentId: parent.value || null });
+          editingCatId = null;
+          persist(); render(`cat-edit-${c.id}`); say(`Saved ${catLabel(c.id)}.`);
+        },
+      },
+        field('Name', name),
+        field('Under', parent, hasKids ? 'It has subcategories, so it stays at the top level.' : null),
+        h('div', { class: 'fin-actions' },
+          h('button', { type: 'submit', class: 'fin-btn btn-primary fin-btn-sm' }, 'Save'),
+          button('Cancel', cancel, 'secondary fin-btn-sm'))));
+    }
+    return h('li', { class: `fin-cat-row${c.parentId ? ' fin-cat-child' : ''}` },
+      h('span', { class: 'fin-cat-name' }, c.name, h('span', { class: 'fin-muted fin-num' }, ` ${n}`)),
+      h('span', { class: 'fin-actions fin-row-actions' },
+        button('Edit', () => { editingCatId = c.id; render('cat-edit-name'); }, 'secondary fin-btn-sm',
+          { 'aria-label': `Edit ${catLabel(c.id)}`, 'data-key': `cat-edit-${c.id}` }),
+        button('Delete', () => remove(c), 'danger fin-btn-sm', { 'aria-label': `Delete ${catLabel(c.id)}` })));
+  };
+
+  const newName = input({ type: 'text', required: true, autocomplete: 'off', 'data-key': 'cat-add' });
+  const newParent = select(topOptions(), '');
+  return h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'cats-h' },
+    h('h3', { id: 'cats-h', class: 'fin-label' }, `Categories (${state.categories.length})`),
+    h('p', { class: 'fin-hint' }, 'A category can sit under another, one level deep, and is shown as “Parent / Child”. A transaction can have several. The number is how many transactions use it.'),
+    h('ul', { class: 'fin-cat-tree' }, tops.map((p) => h('li', {},
+      h('ul', { class: 'fin-cat-family' }, row(p), childrenOf(p.id).sort((a, b) => a.name.localeCompare(b.name)).map(row))))),
+    h('form', {
+      class: 'fin-mt',
+      onsubmit: (e) => {
+        e.preventDefault();
+        const parentId = newParent.value || null;
+        const clash = state.categories.find((x) => (x.parentId ?? null) === parentId && normalize(x.name) === normalize(newName.value));
+        if (clash) { say(`There's already a ${catLabel(clash.id)}.`); return; }
+        const cat = { id: newId(), name: newName.value.trim(), parentId };
+        state.categories.push(cat);
+        persist(); render('cat-add'); say(`Added ${catLabel(cat.id)}.`);
+      },
+    },
+      h('div', { class: 'fin-grid' }, field('New category', newName), field('Under', newParent)),
+      h('button', { type: 'submit', class: 'fin-btn btn-primary' }, 'Add category')));
+}
+
+// ── CSV import and export ────────────────────────────────────────────────────
+
+// The import in progress lives outside the DOM so a re-render (prices arriving, a save finishing)
+// doesn't throw away the file and the column choices.
+let importDraft = null;
+
+const FIELD_LABELS = {
+  date: 'Date', description: 'Description', amount: 'Amount', type: 'Type (expense or income)',
+  account: 'Account', category: 'Category', memo: 'Memo', currency: 'Currency',
+  reference: 'ID / reference (pairs transfer rows)',
+  iou: 'IOU (Buxfer: “Name: 12,50”)',
+};
+
+async function readImportFile(file) {
+  const rows = parseCsv(await file.text());
+  if (rows.length < 2) { say('That file has no rows to import.'); return; }
+  const [header, ...body] = rows;
+  const mapping = guessMapping(header);
+  const column = (f) => body.slice(0, 50).map((r) => r[mapping[f]] ?? '');
+  importDraft = {
+    fileName: file.name, header, body, mapping,
+    dateFormat: mapping.date >= 0 ? guessDateFormat(column('date')) : 'dmy',
+    decimal: mapping.amount >= 0 ? guessDecimal(column('amount')) : '.',
+    defaultAccountId: view.id ?? state.accounts[0]?.id ?? '',
+  };
+  render('map-date');
+  say(`Read ${body.length} rows from ${file.name}. Check the columns, then import.`);
+}
+
+const runImport = (id) => importRows(importDraft.body, importDraft, {
+  id, accounts: state.accounts, categories: state.categories, rules: state.rules, transactions: state.transactions, people: state.people,
+});
+
+// EUR rows need no lookup. Setting their rate before saving keeps a large import to one upload,
+// instead of a second one when refreshRates() fills the rates in.
+function withEuroRates(transactions, accounts) {
+  const eur = new Set(accounts.filter((a) => a.currency === 'EUR').map((a) => a.id));
+  for (const t of transactions) if (t.rate == null && eur.has(t.accountId)) t.rate = 1;
+}
+
+// A Buxfer export in progress: the parsed files and the preview, kept across re-renders.
+let buxferDraft = null;
+
+async function readBuxferFiles(fileList) {
+  const files = {};
+  const names = [];
+  for (const f of fileList) {
+    const rows = parseCsv(await f.text());
+    const kind = rows.length ? detectBuxferFile(rows[0]) : null;
+    if (kind && kind !== 'tags') { files[kind] = rows; names.push(f.name); }
+  }
+  if (!files.transactions && !files.accounts) {
+    say('None of those files look like a Buxfer accounts or transactions export.');
+    return;
+  }
+  buxferDraft = { files, names, openingBalances: true };
+  previewBuxfer();
+  render('bux-opening');
+  say('Read the Buxfer export. Check the balances, then import.');
+}
+
+const buxferCtx = (id) => ({
+  id, today: today(), accounts: state.accounts, categories: state.categories, rules: state.rules,
+  transactions: state.transactions, holdings: state.holdings, schedules: state.schedules, people: state.people, lots: state.lots,
+});
+
+function previewBuxfer() {
+  let n = 0;
+  buxferDraft.preview = buxferImport(buxferDraft.files, buxferCtx(() => `preview-${++n}`), { openingBalances: buxferDraft.openingBalances });
+}
+
+function buxferSection() {
+  const head = h('h3', { id: 'bux-h', class: 'fin-label' }, 'Import from Buxfer');
+  if (!buxferDraft) {
+    const file = input({ type: 'file', accept: '.csv,text/csv', multiple: true, 'data-key': 'bux-file' });
+    file.addEventListener('change', () => file.files.length && readBuxferFiles(file.files));
+    return h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'bux-h' }, head,
+      h('p', { class: 'fin-hint' }, 'Select the CSV files from Buxfer’s export together: accounts, transactions, investments and reminders. Accounts keep their type and currency, transfers stay linked, holdings keep their prices, and you can check every balance against Buxfer before importing.'),
+      h('div', { class: 'fin-grid' }, field('Buxfer export files', file)));
+  }
+
+  const d = buxferDraft;
+  const p = d.preview;
+  const opening = h('input', { type: 'checkbox', checked: d.openingBalances, 'data-key': 'bux-opening', id: 'bux-opening' });
+  opening.addEventListener('change', () => { d.openingBalances = opening.checked; previewBuxfer(); render('bux-opening'); });
+  const allMatch = p.reconciliation.every((r) => r.matches);
+  const plural = (k, word) => `${k} ${word}${k === 1 ? '' : 's'}`;
+
+  return h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'bux-h' }, head,
+    h('p', { class: 'fin-hint' }, d.names.join(', ')),
+    h('ul', { class: 'fin-import-list', 'aria-live': 'polite' },
+      h('li', {}, h('strong', {}, plural(p.imported, 'transaction')), p.duplicates ? `, ${p.duplicates} already in your data (skipped)` : ''),
+      p.newAccounts.length > 0 && h('li', {}, `${plural(p.newAccounts.length, 'new account')}`,
+        p.newAccounts.some((a) => a.archived) ? `, of which ${p.newAccounts.filter((a) => a.archived).length} archived (in Buxfer’s archive, not in accounts.csv)` : ''),
+      p.newCategories.length > 0 && h('li', {}, plural(p.newCategories.length, 'new category') + ' from Buxfer tags'),
+      p.linkedTransfers > 0 && h('li', {}, `${plural(p.linkedTransfers, 'transfer')} between accounts, linked`),
+      p.unpairedTransfers > 0 && h('li', {}, `${plural(p.unpairedTransfers, 'transfer row')} without another side (fees, trades inside one account), imported as plain transactions`),
+      (p.newHoldings.length + p.holdingUpdates.length) > 0 && h('li', {}, `${plural(p.newHoldings.length + p.holdingUpdates.length, 'holding')} with Buxfer’s prices, entered by hand until you switch them to live prices`),
+      p.openings > 0 && h('li', {}, `${plural(p.openings, 'opening balance')} for history before the export`),
+      p.ious.length > 0 && (() => {
+        const n = new Set(p.ious.map((e) => e.personId)).size;
+        return h('li', {}, `${p.ious.length} IOU ${p.ious.length === 1 ? 'entry' : 'entries'} with ${n} ${n === 1 ? 'person' : 'people'} (loans, settlements, shared bills)`);
+      })(),
+      p.schedules.length > 0 && h('li', {}, `${plural(p.schedules.length, 'scheduled transaction')} from reminders.csv`,
+        missingTables().includes('schedules') && h('strong', { class: 'fin-row-error' },
+          '. They won’t be saved until you run the updated schema.sql in Supabase and reload.')),
+      p.skippedReminders.length > 0 && h('li', {}, `${plural(p.skippedReminders.length, 'reminder')} not scheduled: `,
+        p.skippedReminders.map((r) => `${r.description} (${r.reason})`).join('; '), '. Add them under Scheduled.'),
+      p.errors.length > 0 && h('li', { class: 'fin-row-error' }, `${plural(p.errors.length, 'row')} with problems, skipped: `,
+        p.errors.slice(0, 3).map((e) => `line ${e.line} (${e.message})`).join('; '))),
+    p.reconciliation.length > 0 && [
+      h('p', {}, allMatch
+        ? 'After import, every account matches its Buxfer balance:'
+        : 'Some accounts won’t match Buxfer after import:'),
+      h('div', { class: 'fin-scroll' }, h('table', { class: 'fin-table' },
+        h('caption', { class: 'fin-sr' }, 'Balances compared with Buxfer'),
+        h('thead', {}, h('tr', {},
+          h('th', { scope: 'col' }, 'Account'), h('th', { scope: 'col', class: 'fin-r' }, 'Buxfer'),
+          h('th', { scope: 'col', class: 'fin-r' }, 'After import'), h('th', { scope: 'col', class: 'fin-r' }, 'Opening balance'),
+          h('th', { scope: 'col' }, 'Check'))),
+        h('tbody', {}, p.reconciliation.map((r) => h('tr', {},
+          h('td', {}, r.name, r.valued && h('span', { class: 'fin-sub' }, 'Valued by holdings')),
+          h('td', { class: 'fin-r fin-num' }, money(r.buxfer, r.currency)),
+          h('td', { class: 'fin-r fin-num' }, money(r.ours, r.currency)),
+          h('td', { class: 'fin-r fin-num fin-muted' }, r.opening ? signed(r.opening, r.currency) : ''),
+          h('td', { class: r.matches ? 'fin-pos' : 'fin-neg' }, r.matches ? '✓ Matches' : `Off by ${signed(r.buxfer - r.ours, r.currency)}`)))))),
+    ],
+    h('div', { class: 'fin-check fin-mt' }, opening,
+      h('label', { for: 'bux-opening' }, 'Add an opening balance where the transactions don’t add up to the Buxfer balance')),
+    h('div', { class: 'fin-actions fin-mt' },
+      button(`Import from Buxfer`, async () => {
+        const res = buxferImport(d.files, buxferCtx(newId), { openingBalances: d.openingBalances });
+        withEuroRates(res.transactions, [...state.accounts, ...res.newAccounts]);
+        state.accounts.push(...res.newAccounts);
+        state.categories.push(...res.newCategories);
+        state.transactions.push(...res.transactions);
+        state.holdings.push(...res.newHoldings);
+        state.schedules.push(...res.schedules);
+        state.people.push(...res.newPeople);
+        state.ious.push(...res.ious);
+        for (const u of res.holdingUpdates) Object.assign(state.holdings.find((x) => x.id === u.id), u);
+        buxferDraft = null;
+        // Show the result: the first active account, with the account list back in the side panel.
+        const first = [...state.accounts].sort(byName).find((a) => !a.archived) ?? state.accounts[0];
+        if (first) view = { name: 'account', id: first.id };
+        persist(); render('bux-file');
+        say(`Imported ${res.imported} transactions and ${res.newAccounts.length} accounts from Buxfer. Saving to your account…`);
+        await refreshRates(); // USD transactions get the rate of their own date
+      }, 'primary', { disabled: !p.imported && !p.newAccounts.length && !p.newHoldings.length && !p.holdingUpdates.length && !p.openings && !p.schedules.length }),
+      button('Cancel', () => { buxferDraft = null; render('bux-file'); })));
+}
+
+// FT.com portfolio export → buys and sells on the holdings of one investment account.
+let ftDraft = null;
+
+async function readFtFile(file) {
+  const rows = parseCsv(await file.text());
+  if (!rows.length || !isFtExport(rows[0])) { say('That file doesn’t look like an FT.com portfolio transactions export.'); return; }
+  const investments = state.accounts.filter((a) => a.type === 'investment' && !a.archived);
+  // Guess the account from the file name ("ETFs_Transactions_…" → an account with "ETF" in its name).
+  const hint = file.name.split(/[_\s-]/)[0].replace(/s$/i, '').toLowerCase();
+  const guess = investments.find((a) => a.name.toLowerCase().includes(hint)) ?? investments[0];
+  ftDraft = { name: file.name, rows, accountId: guess?.id ?? '' };
+  render('ft-account');
+}
+
+function ftSection() {
+  const head = h('h3', { class: 'fin-label' }, 'Import holdings (FT.com)');
+  const investments = state.accounts.filter((a) => a.type === 'investment' && !a.archived);
+  if (!ftDraft) {
+    const file = input({ type: 'file', accept: '.csv,text/csv', 'data-key': 'ft-file' });
+    file.addEventListener('change', () => file.files[0] && readFtFile(file.files[0]));
+    return h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'settings-h' }, head,
+      h('p', { class: 'fin-hint' }, 'The transactions export of an FT.com portfolio: every buy and sell with its date, units and price. They become the lots of the account’s holdings, which then show what they cost and what you’ve gained, and give the net-worth history real values over time. Holdings are matched by ticker (VWCE, SXR8) and created when missing. Importing the same file again adds nothing.'),
+      investments.length === 0 ? h('p', { class: 'fin-notice' }, 'Add an investment account first.') : h('div', { class: 'fin-grid' }, field('FT.com export (CSV)', file)));
+  }
+  const d = ftDraft;
+  const acc = select([...investments].sort(byName).map((a) => [a.id, a.name]), d.accountId, { 'data-key': 'ft-account' });
+  acc.addEventListener('change', () => { d.accountId = acc.value; render('ft-account'); });
+  let n = 0;
+  const p = ftImport(d.rows, d.accountId, { id: () => `p${++n}`, holdings: state.holdings, lots: state.lots });
+  const allLots = [...state.lots, ...p.newLots];
+  const symbols = [...new Set(p.newLots.map((l) => l.holdingId))].map((id) => {
+    const holding = state.holdings.find((x) => x.id === id) ?? p.newHoldings.find((x) => x.id === id);
+    const update = p.holdingUpdates.find((u) => u.id === id);
+    const sum = lotSummary(allLots.filter((l) => l.holdingId === id));
+    return { holding, update, sum, count: p.newLots.filter((l) => l.holdingId === id).length };
+  });
+  return h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'settings-h' }, head,
+    h('p', { class: 'fin-hint' }, `${d.name} · ${d.rows.length - 1} rows`),
+    h('div', { class: 'fin-grid' }, field('Investment account', acc)),
+    p.newLots.length === 0
+      ? h('p', { class: 'fin-notice' }, p.duplicates ? `All ${p.duplicates} buys and sells are already there.` : 'No buys or sells in this file.')
+      : h('div', { class: 'fin-scroll' }, h('table', { class: 'fin-table' },
+        h('caption', { class: 'fin-sr' }, 'What will be imported'),
+        h('thead', {}, h('tr', {}, ['Holding', 'Buys and sells', 'Units after', 'Units now', 'Cost'].map((t, i) => h('th', { scope: 'col', class: i > 0 ? 'fin-r' : null }, t)))),
+        h('tbody', {}, symbols.map(({ holding, update, sum, count }) => h('tr', {},
+          h('td', {}, holding.symbol, h('span', { class: 'fin-sub' }, update ? holding.name ?? '' : 'New holding')),
+          h('td', { class: 'fin-r fin-num' }, String(count)),
+          h('td', { class: 'fin-r fin-num' }, String(sum.quantity)),
+          h('td', { class: `fin-r fin-num ${update && update.before !== sum.quantity ? 'fin-neg' : 'fin-muted'}` }, update ? String(update.before) : '—'),
+          h('td', { class: 'fin-r fin-num' }, money(sum.cost, holding.currency))))))),
+    symbols.some(({ update, sum }) => update && update.before !== sum.quantity) && h('p', { class: 'fin-notice' },
+      'Some units differ from what the holding has now (in red). After the import, the units come from the buys and sells.'),
+    (p.duplicates > 0 || p.skipped.length > 0) && h('p', { class: 'fin-hint' },
+      [p.duplicates && `${p.duplicates} already imported (skipped)`, p.skipped.length && `${p.skipped.length} rows that aren't buys or sells (skipped)`].filter(Boolean).join(' · ')),
+    h('div', { class: 'fin-actions fin-mt' },
+      button(`Import ${p.newLots.length} buys and sells`, () => {
+        const res = ftImport(d.rows, d.accountId, { id: newId, holdings: state.holdings, lots: state.lots });
+        state.holdings.push(...res.newHoldings);
+        state.lots.push(...res.newLots);
+        for (const { id, before, ...fields } of res.holdingUpdates) Object.assign(state.holdings.find((x) => x.id === id), fields);
+        ftDraft = null;
+        persist();
+        view = { name: 'account', id: d.accountId };
+        render();
+        say(`Imported ${res.newLots.length} buys and sells.`);
+      }, 'primary', { disabled: !p.newLots.length || !d.accountId }),
+      button('Cancel', () => { ftDraft = null; render('ft-file'); })));
+}
+
+function importSection() {
+  const head = h('h3', { id: 'import-h', class: 'fin-label' }, 'Import transactions (CSV)');
+  if (!importDraft) {
+    const file = input({ type: 'file', accept: '.csv,text/csv', 'data-key': 'import-file' });
+    file.addEventListener('change', () => file.files[0] && readImportFile(file.files[0]));
+    return h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'import-h' }, head,
+      h('p', { class: 'fin-hint' }, 'Any CSV with a date, a description and an amount, such as a bank statement. You choose which column is which and see a preview before anything is saved.'),
+      h('div', { class: 'fin-grid' }, field('CSV file', file)));
+  }
+
+  const d = importDraft;
+  const update = (key, value, focus) => { d[key] = value; render(focus); };
+  const columnOptions = [['-1', 'Not in this file'], ...d.header.map((name, i) => [String(i), name || `Column ${i + 1}`])];
+  const mapSelects = IMPORT_FIELDS.map((f) => {
+    const sel = select(columnOptions, String(d.mapping[f]), { 'data-key': `map-${f}` });
+    sel.addEventListener('change', () => update('mapping', { ...d.mapping, [f]: Number(sel.value) }, `map-${f}`));
+    return field(`${FIELD_LABELS[f]}${['date', 'description', 'amount'].includes(f) ? ' *' : ''}`, sel);
+  });
+  const dateFmt = select([['dmy', 'Day/month/year'], ['mdy', 'Month/day/year'], ['ymd', 'Year-month-day']], d.dateFormat, { 'data-key': 'imp-date' });
+  dateFmt.addEventListener('change', () => update('dateFormat', dateFmt.value, 'imp-date'));
+  const dec = select([[',', '1.234,56 (comma)'], ['.', '1,234.56 (point)']], d.decimal, { 'data-key': 'imp-dec' });
+  dec.addEventListener('change', () => update('decimal', dec.value, 'imp-dec'));
+  const acc = select([['', 'None'], ...[...state.accounts].sort(byName).map((a) => [a.id, a.name])], d.defaultAccountId, { 'data-key': 'imp-acc' });
+  acc.addEventListener('change', () => update('defaultAccountId', acc.value, 'imp-acc'));
+
+  const required = ['date', 'description', 'amount'].filter((f) => d.mapping[f] < 0);
+  let n = 0;
+  const preview = required.length ? null : runImport(() => `preview-${++n}`);
+  const nameOf = (id) => state.accounts.find((a) => a.id === id)?.name
+    ?? preview?.newAccounts.find((a) => a.id === id)?.name ?? '';
+  const previewCats = [...state.categories, ...(preview?.newCategories ?? [])];
+  const catOf = (ids) => ids.map((id) => previewCats.find((c) => c.id === id)).filter(Boolean).map((c) => categoryPath(c, previewCats)).join(', ');
+
+  return h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'import-h' }, head,
+    h('p', { class: 'fin-hint' }, `${d.fileName} · ${d.body.length} rows`),
+    h('div', { class: 'fin-grid' }, mapSelects),
+    h('div', { class: 'fin-grid' },
+      field('Dates look like', dateFmt),
+      field('Decimal separator', dec),
+      field('Account for rows without one', acc, 'Rows with an Account column use that account, and unknown names become new accounts.')),
+    required.length
+      ? h('p', { class: 'fin-error', role: 'alert' }, `Choose the column for: ${required.map((f) => FIELD_LABELS[f]).join(', ')}.`)
+      : h('div', { class: 'fin-import-summary', 'aria-live': 'polite' },
+        h('p', {}, h('strong', {}, `${preview.transactions.length} to import`),
+          preview.duplicates ? ` · ${preview.duplicates} already in your data (skipped)` : '',
+          preview.errors.length ? ` · ${preview.errors.length} with problems (skipped)` : ''),
+        (preview.linkedTransfers > 0 || preview.unpairedTransfers > 0) && h('p', { class: 'fin-hint' },
+          preview.linkedTransfers ? `${preview.linkedTransfers} transfer${preview.linkedTransfers === 1 ? '' : 's'} between accounts, linked from their two rows.` : '',
+          preview.unpairedTransfers ? ` ${preview.unpairedTransfers} transfer row${preview.unpairedTransfers === 1 ? '' : 's'} without a matching other side, imported as plain transactions.` : ''),
+        preview.newAccounts.length > 0 && h('p', { class: 'fin-hint' },
+          `New accounts: ${preview.newAccounts.map((a) => `${a.name} (${a.currency})`).join(', ')}. They start as Checking; change the type afterwards with Edit.`),
+        preview.newCategories.length > 0 && h('p', { class: 'fin-hint' },
+          `New categories: ${preview.newCategories.map((c) => c.name).join(', ')}.`),
+        preview.errors.length > 0 && h('ul', { class: 'fin-import-errors' },
+          preview.errors.slice(0, 5).map((e) => h('li', {}, `Line ${e.line}: ${e.message}`)),
+          preview.errors.length > 5 && h('li', {}, `and ${preview.errors.length - 5} more`)),
+        preview.transactions.length > 0 && h('div', { class: 'fin-scroll' }, h('table', { class: 'fin-table' },
+          h('caption', { class: 'fin-sr' }, 'First rows to import'),
+          h('thead', {}, h('tr', {}, ['Date', 'Description', 'Amount', 'Account', 'Category'].map((t, i) =>
+            h('th', { scope: 'col', class: i === 2 ? 'fin-r' : null }, t)))),
+          h('tbody', {}, preview.transactions.slice(0, 8).map((t) => h('tr', {},
+            h('td', { class: 'fin-nowrap' }, shortDate(t.date)), h('td', {}, t.description),
+            h('td', { class: `fin-r fin-num ${tone(t.amount)}` }, (t.amount / 100).toFixed(2)),
+            h('td', {}, nameOf(t.accountId)),
+            h('td', {}, t.transferId ? h('span', { class: 'fin-muted' }, 'Transfer') : catOf(t.categoryIds)))))))),
+    h('div', { class: 'fin-actions fin-mt' },
+      button(`Import ${preview?.transactions.length ?? 0} transactions`, async () => {
+        const res = runImport(newId);
+        withEuroRates(res.transactions, [...state.accounts, ...res.newAccounts]);
+        state.accounts.push(...res.newAccounts);
+        state.categories.push(...res.newCategories);
+        state.transactions.push(...res.transactions);
+        state.people.push(...res.newPeople);
+        state.ious.push(...res.ious);
+        importDraft = null;
+        persist(); render('import-file');
+        say(`Imported ${res.transactions.length} transactions.`);
+        await refreshRates(); // prices USD rows at their own dates
+      }, 'primary', { disabled: !preview?.transactions.length }),
+      button('Choose another file', () => { importDraft = null; render('import-file'); })));
+}
+
+function download(name, rows) {
+  const a = h('a', { href: URL.createObjectURL(new Blob([toCsv(rows)], { type: 'text/csv;charset=utf-8' })), download: name });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(a.href);
+}
+
+const decimal2 = (minor) => (minor / 100).toFixed(2);
+
+function exportSection() {
+  const accName = (id) => state.accounts.find((a) => a.id === id)?.name ?? '';
+  const accCur = (id) => state.accounts.find((a) => a.id === id)?.currency ?? 'EUR';
+  const stamp = today();
+  return h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'export-h' },
+    h('h3', { id: 'export-h', class: 'fin-label' }, 'Export (CSV)'),
+    h('p', { class: 'fin-hint' }, 'Opens in Excel, Numbers or Google Sheets. The transactions file can be imported back here.'),
+    h('div', { class: 'fin-actions' },
+      button('Transactions', () => download(`transactions-${stamp}.csv`, [
+        ['Date', 'Description', 'Amount', 'Currency', 'Account', 'Category', 'Memo', 'Amount (EUR)', 'Transfer'],
+        ...[...state.transactions].sort((a, b) => a.date.localeCompare(b.date)).map((t) => [
+          t.date, t.description, decimal2(t.amount), accCur(t.accountId), accName(t.accountId),
+          t.transferId ? '' : categoriesOf(t).map(catLabel).filter(Boolean).join(', '), t.memo ?? '',
+          t.rate == null ? '' : decimal2(convert(t.amount, t.rate)), t.transferId ?? '',
+        ]),
+      ])),
+      button('Accounts', () => download(`accounts-${stamp}.csv`, [
+        ['Name', 'Type', 'Currency', 'Archived', 'Balance'],
+        ...state.accounts.map((a) => [a.name, ACCOUNT_TYPE_LABELS[a.type], a.currency, a.archived ? 'yes' : 'no', decimal2(accountValue(a))]),
+      ])),
+      button('Holdings', () => download(`holdings-${stamp}.csv`, [
+        ['Account', 'Symbol', 'Exchange', 'Name', 'Quantity', 'Price', 'Currency', 'Value', 'Price date', 'Entered by hand'],
+        ...state.holdings.map((x) => [
+          accName(x.accountId), x.symbol, x.exchange ?? '', x.name ?? '', x.quantity, x.price ?? '', x.currency,
+          holdingValue(x) == null ? '' : decimal2(holdingValue(x)), x.priceAt?.slice(0, 10) ?? '', x.manual ? 'yes' : 'no',
+        ]),
+      ])),
+      button('IOUs', () => download(`ious-${stamp}.csv`, [
+        ['Date', 'Person', 'Type', 'Description', 'Amount (EUR, + they owe you)', 'Account'],
+        ...[...state.ious].sort((a, b) => a.date.localeCompare(b.date)).map((e) => [
+          e.date, personName(e.personId), IOU_TYPES[e.kind] ?? '', e.description, decimal2(e.amount),
+          accName(state.transactions.find((t) => t.id === e.transactionId)?.accountId),
+        ]),
+      ])),
+      button('Category rules', () => download(`rules-${stamp}.csv`, [
+        ['Order', 'Match', 'Text', 'Category'],
+        ...state.rules.map((r, i) => [i + 1, r.match, r.pattern, catLabel(r.categoryId)]),
+      ]))));
+}
+
+// ── shell ────────────────────────────────────────────────────────────────────
+
+// Re-rendering replaces the DOM, so keep keyboard focus on the element with the same data-key.
+function render(focusKey) {
+  const key = focusKey ?? document.activeElement?.dataset?.key;
+  iouByTx = null;
+  hueOrder = null;
+  const account = view.name === 'account' && state.accounts.find((a) => a.id === view.id);
+  if (view.name === 'account' && !account && state.accounts[0]) view = { name: 'account', id: state.accounts[0].id };
+  const current = view.name === 'account' && state.accounts.find((a) => a.id === view.id);
+
+  document.querySelectorAll('[data-nav]').forEach((b) => {
+    const on = b.dataset.nav === (view.name === 'account' ? 'overview' : view.name);
+    if (on) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
+  });
+  const inSettings = view.name === 'settings';
+  side.setAttribute('aria-label', inSettings ? 'Settings' : 'Accounts');
+  side.replaceChildren(...(inSettings ? renderSettingsNav() : renderSide()).flat().filter(Boolean));
+  main.replaceChildren(
+    needsSchemaUpdate() ? h('p', { class: 'fin-notice fin-legacy', role: 'alert' },
+      'This version needs a database update: run tools/finance/schema.sql again in the Supabase SQL editor (it keeps your data), then reload. Until then, changes aren’t saved.') : '',
+    legacyBanner() ?? '',
+    view.name === 'settings' ? renderSettings()
+      : view.name === 'scheduled' ? renderSchedules()
+        : view.name === 'ious' ? renderIous()
+          : view.name === 'insights' ? renderInsights()
+            : view.name === 'networth' ? renderNetWorth()
+        : current ? renderAccount(current) : renderWelcome());
+  if (key) document.querySelector(`[data-key="${key}"]`)?.focus();
+}
+
+// Data from the earlier browser-only version: offer to move it into the account once.
+function legacyBanner() {
+  const old = legacyData();
+  if (!old) return null;
+  return h('div', { class: 'fin-notice fin-legacy', role: 'region', 'aria-label': 'Data in this browser' },
+    h('p', {}, `This browser still has data from before sign-in: ${old.accounts?.length ?? 0} accounts and ${old.transactions?.length ?? 0} transactions.`),
+    h('div', { class: 'fin-actions' },
+      button('Move it to my account', async () => {
+        // Add what isn't there yet, by id, so moving twice never duplicates anything.
+        for (const t of ['categories', 'accounts', 'rules', 'holdings', 'transactions']) {
+          const have = new Set(state[t].map((x) => x.id));
+          state[t].push(...(old[t] ?? []).filter((x) => !have.has(x.id)));
+        }
+        state.settings.quoteApiKey ||= old.settings?.quoteApiKey ?? '';
+        state.settings.avApiKey ||= old.settings?.avApiKey ?? '';
+        forgetLegacyData();
+        persist(); render();
+        say('Moved. Your data is now saved to your account.');
+        await refreshRates();
+      }, 'primary'),
+      button('Discard it', () => {
+        if (!confirm('Delete the data stored in this browser? Your account is not affected.')) return;
+        forgetLegacyData(); render(); say('Browser data discarded.');
+      }, 'danger')));
+}
+
+// ── start-up: setup check, sign-in, load ─────────────────────────────────────
+
+const syncEl = document.getElementById('sync');
+const layout = document.querySelector('.fin-layout');
+
+// Before sign-in only the main column shows; the account panel and the header controls appear after.
+function setShell(signedIn) {
+  side.hidden = !signedIn;
+  layout.classList.toggle('fin-layout--solo', !signedIn);
+  document.querySelectorAll('[data-nav], #sync').forEach((el) => { el.hidden = !signedIn; });
+}
+
+function screen(title, ...body) {
+  setShell(false);
+  main.replaceChildren(h('div', { class: 'fin-welcome' }, h('h2', { class: 'fin-title', tabindex: '-1', id: 'screen-h' }, title), ...body));
+}
+
+function renderSetupNeeded() {
+  screen('Connect a database',
+    h('p', { class: 'fin-empty' }, 'Your data is stored in your own Supabase project, so you can reach it from any device. Fill in tools/finance/config.js with the project URL and anon key, then reload. The steps are in tools/finance/README.md.'));
+}
+
+function renderSignIn(message) {
+  const email = input({ type: 'email', required: true, autocomplete: 'email' });
+  const note = h('p', { class: message ? 'fin-error' : 'fin-hint', role: message ? 'alert' : null }, message ?? '');
+  screen('Sign in',
+    h('p', { class: 'fin-empty' }, 'We’ll email you a link. Open it on this device to sign in. No password needed.'),
+    h('form', {
+      class: 'fin-signin',
+      onsubmit: async (e) => {
+        e.preventDefault();
+        const submit = e.target.querySelector('button[type="submit"]');
+        submit.disabled = true;
+        try {
+          await sendSignInLink(email.value.trim(), `${location.origin}/tools/finance/`);
+          screen('Check your email',
+            h('p', { class: 'fin-empty' }, `We sent a sign-in link to ${email.value.trim()}. Open it on this device. You can close this tab.`),
+            button('Use a different email', () => renderSignIn()));
+          document.getElementById('screen-h').focus();
+        } catch (err) {
+          note.className = 'fin-error';
+          note.setAttribute('role', 'alert');
+          note.textContent = err.message;
+          submit.disabled = false;
+        }
+      },
+    },
+      field('Email', email), note,
+      h('button', { type: 'submit', class: 'fin-btn btn-primary' }, 'Email me a sign-in link')));
+  email.focus();
+}
+
+const STATUS_TEXT = { saved: 'All changes saved', saving: 'Saving…', error: 'Not saved yet, retrying' };
+onStatus((s, err) => {
+  if (err instanceof SignedOut) { renderSignIn('Your session ended. Sign in again; unsaved changes on this page will be lost.'); return; }
+  syncEl.textContent = STATUS_TEXT[s];
+  syncEl.title = err?.message ?? '';
+  syncEl.dataset.state = s;
+});
+
+let loadedAt = 0;
+async function loadData() {
+  state = await load();
+  loadedAt = Date.now();
+  if (view.name !== 'settings') view = { name: 'account', id: view.id ?? state.settings.lastAccountId ?? state.accounts[0]?.id };
+}
+
+async function boot() {
+  if (!configured()) { renderSetupNeeded(); return; }
+  let signInError = null;
+  try { await completeSignIn(); } catch (err) { signInError = err.message; }
+  if (!currentUser()) { renderSignIn(signInError); return; }
+
+  screen('Loading your data…');
+  try {
+    await loadData();
+  } catch (err) {
+    if (err instanceof SignedOut) { renderSignIn('Your session ended. Sign in again.'); return; }
+    screen('Couldn’t load your data', h('p', { class: 'fin-error', role: 'alert' }, err.message),
+      button('Try again', () => boot(), 'primary'));
+    return;
+  }
+  setShell(true);
+  syncEl.textContent = STATUS_TEXT.saved;
+  render();
+  await refreshRates();
+  await refreshPrices(stalePrices());
+  recordSnapshot();
+}
+
+document.querySelectorAll('[data-nav]').forEach((b) => b.addEventListener('click', () => {
+  view = b.dataset.nav === 'overview'
+    ? { name: 'account', id: state.settings.lastAccountId ?? state.accounts[0]?.id }
+    : { name: b.dataset.nav };
+  render();
+}));
+
+async function signOutNow() {
+  if (hasPendingChanges() && !confirm('Some changes are still being saved. Sign out anyway?')) return;
+  await signOut();
+  state = null;
+  renderSignIn();
+}
+
+// Warn before closing the tab while changes are still on their way to the database.
+window.addEventListener('beforeunload', (e) => {
+  if (state && hasPendingChanges()) e.preventDefault();
+});
+
+// Coming back to the tab picks up edits made on another device, unless something here is unsaved
+// or in the middle of being edited.
+document.addEventListener('visibilitychange', async () => {
+  if (document.visibilityState !== 'visible' || !state || hasPendingChanges()) return;
+  if (Date.now() - loadedAt < 30_000 || editingTxId || editingCatId || importDraft || buxferDraft || ftDraft || document.querySelector('dialog[open]')) return;
+  try { await loadData(); render(); } catch { /* keep showing what we have */ }
+});
+
+boot();
