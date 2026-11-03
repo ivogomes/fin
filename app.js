@@ -528,7 +528,7 @@ function renderSide() {
 function accountsPage() {
   return h('div', {},
     h('div', { class: 'fin-account-head' }, h('h2', { class: 'fin-title', id: 'accounts-h', tabindex: '-1', 'data-key': 'accounts-h' }, 'Accounts')),
-    h('div', { class: 'fin-side-list' }, renderSide()));
+    h('div', { class: 'fin-side-list' }, renderSide().flat().filter(Boolean))); // its groups come as a list in the list
 }
 // Shown on phones only (CSS), above an account.
 const backToAccounts = () => h('button', {
