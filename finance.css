@@ -267,7 +267,9 @@ body {
 .fin-main { min-width: 0; max-width: 1320px; padding: 32px 40px 72px; }
 
 @media (max-width: 52rem) {
-  .fin-layout { grid-template-columns: minmax(0, 1fr); }
+  /* One column: the Settings menu button, its panel, then the page. Rows keep their own height (the
+     layout's min-height would otherwise stretch them when the page is short). */
+  .fin-layout { grid-template-columns: minmax(0, 1fr); align-content: start; }
   .fin-side { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--f-border); }
   .fin-main { padding: 24px 16px 56px; }
 }
