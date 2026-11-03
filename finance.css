@@ -264,7 +264,8 @@ body {
   border-right: 1px solid var(--f-border);
 }
 
-.fin-main { min-width: 0; max-width: 1320px; padding: 32px 40px 72px; }
+/* At most 1320px wide, centred in the space next to the account panel on wide screens. */
+.fin-main { justify-self: center; width: 100%; min-width: 0; max-width: 1320px; padding: 32px 40px 72px; }
 
 @media (max-width: 52rem) {
   /* One column: the Settings menu button, its panel, then the page. Rows keep their own height (the
