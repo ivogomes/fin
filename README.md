@@ -217,6 +217,8 @@ Import → **From Buxfer** takes Buxfer's export files together (accounts, trans
 
 Settings → **Export (CSV)** downloads transactions, accounts, holdings and category rules. The transactions file imports back unchanged.
 
+**Cleaning up after imports.** Settings → **Link transfers** turns pairs of transactions (same date and description, opposite amounts, two accounts) into transfers. Settings → **Duplicates** finds transactions that look entered twice, as after importing a file again: same account, amount and description (case, accents and numbers in it ignored, since card and reference numbers differ between exports), at most 3 days apart (`findDuplicates` in `model.js`). Each group lists its copies to pick the one to keep, the one with categories, a memo, a split, an IOU or a transfer suggested first; **Delete the other copy** deletes the rest of that group, the button at the top the extra copies of every group, both with Undo. **Not duplicates** hides a group (remembered with the other turned-down suggestions) until another copy turns up.
+
 ## Market data
 
 - **Exchange rates:** Frankfurter (ECB reference rates), no key. Each transaction keeps the rate of its own date.

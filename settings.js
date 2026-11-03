@@ -1,20 +1,20 @@
 // Settings: its pages and navigation, category management, and the smaller settings sections.
 
 import {
-  categoriesOf, categorize, defaultState, findTransferPairs, newId, normalize, sortedCategories,
-  splitsOf,
+  categoriesOf, categorize, defaultState, findDuplicates, findTransferPairs, newId, normalize,
+  sortedCategories, splitsOf,
 } from './model.js';
 import { clearTables, persist, transactionsComplete } from './store.js';
 import {
-  avatar, profile, refreshPrices, render, setEditingTxId, setHideAmounts, setTxPage, setView,
-  signOutNow, state, totalsOf, undoable, view,
+  avatar, deleteTransactions, profile, refreshPrices, render, setEditingTxId, setHideAmounts, setTxPage,
+  setView, signOutNow, state, totalsOf, undoable, view,
 } from './app.js';
 import { backupSection, exportSection } from './backups.js';
 import { decimal2, importKind, importPage, importTabs, setBuxferDraft, setImportDraft } from './imports.js';
-import { needEverything } from './transactions.js';
+import { accountName, catChips, needEverything } from './transactions.js';
 import {
   NUMBER_FORMATS, button, catLabel, catOptions, category, field, h, hideAmounts, input,
-  numberFormat, say, select, setNumberFormat, shortDate, writePref,
+  numberFormat, say, select, setNumberFormat, shortDate, signed, writePref,
 } from './ui.js';
 
 // ── main: settings ───────────────────────────────────────────────────────────
@@ -28,6 +28,7 @@ export const SETTINGS_PAGES = [
   // One page for every import, with the kind picked at the top (holdings don't need every transaction).
   { key: 'import', label: 'Import', group: 'Data', needsAll: () => importKind() !== 'holdings', render: () => importPage() },
   { key: 'link', label: 'Link transfers', group: 'Data', needsAll: true, render: () => linkTransfersSection() },
+  { key: 'duplicates', label: 'Duplicates', group: 'Data', needsAll: true, render: () => duplicatesSection() },
   { key: 'export', label: 'Export', group: 'Data', needsAll: true, render: () => exportSection() },
   { key: 'delete', label: 'Delete all data', group: 'Data', render: () => deleteAllSection() },
   { key: 'display', label: 'Display', group: 'Account', render: () => displaySection() },
@@ -261,6 +262,63 @@ export function linkTransfersSection() {
           persist(); render('link-h');
           say(`Linked ${pairs.length} transfers.`);
         }, 'primary')),
+      ]);
+}
+
+// Likely duplicates (findDuplicates in model.js), as after importing the same file twice. Each group
+// shows its copies with a choice of which to keep (the suggested one first); the others can be
+// deleted, a group at a time or all at once (with Undo), or a group answered "Not duplicates"
+// (remembered, like turned-down suggestions). `dupKeep` holds the choices made on this page.
+const dupKeep = new Map();
+export function duplicatesSection() {
+  const linked = new Set(state.ious.map((e) => e.transactionId).filter(Boolean));
+  const groups = findDuplicates(state.transactions, { dismissed: state.settings.hiddenSuggestions ?? [], linked });
+  const keepOf = (g) => (g.items.some((t) => t.id === dupKeep.get(g.key)) ? dupKeep.get(g.key) : g.items[0].id);
+  const extras = (g) => g.items.filter((t) => t.id !== keepOf(g)).map((t) => t.id);
+  const total = groups.reduce((n, g) => n + g.items.length - 1, 0);
+  const notDuplicates = (g) => {
+    state.settings.hiddenSuggestions = [...(state.settings.hiddenSuggestions ?? []), g.key];
+    persist(); render('dup-h');
+    say(`“${g.items[0].description}” won’t be shown as a duplicate again.`);
+  };
+  const cur = (t) => state.accounts.find((a) => a.id === t.accountId)?.currency ?? 'EUR';
+  const copy = (g, t, gi) => {
+    const radio = h('input', { type: 'radio', name: `dup-${gi}`, value: t.id, checked: t.id === keepOf(g), 'data-key': `dup-${t.id}` });
+    // The choice is kept here, not something to save, so leaving the page doesn't ask about it.
+    radio.addEventListener('change', () => {
+      dupKeep.set(g.key, t.id);
+      for (const r of document.getElementsByName(radio.name)) r.defaultChecked = r.checked;
+    });
+    const tags = [t.transferId && 'transfer', linked.has(t.id) && 'IOU', splitsOf(t) && 'split'].filter(Boolean);
+    return h('li', {}, h('label', { class: 'fin-check fin-dup-copy' }, radio,
+      h('span', { class: 'fin-dup-main' },
+        h('span', {}, h('time', { datetime: t.date }, shortDate(t.date)), ' · ', t.description,
+          tags.length > 0 && h('span', { class: 'fin-muted' }, ` · ${tags.join(', ')}`)),
+        t.memo && h('span', { class: 'fin-sub' }, t.memo),
+        catChips(categoriesOf(t)))));
+  };
+  return h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'dup-h' },
+    h('h3', { id: 'dup-h', class: 'fin-label', tabindex: '-1', 'data-key': 'dup-h' }, 'Duplicates'),
+    h('p', { class: 'fin-hint' }, 'Transactions that look like the same one entered twice, as after importing a file again: same account, amount and description (numbers in it, like card or reference numbers, aside), at most 3 days apart. Pick the copy to keep; the one with categories, a memo or links comes first. Deleting one side of a transfer deletes its other side too.'),
+    groups.length === 0
+      ? h('p', { class: 'fin-empty' }, 'No duplicates found.')
+      : [
+        h('div', { class: 'fin-actions fin-mt' },
+          h('p', { class: 'fin-dup-count' }, h('strong', {}, `${groups.length} group${groups.length === 1 ? '' : 's'}`), `, ${total} extra cop${total === 1 ? 'y' : 'ies'}`),
+          button(`Delete ${total} extra cop${total === 1 ? 'y' : 'ies'}`, () => deleteTransactions(new Set(groups.flatMap(extras))), 'danger', { 'data-key': 'dup-all' })),
+        h('ul', { class: 'fin-dups' }, groups.map((g, gi) => {
+          const t0 = g.items[0];
+          const legendId = `dup-l-${gi}`;
+          return h('li', {}, h('fieldset', { class: 'fin-dup' },
+            h('legend', { id: legendId }, h('strong', {}, t0.description), ' · ', accountName(t0.accountId), ' · ',
+              h('span', { class: `fin-num ${t0.amount < 0 ? 'fin-neg' : 'fin-pos'}` }, signed(t0.amount, cur(t0)))),
+            h('p', { class: 'fin-sr' }, 'Pick the one to keep.'),
+            h('ul', { class: 'fin-dup-copies' }, g.items.map((t) => copy(g, t, gi))),
+            h('div', { class: 'fin-actions' },
+              button(g.items.length === 2 ? 'Delete the other copy' : `Delete the other ${g.items.length - 1}`, () => deleteTransactions(new Set(extras(g))), 'secondary fin-btn-sm',
+                { 'aria-describedby': legendId }),
+              button('Not duplicates', () => notDuplicates(g), 'secondary fin-btn-sm', { 'aria-describedby': legendId }))));
+        })),
       ]);
 }
 

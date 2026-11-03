@@ -706,6 +706,47 @@ export function findTransferPairs(transactions) {
   return pairs;
 }
 
+// Likely duplicates, as after importing the same file twice: transactions in the same account with
+// the same amount and description (case, accents and numbers ignored: card and reference numbers
+// often differ between exports) on dates at most `days` apart. Returns groups of two or more,
+// newest first: { key, items }, with `items[0]` the one worth keeping (categories, a memo, a split,
+// an IOU in `linked` or a transfer, then the oldest). `dismissed` holds keys answered "Not
+// duplicates"; a group that gains another copy has a new key and shows again.
+export function findDuplicates(transactions, { days = 3, dismissed = [], linked = new Set() } = {}) {
+  const skip = new Set(dismissed);
+  const byKey = new Map();
+  for (const t of transactions) {
+    if (!t.amount) continue;
+    const desc = normalize(t.description).replace(/\d+/g, ' ').replace(/\s+/g, ' ').trim();
+    const k = `${t.accountId}|${t.amount}|${desc}`;
+    if (!byKey.has(k)) byKey.set(k, []);
+    byKey.get(k).push(t);
+  }
+  const worth = (t) => (categoriesOf(t).length ? 8 : 0) + (t.memo ? 4 : 0) + (t.splits?.length ? 4 : 0)
+    + (linked.has(t.id) ? 4 : 0) + (t.transferId ? 2 : 0);
+  const out = [];
+  for (const list of byKey.values()) {
+    if (list.length < 2) continue;
+    list.sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id));
+    // Runs of dates each within `days` of the one before.
+    let run = [list[0]];
+    const close = () => {
+      if (run.length < 2) return;
+      const key = `dup|${run.map((t) => t.id).sort().join(',')}`;
+      if (skip.has(key)) return;
+      const items = [...run].sort((a, b) => worth(b) - worth(a) || a.date.localeCompare(b.date) || a.id.localeCompare(b.id));
+      out.push({ key, items });
+    };
+    for (const t of list.slice(1)) {
+      const prev = run[run.length - 1];
+      if ((Date.parse(t.date) - Date.parse(prev.date)) / 864e5 <= days) run.push(t);
+      else { close(); run = [t]; }
+    }
+    close();
+  }
+  return out.sort((a, b) => b.items[0].date.localeCompare(a.items[0].date));
+}
+
 // ── Scheduled (recurring) transactions ───────────────────────────────────────
 // A schedule: { id, description, amount (positive minor units), kind: 'expense'|'income'|'transfer',
 // accountId, toAccountId (transfers), categoryIds (several, like a transaction's; older ones had a

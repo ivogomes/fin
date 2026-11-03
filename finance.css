@@ -1871,3 +1871,14 @@ input.fin-cat-add:focus { width: 10rem; border-style: solid; border-color: var(-
 @keyframes fin-ptr-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .fin-ptr .fin-icon { transition: none; } .fin-ptr.is-loading .fin-icon { animation: none; } }
 @media (display-mode: standalone) { html { overscroll-behavior-y: none; } }
+
+/* Duplicates (Settings → Duplicates): a group per likely duplicate, its copies as a choice of which to keep. */
+.fin-dup-count { margin: 0 auto 0 0; }
+.fin-dups { display: grid; gap: 12px; margin: 16px 0 0; padding: 0; list-style: none; }
+.fin-dup { margin: 0; padding: 12px 14px; border: 1px solid var(--f-border); border-radius: var(--f-radius-sm); }
+.fin-dup legend { padding: 0 4px; font-size: 14px; }
+.fin-dup-copies { display: grid; gap: 4px; margin: 6px 0 10px; padding: 0; list-style: none; }
+.fin-dup-copy { align-items: flex-start; padding: 6px 4px; border-radius: 6px; font-size: 13px; cursor: pointer; }
+.fin-dup-copy:hover { background: var(--f-hover); }
+.fin-dup-copy input { margin-top: 2px; flex: none; }
+.fin-dup-main { display: grid; gap: 4px; min-width: 0; }

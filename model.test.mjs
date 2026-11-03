@@ -6,7 +6,7 @@ import {
   holdingValue, investmentValue, netWorth, defaultState, withRunningBalance,
   crossConvert, batchRow, makeTransfer,
   parseCsv, toCsv, parseAmount, parseDate, guessDateFormat, guessDecimal, guessMapping, importRows,
-  findTransferPairs, detectBuxferFile, buxferImport, isFundMovements, fundMovementsToFt,
+  findTransferPairs, findDuplicates, detectBuxferFile, buxferImport, isFundMovements, fundMovementsToFt,
   categoryPath, categoryResolver, categoriesOf, sortedCategories, searchCategories,
   parseBuxferIou, iouSign, iouType, personBalances, personHistory,
   periodRange, granularity, insights, completeMonths, holdingHistory, accountRuns, historyPoints, incomeCategories, REFUNDS_UNMATCHED, netWorthHistory, isFtExport, ftImport, lotSummary, investedHistory,
@@ -1045,4 +1045,27 @@ test('category search: every word in the path, accents ignored, name prefix firs
   assert.deepEqual(ids('f'), ['food', 'furn', 'gro', 'rest']);
   assert.deepEqual(ids('food', ['gro']), ['food', 'rest']);
   assert.deepEqual(ids('nothing'), []);
+});
+
+test('duplicates: same account, amount and description within a few days; the best one kept first', () => {
+  const tx = [
+    { id: 'a', accountId: 'bank', date: '2026-10-01', description: 'CONTINENTE 1234', amount: -2599, categoryIds: [] },
+    { id: 'b', accountId: 'bank', date: '2026-10-02', description: 'Continente 9876', amount: -2599, categoryIds: ['food'] },
+    { id: 'c', accountId: 'bank', date: '2026-10-20', description: 'Continente', amount: -2599, categoryIds: [] }, // too late
+    { id: 'd', accountId: 'card', date: '2026-10-01', description: 'Continente 1234', amount: -2599, categoryIds: [] }, // other account
+    { id: 'e', accountId: 'bank', date: '2026-10-01', description: 'Continente', amount: -2600, categoryIds: [] }, // other amount
+    { id: 'f', accountId: 'bank', date: '2026-09-05', description: 'Netflix', amount: -1399, categoryIds: [] },
+    { id: 'g', accountId: 'bank', date: '2026-09-05', description: 'netflix', amount: -1399, memo: 'shared', categoryIds: [] },
+    { id: 'h', accountId: 'bank', date: '2026-09-05', description: 'Netflix', amount: -1399, categoryIds: [] },
+  ];
+  const groups = findDuplicates(tx);
+  assert.deepEqual(groups.map((g) => g.items.map((t) => t.id)), [['b', 'a'], ['g', 'f', 'h']]);
+  assert.equal(groups[0].key, 'dup|a,b');
+  // Answered "Not duplicates": gone, until another copy turns up.
+  assert.deepEqual(findDuplicates(tx, { dismissed: ['dup|a,b'] }).map((g) => g.key), ['dup|f,g,h']);
+  const more = [...tx, { id: 'i', accountId: 'bank', date: '2026-10-03', description: 'Continente', amount: -2599, categoryIds: [] }];
+  assert.deepEqual(findDuplicates(more, { dismissed: ['dup|a,b'] })[0].items.map((t) => t.id), ['b', 'a', 'i']);
+  // An IOU linked to a copy makes it the one to keep.
+  assert.equal(findDuplicates(tx, { linked: new Set(['h']) })[1].items[0].id, 'g'); // the memo still counts for as much
+  assert.equal(findDuplicates(tx, { linked: new Set(['f']) })[1].items[0].id, 'f');
 });
