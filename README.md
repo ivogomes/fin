@@ -7,17 +7,32 @@ Data is stored in a Supabase project (Postgres) and you sign in with Google or a
 | File | What it is |
 | --- | --- |
 | `index.html` | The page: tool header, account panel, main area, dialogs. |
-| `app.js` | UI: rendering, forms, dialogs, CSV import and export, start-up and sign-in. |
+| `app.js` | The app's core and shell: what's shown (`state`, `view`, the address), `render`, sign-in and start-up, the header, the account menu and the phone tab bar. Loads the other modules. |
+| `ui.js` | Building blocks every page uses: `h()` for elements, form controls, icons, preferences, money and number formatting, category names and colours. |
+| `accounts.js` | An account's dialog and page, credit card statements and payments, and alerts. |
+| `transactions.js` | Transaction lists: filters, selection and bulk changes, the table, editing in place, paging from the database, and Search. |
+| `entry.js` | Adding transactions: the quick-entry grid, the single form, description suggestions, the category picker. |
+| `holdings.js` | Holdings and their buys and sells. |
+| `ious.js` | IOUs, per person. |
+| `insights.js` | Insights and net worth over time. |
+| `schedules.js` | Scheduled transactions and subscriptions. |
+| `overview.js` | The Overview and its alerts. |
+| `settings.js` | Settings pages and navigation, and category management. |
+| `imports.js` | Imports (CSV, Buxfer, holdings, rules) and CSV export. |
+| `backups.js` | Backups: download, restore, Google Drive. |
+| `palette.js` | Go to (Ctrl/⌘+K). |
 | `theme.js` | Applies the picked appearance (light, dark or the system's) before the page is drawn. |
 | `model.js` | Pure logic: money in cents, categories by rule, balances, transfers, net worth, CSV parsing and import mapping. No DOM, no I/O. |
 | `model.test.mjs` | The spec for `model.js`. |
 | `store.js` | Loads the signed-in user's data and saves changes: compares with the last saved copy and sends only added, changed or removed rows. |
-| `cloud.js` | Supabase over plain `fetch`: email-link sign-in and table access. No SDK. |
+| `cloud.js` | Supabase over plain `fetch`: sign-in (email link or Google) and table access. No SDK. |
 | `market.js` | Exchange rates (Frankfurter), symbol search and US prices (Twelve Data), non-US prices (Alpha Vantage). |
 | `drive.js` | Backups to Google Drive (optional, with a Google OAuth client ID in `config.js`). |
 | `schema.sql` | Database tables and row-level security. |
 | `config.js` | Your Supabase project URL and anon key. |
 | `finance.css` | The tool's styles, on the shared tokens (see `STYLEGUIDE.md`). |
+
+The modules are plain ES modules, loaded by `app.js` (no build step). Each exports its top-level declarations and imports what it uses from the others; they only reach each other's code when called, so the cycles between them are safe. A module can read another's variables (`state`, `view`, `txPage`…) but not assign them, so each such variable has a setter next to it (`setView`, `setTxPage`, `setEditingTxId`…). A new file needs adding to `SHELL` in `sw.js`.
 
 ## Set up the database (once)
 
