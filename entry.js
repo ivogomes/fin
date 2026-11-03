@@ -12,7 +12,9 @@ import {
   accountLabel, accountName, categoryPicker, descIndex, holdingSelect, pickableAccounts,
   pickerField, splitEditor,
 } from './transactions.js';
-import { button, catLabel, field, h, input, money, say, select, shortDate, txDialog, typeSwitch } from './ui.js';
+import {
+  button, catLabel, field, flag, h, input, money, say, select, shortDate, txDialog, typeSwitch,
+} from './ui.js';
 
 // ── add transactions dialog ──────────────────────────────────────────────────
 
@@ -339,8 +341,9 @@ export function singleTxForm(account, close, swap) {
     receivedField.hidden = !cross;
     received.required = Boolean(cross);
     desc.required = !transfer;
-    receivedField.querySelector('label').textContent = cross ? `Amount received (${b.currency})` : 'Amount received';
-    amountField.querySelector('label').textContent = `Amount (${a?.currency ?? 'EUR'})`;
+    // Between currencies, each amount with its currency's flag.
+    receivedField.querySelector('label').replaceChildren(...(cross ? [flag(b.currency), `Amount received (${b.currency})`] : ['Amount received']));
+    amountField.querySelector('label').replaceChildren(...[cross && flag(a.currency), `Amount (${a?.currency ?? 'EUR'})`].filter(Boolean));
     if (cross && !receivedTouched && Number(amount.value) > 0) {
       const [ra, rb] = await Promise.all([ensureRate(a.currency, date.value), ensureRate(b.currency, date.value)]);
       if (ra != null && rb != null && !receivedTouched) received.value = (crossConvert(toMinor(amount.value), ra, rb) / 100).toFixed(2);
@@ -467,7 +470,7 @@ export function symbolPicker(onPick) {
   const choose = (r) => {
     chosen = r;
     box.value = `${r.symbol} · ${r.name}`;
-    note.textContent = `${r.exchange} (${r.country}) · ${r.type} · priced in ${r.currency}`;
+    note.textContent = `${r.exchange} (${r.country}) · ${r.type} · priced in ${r.currency}${r.currencyGuessed ? ' (EODHD doesn’t say which currency, so this is a guess: check it with Edit once added)' : ''}`;
     open(false);
     onPick?.(r);
   };

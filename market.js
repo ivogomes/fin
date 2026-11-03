@@ -103,11 +103,12 @@ export const FUND_MIC = 'EUFUND';
 export const isIsin = (text) => /^[A-Z]{2}[A-Z0-9]{9}[0-9]$/.test(String(text).trim().toUpperCase());
 
 // What the fund is, as a search result ({ symbol, name, exchange, mic, type, country, currency }), or null.
+// Without a currency in EODHD's data it's taken as EUR, and `currencyGuessed` says so.
 export async function fundSearch(isin, call) {
   const list = await call({ p_isin: isin, p_kind: 'search' });
   const f = (Array.isArray(list) ? list : []).find((x) => x.Exchange === FUND_MIC) ?? (Array.isArray(list) ? list[0] : null);
   if (!f) return null;
-  return { symbol: isin, name: f.Name, exchange: 'Funds (EODHD)', mic: FUND_MIC, type: f.Type || 'Fund', country: f.Country || isin.slice(0, 2), currency: f.Currency || 'EUR' };
+  return { symbol: isin, name: f.Name, exchange: 'Funds (EODHD)', mic: FUND_MIC, type: f.Type || 'Fund', country: f.Country || isin.slice(0, 2), currency: f.Currency || 'EUR', currencyGuessed: !f.Currency };
 }
 
 // The latest price (NAV) from the last two weeks: { price }.

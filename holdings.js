@@ -6,8 +6,8 @@ import { persist } from './store.js';
 import { byName, loadHistory, refreshPrices, render, setView, state, undoable, view } from './app.js';
 import { priceCell, symbolPicker } from './entry.js';
 import {
-  button, dialog, field, h, hideAmounts, iconButton, input, money, num, say, select, shortDate,
-  shownQty, signed, thisYear, tone,
+  button, dialog, field, h, hideAmounts, iconButton, input, latestRate, money, num, say, select,
+  shortDate, shownQty, signed, thisYear, tone,
 } from './ui.js';
 
 // ── editing a holding ────────────────────────────────────────────────────────
@@ -305,6 +305,27 @@ export function timeChart(points, { id, title, unit, format, kind = 'change', re
     readout, wrap, table);
 }
 export const lotsOfHolding = (id) => state.lots.filter((l) => l.holdingId === id).sort((a, b) => a.date.localeCompare(b.date));
+// An investment account's gain from its holdings: each one's value less what its buys and sells
+// cost, in the account's currency (converted at today's rates, like its value). Null when a
+// holding has no lots (its cost isn't known) or a price or rate is missing.
+export function holdingsGain(account) {
+  const list = state.holdings.filter((x) => x.accountId === account.id);
+  if (!list.length) return null;
+  let gain = 0;
+  let cost = 0;
+  for (const x of list) {
+    const own = lotsOfHolding(x.id);
+    const value = holdingValue(x);
+    if (!own.length || value == null) return null;
+    const toAccount = x.currency === account.currency ? 1
+      : latestRate(x.currency) && latestRate(account.currency) ? latestRate(x.currency) / latestRate(account.currency) : null;
+    if (toAccount == null) return null;
+    const c = lotSummary(own).cost;
+    gain += Math.round((value - c) * toAccount);
+    cost += Math.round(c * toAccount);
+  }
+  return { gain, cost };
+}
 // A holding with lots takes its units from them.
 export function recalcHolding(x) {
   const own = lotsOfHolding(x.id);
@@ -394,15 +415,20 @@ export function holdingsSection(account) {
       'US listings are priced through Twelve Data. Add its free API key in Settings.'),
     (() => {
       const times = list.map((x) => x.priceAt).filter(Boolean).sort();
-      return times.length > 0 && h('p', { class: 'fin-hint fin-pad-x' },
-        `Prices as of ${new Date(times[0]).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}`);
+      // Each holding is in the currency it's priced in; say so when that isn't the account's.
+      const mixed = list.some((x) => x.currency !== account.currency);
+      const parts = [
+        times.length > 0 && `Prices as of ${new Date(times[0]).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}.`,
+        mixed && `Each holding is shown in the currency it’s priced in; the account’s value is in ${account.currency}, at today’s rates.`,
+      ].filter(Boolean);
+      return parts.length > 0 && h('p', { class: 'fin-hint fin-pad-x' }, parts.join(' '));
     })(),
     list.length === 0
       ? h('p', { class: 'fin-empty fin-pad' }, 'No holdings yet.')
       : h('div', { class: 'fin-scroll' }, h('table', { class: 'fin-table' },
         h('caption', { class: 'fin-sr' }, 'Holdings'),
         h('thead', {}, h('tr', {},
-          ['Symbol', 'Name', 'Exchange', 'Units', 'Price', 'Value', 'Cost', 'Gain'].map((t, i) => h('th', { scope: 'col', class: i > 2 ? 'fin-r' : null }, t)),
+          ['Symbol', 'Name', 'Exchange', 'Currency', 'Units', 'Price', 'Value', 'Cost', 'Gain'].map((t, i) => h('th', { scope: 'col', class: i > 3 ? 'fin-r' : null }, t)),
           h('th', { scope: 'col' }, h('span', { class: 'fin-sr' }, 'Actions')))),
         h('tbody', {}, list.flatMap((x) => {
           const v = holdingValue(x);
@@ -411,14 +437,19 @@ export function holdingsSection(account) {
           const gain = sum && v != null ? v - sum.cost : null;
           const open = openLotsId === x.id;
           const charted = openChartId === x.id;
+          // In another currency than the account's: its value there too, as the account's total counts it.
+          const rates = x.currency !== account.currency && latestRate(x.currency) && latestRate(account.currency);
+          const inAccount = rates && v != null ? Math.round(v * (latestRate(x.currency) / latestRate(account.currency))) : null;
           const row = h('tr', {},
             h('td', {}, x.symbol),
             h('td', {}, x.name ?? '', x.priceError && h('span', { class: 'fin-sub fin-row-error' },
               `No live price: ${x.priceError.replace(/\s*Consider upgrading.*$/i, '')} Enter the price by hand for now.`)),
             h('td', { class: 'fin-muted' }, x.exchange ?? (x.mic ? '' : 'not set')),
+            h('td', { class: x.currency === account.currency ? 'fin-muted' : null }, x.currency),
             h('td', { class: 'fin-r fin-num' }, shownQty(x.quantity)),
             h('td', { class: 'fin-r fin-num' }, priceCell(x)),
-            h('td', { class: 'fin-r fin-num' }, v == null ? '—' : money(v, x.currency)),
+            h('td', { class: 'fin-r fin-num' }, v == null ? '—' : money(v, x.currency),
+              inAccount != null && h('span', { class: 'fin-sub' }, `≈ ${money(inAccount, account.currency)}`)),
             h('td', { class: 'fin-r fin-num fin-muted' }, sum ? money(sum.cost, x.currency) : '—',
               sum?.avgPrice != null && h('span', { class: 'fin-sub' }, `avg ${money(Math.round(sum.avgPrice * 100), x.currency)}`)),
             h('td', { class: `fin-r fin-num ${gain == null ? '' : tone(gain)}` }, gain == null ? '—' : signed(gain, x.currency),
@@ -434,8 +465,8 @@ export function holdingsSection(account) {
                 state.lots = state.lots.filter((l) => l.holdingId !== x.id);
               }), { danger: true }))));
           return [row,
-            charted && h('tr', { class: 'fin-edit-row' }, h('td', { colspan: 9 }, holdingChartPanel(x))),
-            open && h('tr', { class: 'fin-edit-row' }, h('td', { colspan: 9 }, lotsPanel(x)))];
+            charted && h('tr', { class: 'fin-edit-row' }, h('td', { colspan: 10 }, holdingChartPanel(x))),
+            open && h('tr', { class: 'fin-edit-row' }, h('td', { colspan: 10 }, lotsPanel(x)))];
         })))),
     h('form', {
       class: 'fin-tx-form',

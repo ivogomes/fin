@@ -845,6 +845,12 @@ textarea.fin-input { resize: vertical; }
   white-space: nowrap;
 }
 .fin-tag--transfer::before { content: '⇄'; font-size: 13px; }
+/* The other side of a transfer, as a link to it. */
+.fin-tag--link { cursor: pointer; }
+.fin-tag--link:hover { color: var(--f-accent-strong); background: var(--f-accent-soft); }
+.fin-tag--link:focus-visible { outline: none; box-shadow: var(--f-ring); }
+/* The transaction opened from the other side of a transfer. */
+.fin-table tbody tr.is-target > td { background: var(--f-accent-soft); }
 .fin-tag--iou { background: #FBF2D9; color: #86610C; cursor: pointer; }
 .fin-tag--iou::before { content: '↺'; font-size: 13px; }
 .fin-tag--iou:hover { text-decoration: underline; }
@@ -1883,3 +1889,12 @@ input.fin-cat-add:focus { width: 10rem; border-style: solid; border-color: var(-
 .fin-dup-copy:hover { background: var(--f-hover); }
 .fin-dup-copy input { margin-top: 2px; flex: none; }
 .fin-dup-main { display: grid; gap: 4px; min-width: 0; }
+
+/* A currency's flag (ui.js flag()), before a label such as "In EUR". A hairline edge keeps a white
+   stripe from melting into a white card. */
+.fin-flag { flex: none; width: 18px; height: 12px; border-radius: 2px; box-shadow: 0 0 0 1px rgb(0 0 0 / 0.12); vertical-align: -1px; }
+.fin-dt-flag { display: flex; align-items: center; gap: 7px; }
+/* In a form label (an amount in another currency). */
+label > .fin-flag { margin-right: 6px; }
+/* In a table header ("In EUR"), lined up with the column's right edge. */
+.fin-th-flag { display: inline-flex; align-items: center; gap: 6px; }

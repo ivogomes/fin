@@ -4,7 +4,7 @@
 import { rpc } from './cloud.js';
 import { today } from './market.js';
 import {
-  CURRENCIES, IOU_TYPES, categoriesOf, convert, filterTransactions, newId, normalize, occurrences,
+  CURRENCIES, IOU_TYPES, categoriesOf, convert, crossConvert, filterTransactions, newId, normalize, occurrences,
   plannedTransactions, ruleSuggestion, scaleSplits, scheduledEffect, searchCategories,
   sortedCategories, splitsOf, toMinor,
 } from './model.js';
@@ -24,7 +24,8 @@ import { personName } from './ious.js';
 import { FORECAST_DAYS, daysFromToday, openScheduleDialog, upcomingRows } from './schedules.js';
 import {
   button, catLabel, catOptions, category, field, h, hueOf, icon, iconButton, input, latestRate,
-  loader, money, monthLabel, say, select, shortDate, signed, status, thisYear, tone, typeSwitch,
+  flag, loader, money, monthLabel, num, say, select, shortDate, signed, status, thisYear, tone,
+  typeSwitch,
 } from './ui.js';
 
 // ── learning rules from manual categories ────────────────────────────────────
@@ -161,6 +162,7 @@ document.addEventListener('focusin', closeMenuOutside);
 export function filterBar(scope, { showAccount = false } = {}) {
   const f = filterOf(scope);
   const set = (patch, focusKey, wait = 0) => {
+    targetTx = null;
     txFilters.set(scope, { ...filterOf(scope), ...patch });
     setTxPage(0);
     selected.clear();
@@ -274,8 +276,9 @@ document.addEventListener('click', (e) => {
 });
 
 // Quick edit: one cell of a transaction (its date, amount or description) turns into a box. Enter or
-// leaving it saves, Esc cancels. A transfer's other side follows (same date and description; its
-// amount scales, so a cross-currency transfer keeps its rate), and Undo puts it back.
+// leaving it saves, Esc cancels. A transfer's other side follows: same date and description, and an
+// amount that's converted at that date's rate when the two accounts' currencies differ (otherwise
+// the same). Undo puts it back.
 export let quickEdit = null; // { id, field }
 export const QUICK_NAMES = { date: 'date', amount: 'amount', description: 'description' };
 export function quickCell(t, field, label, ...content) {
@@ -329,20 +332,24 @@ export async function saveQuickEdit(t, field, raw) {
   if (field === 'amount' && !(toMinor(value) > 0)) { render(key); say('The amount must be above zero.'); return; }
   // A new date needs that day's rates (fetched before the change, so undo stays one step).
   const cur = (id) => state.accounts.find((a) => a.id === id)?.currency ?? 'EUR';
-  const rates = field === 'date'
-    ? await Promise.all([ensureRate(cur(tx.accountId), value), partner ? ensureRate(cur(partner.accountId), value) : null])
+  const day = field === 'date' ? value : tx.date;
+  const rates = field === 'date' || (field === 'amount' && partner && cur(partner.accountId) !== cur(tx.accountId))
+    ? await Promise.all([ensureRate(cur(tx.accountId), day), partner ? ensureRate(cur(partner.accountId), day) : null])
     : null;
+  // The other side of a transfer, from this side's amount: the same, or converted at the day's rate.
+  const otherSide = (minor, p2) => (cur(p2.accountId) === cur(tx.accountId) ? minor
+    : rates?.[0] != null && rates?.[1] != null ? crossConvert(minor, rates[0], rates[1]) : Math.round(minor * Math.abs(p2.amount / tx.amount)));
   undoable(`${field === 'date' ? 'Date' : field === 'amount' ? 'Amount' : 'Description'} changed.`, ['transactions'], () => {
     const t2 = state.transactions.find((x) => x.id === t.id);
     const p2 = partner && state.transactions.find((x) => x.id === partner.id);
     if (field === 'description') { t2.description = value; if (p2) p2.description = value; }
     if (field === 'date') {
       t2.date = value; t2.rate = rates[0];
-      if (p2) { p2.date = value; p2.rate = rates[1]; }
+      if (p2) { p2.date = value; p2.rate = rates[1]; p2.amount = Math.sign(p2.amount) * otherSide(Math.abs(t2.amount), p2); }
     }
     if (field === 'amount') {
       const next = toMinor(value) * (t2.amount < 0 ? -1 : 1);
-      if (p2) p2.amount = Math.round(next * (p2.amount / t2.amount));
+      if (p2) p2.amount = Math.sign(p2.amount) * otherSide(Math.abs(next), p2);
       // A split keeps each part's share of the new amount.
       if (splitsOf(t2)) t2.splits = scaleSplits(t2.splits, next);
       t2.amount = next;
@@ -374,7 +381,7 @@ export function txTable(rows, { caption, showBalance = false, showAccount = fals
       h('th', { scope: 'col' }, 'Description'),
       showAccount && h('th', { scope: 'col' }, 'Account'),
       h('th', { scope: 'col' }, 'Categories'),
-      inEur && h('th', { scope: 'col', class: 'fin-r' }, 'In EUR'),
+      inEur && h('th', { scope: 'col', class: 'fin-r' }, h('span', { class: 'fin-th-flag' }, flag('EUR'), 'In EUR')),
       h('th', { scope: 'col' }, h('span', { class: 'fin-sr' }, 'Actions')))),
     h('tbody', {}, upcoming?.(cols), rows.flatMap((t, i) => {
       const account = accOf(t);
@@ -389,7 +396,7 @@ export function txTable(rows, { caption, showBalance = false, showAccount = fals
           h('td', { colspan: cols }, transactionForm(account, state.transactions.find((x) => x.id === t.id))))];
       }
       const label = `${t.description}, ${shortDate(t.date)}`;
-      return [heading, h('tr', { class: selected.has(t.id) ? 'is-selected' : null },
+      const tr = h('tr', { class: [selected.has(t.id) && 'is-selected', targetTx?.id === t.id && 'is-target'].filter(Boolean).join(' ') || null },
         h('td', { class: 'fin-tick-col c-tick' }, h('input', {
           type: 'checkbox', class: 'fin-tick', checked: selected.has(t.id), 'aria-label': `Select ${label}`, 'data-key': `sel-${t.id}`,
           onchange: (e) => { if (e.target.checked) selected.add(t.id); else selected.delete(t.id); render(`sel-${t.id}`); },
@@ -411,8 +418,34 @@ export function txTable(rows, { caption, showBalance = false, showAccount = fals
         inEur && h('td', { class: 'fin-r fin-num fin-muted c-eur' }, cur === 'EUR' ? '' : t.rate == null ? 'pending' : signed(convert(t.amount, t.rate), 'EUR')),
         h('td', { class: 'fin-r c-act' }, h('div', { class: 'fin-row-actions' },
           iconButton('edit', `Edit ${label}`, () => { setEditingTxId(t.id); render('tx-desc-edit'); }, { 'data-key': `tx-edit-${t.id}` }),
-          iconButton('trash', `Delete ${label}`, () => deleteTransactions(new Set([t.id])), { danger: true }))))];
+          iconButton('trash', `Delete ${label}`, () => deleteTransactions(new Set([t.id])), { danger: true }))));
+      // Opened from the other side of a transfer: scroll to it once it's on the page.
+      if (targetTx?.id === t.id && !targetTx.scrolled) {
+        targetTx.scrolled = true;
+        queueMicrotask(() => tr.scrollIntoView({ block: 'center' }));
+      }
+      return [heading, tr];
     }))));
+}
+
+// The transaction opened from the other side of a transfer: highlighted in its account's list.
+let targetTx = null; // { id, scrolled }
+// Opens `t` in its account: the list filtered to its date (so it's on the page however far back it
+// is), with it highlighted. The address carries it (tx, on), so it works from another page too.
+export function showTransaction(t) {
+  setView({ name: 'account', id: t.accountId, tx: t.id, on: t.date });
+  render();
+}
+// Called by render when the view asks for a transaction (showTransaction, or the address).
+export function focusTransaction() {
+  const { id, tx, on } = view;
+  txFilters.set(`acc:${id}`, { ...EMPTY_FILTER, from: on, to: on });
+  setTxPage(0);
+  selected.clear();
+  setEditingTxId(null);
+  targetTx = { id: tx, scrolled: false };
+  setView({ name: 'account', id });
+  say(`Showing ${on ? shortDate(on) : 'that day'} in ${accountName(id)}. Clear the filters to see all of it.`);
 }
 
 // ── an account's transactions, a page at a time from the database ─────────────
@@ -661,10 +694,13 @@ export function accountBadge(id) {
 export const pickableAccounts = (keep) => state.accounts.filter((a) => !a.archived || a.id === keep).sort(byName);
 
 // Inline edit of one transaction. For one side of a transfer, the other side follows: same date,
-// description and memo, and its amount scales with this one (so cross-currency transfers
-// keep their exchange rate).
+// description and memo, and the same amount. Between currencies the other side has its own field,
+// which follows this amount at the rate of the transfer's date until it's typed in (the exact amount
+// from a statement, say); when the saved amounts don't match that day's rate, a note offers to.
 export function transactionForm(account, tx) {
   const partner = transferPartner(tx);
+  const partnerAccount = partner && state.accounts.find((a) => a.id === partner.accountId);
+  const crossCurrency = Boolean(partnerAccount && partnerAccount.currency !== account.currency);
   let kind = tx.kind === 'refund' || tx.kind === 'dividend' ? tx.kind : tx.amount > 0 ? 'income' : 'expense';
   // Suggestions fill in the description, and the categories when it has none (never the amount).
   const descCombo = descriptionCombo(descIndex, {
@@ -682,6 +718,33 @@ export function transactionForm(account, tx) {
   desc.dataset.key = 'tx-desc-edit';
   const amount = input({ type: 'number', step: '0.01', min: '0.01', required: true, inputmode: 'decimal', value: String(Math.abs(tx.amount) / 100) });
   const date = input({ type: 'date', required: true, value: tx.date });
+  // Between currencies: what the other side's amount is, following this one at the day's rate.
+  const other = crossCurrency && input({ type: 'number', step: '0.01', min: '0.01', required: true, inputmode: 'decimal', value: String(Math.abs(partner.amount) / 100) });
+  const rateNote = h('p', { class: 'fin-hint', 'aria-live': 'polite' });
+  let otherTouched = false;
+  let atRate = null; // the other side's amount at the day's rate, once the rates are in
+  const syncOther = async ({ follow }) => {
+    if (!crossCurrency) return;
+    const day = date.value;
+    const [ra, rb] = await Promise.all([ensureRate(account.currency, day), ensureRate(partnerAccount.currency, day)]);
+    if (day !== date.value) return; // the date changed again meanwhile
+    if (ra == null || rb == null) { atRate = null; rateNote.replaceChildren(`No exchange rate for ${shortDate(day)} yet, so ${partnerAccount.currency} stays as typed.`); return; }
+    atRate = toMinor(amount.value) > 0 ? crossConvert(toMinor(amount.value), ra, rb) : null;
+    if (follow && !otherTouched && atRate != null) other.value = (atRate / 100).toFixed(2);
+    const rate = `1 ${account.currency} = ${num(ra / rb, 4)} ${partnerAccount.currency} on ${shortDate(day)}`;
+    const off = atRate != null && Math.abs(toMinor(other.value) - atRate) > Math.max(1, atRate * 0.005);
+    // (replaceChildren takes nodes one by one, not a list.)
+    rateNote.replaceChildren(...(off
+      ? [`${rate}, which makes ${money(atRate, partnerAccount.currency)}. `,
+        h('button', { type: 'button', class: 'fin-link', onclick: () => { otherTouched = false; other.value = (atRate / 100).toFixed(2); syncOther({ follow: false }); } }, 'Use that day’s rate')]
+      : [otherTouched ? `${rate}. The amount typed is kept.` : `${rate}.`]));
+  };
+  if (crossCurrency) {
+    amount.addEventListener('input', () => syncOther({ follow: true }));
+    date.addEventListener('change', () => syncOther({ follow: true }));
+    other.addEventListener('input', () => { otherTouched = true; syncOther({ follow: false }); });
+    syncOther({ follow: false }); // as saved; the note says if it isn't the day's rate
+  }
   const cats = categoryPicker(categoriesOf(tx), { label: `Categories of ${tx.description}` });
   const catField = pickerField('Categories', cats);
   const split = splitEditor(splitsOf(tx), { total: () => toMinor(amount.value), currency: account.currency, cats, catField });
@@ -709,10 +772,10 @@ export function transactionForm(account, tx) {
       const dateMoved = tx.date !== date.value;
       const shared = { date: date.value, description: desc.value.trim(), memo: memo.value.trim() };
       if (partner) {
-        const ratio = partner.amount / tx.amount;
-        const partnerCurrency = state.accounts.find((a) => a.id === partner.accountId)?.currency ?? 'EUR';
+        const partnerCurrency = partnerAccount?.currency ?? 'EUR';
         Object.assign(partner, shared, {
-          amount: Math.round(next * ratio),
+          // The same amount, or (between currencies) the other side's field.
+          amount: Math.sign(partner.amount) * (crossCurrency ? toMinor(other.value) : Math.abs(next)),
           rate: !dateMoved && partner.rate != null ? partner.rate : await ensureRate(partnerCurrency, date.value),
         });
       }
@@ -738,8 +801,11 @@ export function transactionForm(account, tx) {
       ? h('p', { class: 'fin-hint fin-edit-note' }, `Transfer ${tx.amount < 0 ? 'to' : 'from'} ${accountName(partner?.accountId)}. Changes apply to both sides.`)
       : kinds.el,
     h('div', { class: 'fin-grid' },
-      comboField('Description', descCombo), field(`Amount (${account.currency})`, amount),
+      // Between currencies, each amount with its currency's flag.
+      comboField('Description', descCombo), field(crossCurrency ? [flag(account.currency), `Amount (${account.currency})`] : `Amount (${account.currency})`, amount),
+      crossCurrency && field([flag(partnerAccount.currency), `Amount in ${partnerAccount.name} (${partnerAccount.currency})`], other),
       field('Date', date), !tx.transferId && holdingField),
+    crossCurrency && rateNote,
     !tx.transferId && catField,
     !tx.transferId && split.el,
     h('div', { class: 'fin-grid' }, field('Memo', memo)),
@@ -776,7 +842,15 @@ export function iouLabel(entries) {
 export function categoryCell(t) {
   if (t.transferId) {
     const partner = transferPartner(t);
-    return h('span', { class: 'fin-tag fin-tag--transfer' }, `${t.amount < 0 ? 'To' : 'From'} `, ...accountBadge(partner?.accountId));
+    const chip = [`${t.amount < 0 ? 'To' : 'From'} `, ...accountBadge(partner?.accountId)];
+    // A button to the other side, when it's loaded (it comes with the page's transactions).
+    return partner
+      ? h('button', {
+        type: 'button', class: 'fin-tag fin-tag--transfer fin-tag--link',
+        'aria-label': `${t.amount < 0 ? 'To' : 'From'} ${accountName(partner.accountId)}: open the other side of this transfer`,
+        onclick: () => showTransaction(partner),
+      }, ...chip)
+      : h('span', { class: 'fin-tag fin-tag--transfer' }, ...chip);
   }
   // Loans, settlements and paying for a friend are shown by their type instead of categories, like
   // transfers. A shared bill is a real expense: it keeps its categories, with the IOU underneath.

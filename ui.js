@@ -76,6 +76,31 @@ export const signed = (minor, cur) =>
     .format((hideAmounts ? Math.sign(minor) * MASK_MINOR : minor) / 100).replace(/\d/g, (d) => (hideAmounts ? '•' : d));
 export const shownQty = (n) => (hideAmounts ? '•••' : new Intl.NumberFormat(numLocale(), { maximumFractionDigits: 8 }).format(n));
 export const tone = (minor) => (minor > 0 ? 'fin-pos' : minor < 0 ? 'fin-neg' : '');
+// A small flag for a currency (EUR, USD), drawn inline so it looks the same everywhere (Windows
+// shows flag emoji as letters). Decoration: the currency is always written next to it.
+const FLAG_NS = 'http://www.w3.org/2000/svg';
+const flagEl = (tag, attrs) => {
+  const e = document.createElementNS(FLAG_NS, tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  return e;
+};
+export function flag(currency) {
+  const svg = flagEl('svg', { viewBox: '0 0 18 12', class: 'fin-flag', 'aria-hidden': 'true', focusable: 'false' });
+  if (currency === 'EUR') {
+    svg.append(flagEl('rect', { width: 18, height: 12, fill: '#003399' }));
+    // Twelve gold stars in a circle (dots at this size).
+    for (let i = 0; i < 12; i += 1) {
+      const a = (i / 12) * 2 * Math.PI;
+      svg.append(flagEl('circle', { cx: (9 + 3.6 * Math.sin(a)).toFixed(2), cy: (6 - 3.6 * Math.cos(a)).toFixed(2), r: 0.62, fill: '#FFCC00' }));
+    }
+  } else if (currency === 'USD') {
+    svg.append(flagEl('rect', { width: 18, height: 12, fill: '#FFFFFF' }));
+    // Thirteen stripes, red first, and the blue canton over the top seven.
+    for (let i = 0; i < 13; i += 2) svg.append(flagEl('rect', { y: ((i * 12) / 13).toFixed(3), width: 18, height: (12 / 13).toFixed(3), fill: '#B22234' }));
+    svg.append(flagEl('rect', { width: 7.2, height: ((7 * 12) / 13).toFixed(3), fill: '#3C3B6E' }));
+  } else return null;
+  return svg;
+}
 export const latestRate = (cur) => (cur === 'EUR' ? 1 : state.rates[`${cur}:latest`]?.rate ?? null);
 
 export const thisYear = new Date().getFullYear();

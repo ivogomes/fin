@@ -22,7 +22,8 @@ import { openPalette } from './palette.js';
 import { FORECAST_DAYS, daysFromToday, renderSchedules } from './schedules.js';
 import { openSettings, renderSettings, renderSettingsNav } from './settings.js';
 import {
-  fetchTransactions, listViews, renderSearch, renderWhenIdle, selected, setDescCache, setIouByTx,
+  fetchTransactions, focusTransaction, listViews, renderSearch, renderWhenIdle, selected, setDescCache,
+  setIouByTx,
 } from './transactions.js';
 import {
   FIN_SHAPE, button, field, h, hideAmounts, icon, input, isPhone, latestRate, main, money,
@@ -45,6 +46,8 @@ export function urlOf(v) {
   if (v.name === 'account') {
     q.set('account', v.id ?? '');
     if (v.tab === 'insights') q.set('tab', 'insights');
+    // A transaction to show (the other side of a transfer, opened from another page).
+    if (v.tx) { q.set('tx', v.tx); q.set('on', v.on ?? ''); }
   } else if (v.name !== 'overview') {
     q.set('page', v.name);
     if (v.name === 'settings' && v.section) q.set('section', v.section);
@@ -73,7 +76,12 @@ export function viewFromUrl() {
       ...(page === 'search' && q.get('q') && { q: q.get('q') }),
     };
   }
-  if (q.has('account')) return { name: 'account', id: q.get('account'), ...(q.get('tab') === 'insights' && { tab: 'insights' }) };
+  if (q.has('account')) {
+    return {
+      name: 'account', id: q.get('account'), ...(q.get('tab') === 'insights' && { tab: 'insights' }),
+      ...(q.get('tx') && { tx: q.get('tx'), on: q.get('on') }),
+    };
+  }
   return { name: 'overview' };
 }
 export let view = viewFromUrl();
@@ -487,6 +495,7 @@ export function render(focusKey) {
     return;
   }
   const key = focusKey ?? document.activeElement?.dataset?.key;
+  if (view.name === 'account' && view.tx) focusTransaction();
   totalsCache = null;
   setIouByTx(null);
   setHueOrder(null);

@@ -82,6 +82,8 @@ The first page. It shows net worth, what you've spent and earned this month agai
 
 A row can be a transfer: pick **⇄ Transfer** as its type and the category cell becomes the account the money goes to (the row's account is where it leaves from). Past transfers are suggested too, filling in both accounts. Between currencies the received amount is converted at that day's rate. The single-transaction form suggests descriptions the same way, and so does the inline edit form, where a suggestion fills in the description and, if the transaction has none, its categories.
 
+**Editing a transfer** (in its edit form, or one cell at a time in the list) changes both sides: the same date, description and memo, and the same amount, or, between accounts in different currencies, the other side converted at the rate of the transfer's date. The edit form then shows the other side's amount in its own field, with that day's rate under it: it follows the amount you type until you type in it yourself (the exact amount from a statement, say), and when the saved amounts don't match the day's rate, **Use that day's rate** puts it right. The ⇄ chip of a transfer opens its other side: that account's list on the transfer's date, with it highlighted.
+
 ## Search, filters, selecting and undo
 
 Click a transaction's date, amount or description (or Tab to it and press Enter) to change just that, in place: Enter or clicking away saves, Esc cancels, and Undo puts it back. A transfer's other side follows.
@@ -139,6 +141,8 @@ What counts: transfers between your accounts and opening balances don't. A trans
 ## Holdings and their buys and sells
 
 A holding can have lots: its buys and sells, each with a date, units, price and fees. With lots, its units come from them, and the holdings table shows what it cost (and the average price) and the gain. Open a holding's **Lots** to see them, add a buy or sell, or delete one.
+
+An investment account's cards show its **Value** (the holdings at today's prices), **Invested** and **Gain**. When every holding has lots, both come from the holdings, as in the holdings table: Invested is what their lots cost and Gain each one's value less that, added up in the account's currency at today's rates, whatever the transfers in came to after conversion. Without lots for every holding, Invested is the money put in (the account's transactions) and Gain the value less that. Each holding is shown in the currency it's priced in, with its value in the account's currency under it when they differ.
 
 Settings → **Import** → **Holdings** reads an FT.com portfolio transactions export (`Date,Name,Symbol,Type,Quantity,Price,…`, symbols like `VWCE:FRA:EUR`). Pick the investment account it belongs to; holdings are matched by ticker or created, the preview compares the units with what the holdings have now, and importing the same file again adds nothing. Dividend rows are skipped. Importing from Buxfer leaves the units of holdings with lots alone.
 

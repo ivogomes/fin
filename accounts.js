@@ -12,12 +12,12 @@ import {
   CARD_NETWORKS, accountValue, byName, cardMark, ensureRate, limitUse, refreshRates, render,
   selectAccount, setView, state, totalsOf, undoable, usageBar, view,
 } from './app.js';
-import { holdingsSection } from './holdings.js';
+import { holdingsGain, holdingsSection } from './holdings.js';
 import { ask, insightsPanel, investmentInsights, runMap, transactionsLoaded } from './insights.js';
 import { FORECAST_DAYS, daysFromToday, openScheduleDialog } from './schedules.js';
 import { fetchTransactions, transactionsSection } from './transactions.js';
 import {
-  button, dialog, field, h, icon, input, latestRate, money, monthLabel, num, say, select,
+  button, dialog, field, flag, h, icon, input, latestRate, money, monthLabel, num, say, select,
   shortDate, signed, tone,
 } from './ui.js';
 
@@ -352,17 +352,25 @@ export function renderAccount(account) {
             ? `${money(-left, account.currency)} over the ${money(account.creditLimit, account.currency)} limit`
             : `${used}% of the ${money(account.creditLimit, account.currency)} limit used`));
       })(),
-      account.currency !== 'EUR' && h('div', {}, h('dt', {}, 'In EUR'),
+      account.currency !== 'EUR' && h('div', {}, h('dt', { class: 'fin-dt-flag' }, flag('EUR'), 'In EUR'),
         h('dd', { class: 'fin-num' }, rate == null ? 'rate pending' : signed(convert(value, rate), 'EUR')),
         h('p', { class: 'fin-stat-note' }, rate == null ? 'waiting for today’s rate' : `at today’s rate, 1 ${account.currency} = ${num(rate, 4)} EUR`)),
-      // For investments, the transactions are the money paid in; the gain is value minus that.
-      inv?.hasHoldings && h('div', {}, h('dt', {}, 'Invested'), h('dd', { class: 'fin-num' }, money(inv.invested, account.currency)),
-        h('p', { class: 'fin-stat-note' }, 'money put in')),
-      inv?.hasHoldings && h('div', {}, h('dt', {}, 'Gain'),
-        h('dd', { class: `fin-num ${tone(value - inv.invested)}` }, signed(value - inv.invested, account.currency)),
-        h('p', { class: 'fin-stat-note' }, inv.invested > 0
-          ? `${value >= inv.invested ? '+' : ''}${num((value - inv.invested) / inv.invested * 100)}% on what was put in`
-          : 'value less what was put in')),
+      // Invested and Gain come from the holdings, like the holdings table: what their buys and sells
+      // cost, and their value less that. Without lots for every holding, from the money put in (the
+      // account's transactions) instead.
+      ...(() => {
+        if (!inv?.hasHoldings) return [];
+        const hg = holdingsGain(account);
+        const gain = hg ? hg.gain : value - inv.invested;
+        const base = hg ? hg.cost : inv.invested;
+        return [h('div', {}, h('dt', {}, 'Invested'), h('dd', { class: 'fin-num' }, money(base, account.currency)),
+          h('p', { class: 'fin-stat-note' }, hg ? 'what the holdings cost' : 'money put in')),
+        h('div', {}, h('dt', {}, 'Gain'),
+          h('dd', { class: `fin-num ${tone(gain)}` }, signed(gain, account.currency)),
+          h('p', { class: 'fin-stat-note' }, base > 0
+            ? `${gain >= 0 ? '+' : ''}${num((gain / base) * 100)}% on what ${hg ? 'the holdings cost' : 'was put in'}`
+            : hg ? 'on what the holdings cost' : 'value less what was put in'))];
+      })(),
       // A credit card's latest statement: what it said, what's left to pay and by when.
       statementCard(account),
       // Savings with an interest rate: what it should earn.
