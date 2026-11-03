@@ -218,33 +218,38 @@ language sql immutable as $$ select floor(x + 0.5)::bigint $$;
 
 -- Whether a transaction matches the filters of a list (the app's filter bar): p_text (normalised)
 -- in the description or memo, or p_amount (cents) as its size; p_wanted, categories any of which it
--- has (a category and its subcategories); p_uncategorized; p_type expense/income/refund/dividend/transfer;
--- dates; sizes in cents. `cats` is fin_cats of the row.
+-- has (the chosen ones and their subcategories), or, with p_uncategorized, none (transfers aside);
+-- p_types, any of expense/income/refund/dividend/transfer; dates; sizes in cents. Empty or null
+-- means no filter. `cats` is fin_cats of the row.
+-- (Before several categories and types could be picked, p_wanted came with one p_type.)
+drop function if exists fin_match(transactions, text[], text, bigint, text[], boolean, text, date, date, bigint, bigint);
 create or replace function fin_match(
   t transactions, cats text[], p_text text, p_amount bigint, p_wanted text[], p_uncategorized boolean,
-  p_type text, p_from date, p_to date, p_min bigint, p_max bigint
+  p_types text[], p_from date, p_to date, p_min bigint, p_max bigint
 ) returns boolean
 language sql stable as $$
   select (p_from is null or t.date >= p_from) and (p_to is null or t.date <= p_to)
     and (p_min is null or abs(t.amount) >= p_min) and (p_max is null or abs(t.amount) <= p_max)
-    and (p_type is null
-      or (p_type = 'transfer' and t.transfer_id is not null)
-      or (p_type = 'refund' and t.kind = 'refund')
-      or (p_type = 'dividend' and t.kind = 'dividend')
-      or (p_type = 'expense' and t.transfer_id is null and t.kind is distinct from 'refund' and t.amount < 0)
-      or (p_type = 'income' and t.transfer_id is null and t.kind is distinct from 'refund' and t.amount > 0))
-    and (not coalesce(p_uncategorized, false) or (cardinality(cats) = 0 and t.transfer_id is null))
-    and (p_wanted is null or cats && p_wanted)
+    and (coalesce(cardinality(p_types), 0) = 0
+      or ('transfer' = any(p_types) and t.transfer_id is not null)
+      or ('refund' = any(p_types) and t.kind = 'refund')
+      or ('dividend' = any(p_types) and t.kind = 'dividend')
+      or ('expense' = any(p_types) and t.transfer_id is null and t.kind is distinct from 'refund' and t.amount < 0)
+      or ('income' = any(p_types) and t.transfer_id is null and t.kind is distinct from 'refund' and t.amount > 0))
+    and ((coalesce(cardinality(p_wanted), 0) = 0 and not coalesce(p_uncategorized, false))
+      or cats && p_wanted
+      or (coalesce(p_uncategorized, false) and cardinality(cats) = 0 and t.transfer_id is null))
     and (p_text is null or p_text = ''
       or strpos(fin_norm(t.description), p_text) > 0 or strpos(fin_norm(t.memo), p_text) > 0
       or abs(t.amount) = p_amount)
 $$;
 
--- A category with its subcategories, for p_wanted (null when there's no category to filter on).
-create or replace function fin_family(p_category text) returns text[]
+-- Categories with their subcategories, for p_wanted (null when there are none to filter on).
+drop function if exists fin_family(text);
+create or replace function fin_family(p_categories text[]) returns text[]
 language sql stable as $$
-  select case when p_category is null then null else
-    array(select id from categories where user_id = auth.uid() and (id = p_category or parent_id = p_category)) || array[p_category] end
+  select case when coalesce(cardinality(p_categories), 0) = 0 then null else
+    array(select id from categories where user_id = auth.uid() and (id = any(p_categories) or parent_id = any(p_categories))) || p_categories end
 $$;
 
 -- One row per account: balance up to `p_today`, how many transactions, and the ones dated after
@@ -272,24 +277,27 @@ $$;
 -- right after it (over all of the account's history, so filters don't change it). Also: how many
 -- match, every transaction dated after today, and the other side of any transfer on the page.
 -- Filters as in the app: p_text (normalised) in the description or memo, or p_amount (cents) as the
--- size; p_category with its subcategories; p_uncategorized; p_type expense/income/refund/transfer;
--- dates; sizes in cents.
+-- size; p_categories (any of them, with their subcategories) or p_uncategorized; p_types (any of
+-- expense/income/refund/dividend/transfer); dates; sizes in cents.
+drop function if exists account_transactions(text, date, int, int, text, bigint, text, boolean, text, date, date, bigint, bigint);
 create or replace function account_transactions(
   p_account text, p_today date, p_limit int default 100, p_offset int default 0,
-  p_text text default null, p_amount bigint default null, p_category text default null,
-  p_uncategorized boolean default false, p_type text default null,
+  p_text text default null, p_amount bigint default null, p_categories text[] default null,
+  p_uncategorized boolean default false, p_types text[] default null,
   p_from date default null, p_to date default null, p_min bigint default null, p_max bigint default null
 ) returns jsonb
 language sql stable as $$
-  with t as (
+  -- The categories asked for (with their subcategories), worked out once, not once per row.
+  with w as materialized (select fin_family(p_categories) as wanted),
+  t as (
     select tr as r0, tr.*, fin_cats(tr.category_ids, tr.category_id) as cats,
       sum(tr.amount) over (order by tr.date, tr.id rows unbounded preceding) as balance
     from transactions tr
     where tr.user_id = auth.uid() and tr.account_id = p_account and tr.date <= p_today
   ),
   f as (
-    select t.* from t
-    where fin_match(t.r0, t.cats, p_text, p_amount, fin_family(p_category), p_uncategorized, p_type, p_from, p_to, p_min, p_max)
+    select t.* from t, w
+    where fin_match(t.r0, t.cats, p_text, p_amount, w.wanted, p_uncategorized, p_types, p_from, p_to, p_min, p_max)
   ),
   page as (
     select * from f order by date desc, id desc limit p_limit offset p_offset
@@ -314,22 +322,27 @@ $$;
 
 -- Search across accounts (p_accounts, or all when null), every date: one page, newest first, how
 -- many match, In and Out in EUR (transfers left out; at each transaction's rate, else today's from
--- p_rates, { "USD": 0.92 }), and the other side of any transfer on the page.
+-- p_rates, { "USD": 0.92 }), and the other side of any transfer on the page. Filters as in
+-- account_transactions.
+drop function if exists search_transactions(text[], int, int, text, bigint, text, boolean, text, date, date, bigint, bigint, jsonb);
 create or replace function search_transactions(
   p_accounts text[] default null, p_limit int default 100, p_offset int default 0,
-  p_text text default null, p_amount bigint default null, p_category text default null,
-  p_uncategorized boolean default false, p_type text default null,
+  p_text text default null, p_amount bigint default null, p_categories text[] default null,
+  p_uncategorized boolean default false, p_types text[] default null,
   p_from date default null, p_to date default null, p_min bigint default null, p_max bigint default null,
   p_rates jsonb default '{}'::jsonb
 ) returns jsonb
 language sql stable as $$
-  with f as (
+  -- The categories asked for (with their subcategories), worked out once, not once per row.
+  with w as materialized (select fin_family(p_categories) as wanted),
+  f as (
     select tr.*, fin_round(tr.amount * coalesce(tr.rate, (p_rates ->> a.currency)::double precision, 1)) as eur
     from transactions tr
     join accounts a on a.user_id = tr.user_id and a.id = tr.account_id
+    cross join w
     where tr.user_id = auth.uid() and (p_accounts is null or tr.account_id = any(p_accounts))
-      and fin_match(tr, fin_cats(tr.category_ids, tr.category_id), p_text, p_amount, fin_family(p_category),
-                    p_uncategorized, p_type, p_from, p_to, p_min, p_max)
+      and fin_match(tr, fin_cats(tr.category_ids, tr.category_id), p_text, p_amount, w.wanted,
+                    p_uncategorized, p_types, p_from, p_to, p_min, p_max)
   ),
   page as (
     select * from f order by date desc, id limit p_limit offset p_offset

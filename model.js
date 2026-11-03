@@ -213,32 +213,39 @@ export function batchRow(row, rules) {
 // Transactions matching a filter, newest first. Every field is optional:
 // - text: in the description or memo (case and accents ignored); a number like "12.99" or "12,99"
 //   also matches that amount, in or out
-// - categoryId: that category, or any of its children when it's a parent; '' (empty) = uncategorized
-// - type: 'expense' | 'income' | 'refund' | 'transfer'
+// - categoryIds: any of these categories (a parent includes its children); '' among them also
+//   takes uncategorized ones (transfers aside)
+// - types: any of 'expense' | 'income' | 'refund' | 'dividend' | 'transfer'
 // - min / max: the amount's size (ignoring its sign), in the account's currency
-// - from / to: dates; accountIds: a Set, or null for all
+// - from / to: dates; accountIds: any of these accounts
+// An empty list doesn't filter (all categories, types or accounts). Same rules as fin_match in schema.sql.
+const TYPE_TEST = {
+  transfer: (t) => Boolean(t.transferId),
+  refund: (t) => t.kind === 'refund',
+  dividend: (t) => t.kind === 'dividend',
+  expense: (t) => !t.transferId && t.kind !== 'refund' && t.amount < 0,
+  income: (t) => !t.transferId && t.kind !== 'refund' && t.amount > 0,
+};
 export function filterTransactions(transactions, filter, { categories = [] } = {}) {
-  const { text = '', categoryId = null, type = null, min = null, max = null, from = null, to = null, accountIds = null } = filter;
+  const { text = '', categoryIds = [], types = [], min = null, max = null, from = null, to = null, accountIds = [] } = filter;
   const q = normalize(text);
   const asAmount = /^[\d.,]+$/.test(String(text).trim()) ? Math.abs(parseAmount(text, /,\d{1,2}$/.test(text.trim()) ? ',' : '.')) : NaN;
-  const wanted = categoryId ? new Set([categoryId, ...categories.filter((c) => c.parentId === categoryId).map((c) => c.id)]) : null;
+  const chosen = categoryIds.filter(Boolean);
+  const uncategorized = categoryIds.includes('');
+  const wanted = new Set([...chosen, ...categories.filter((c) => chosen.includes(c.parentId)).map((c) => c.id)]);
+  const accounts = new Set(accountIds);
   const minMinor = min == null || min === '' ? null : toMinor(min);
   const maxMinor = max == null || max === '' ? null : toMinor(max);
   return transactions.filter((t) => {
-    if (accountIds && !accountIds.has(t.accountId)) return false;
+    if (accounts.size && !accounts.has(t.accountId)) return false;
     if (from && t.date < from) return false;
     if (to && t.date > to) return false;
     const size = Math.abs(t.amount);
     if (minMinor != null && size < minMinor) return false;
     if (maxMinor != null && size > maxMinor) return false;
-    if (type === 'transfer' && !t.transferId) return false;
-    if (type === 'refund' && t.kind !== 'refund') return false;
-    if (type === 'dividend' && t.kind !== 'dividend') return false;
-    if (type === 'expense' && (t.transferId || t.kind === 'refund' || t.amount >= 0)) return false;
-    if (type === 'income' && (t.transferId || t.kind === 'refund' || t.amount <= 0)) return false;
+    if (types.length && !types.some((k) => TYPE_TEST[k]?.(t))) return false;
     const cats = categoriesOf(t);
-    if (categoryId === '' && (cats.length || t.transferId)) return false;
-    if (wanted && !cats.some((id) => wanted.has(id))) return false;
+    if (categoryIds.length && !cats.some((id) => wanted.has(id)) && !(uncategorized && !cats.length && !t.transferId)) return false;
     if (q && !normalize(t.description).includes(q) && !normalize(t.memo ?? '').includes(q) && size !== asAmount) return false;
     return true;
   }).sort((a, b) => b.date.localeCompare(a.date));

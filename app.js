@@ -17,7 +17,7 @@ import {
 } from './market.js';
 import {
   load, persist, settle, onStatus, onSaved, hasPendingChanges, addTransactions, loadAllTransactions, transactionsComplete,
-  refreshSummaries, accountTotals, editToken, isFromDatabase, legacyData, forgetLegacyData, missingTables, clearTables, needsSchemaUpdate,
+  refreshSummaries, accountTotals, editToken, isFromDatabase, legacyData, forgetLegacyData, missingTables, clearTables, needsSchemaUpdate, markSchemaOutdated,
   backupData, restoreData, BACKUP_TABLES,
 } from './store.js';
 import { makeZip, readZip } from './zip.js';
@@ -1102,10 +1102,100 @@ async function offerRule(t, categoryId) {
 
 const selected = new Set(); // ids of selected transactions, in the list on screen
 const txFilters = new Map(); // scope ('acc:<id>' or 'search') → filter
-const EMPTY_FILTER = { text: '', categoryId: null, type: null, from: '', to: '', min: '', max: '', accountId: '' };
+// Lists pick several (any of them matches); an empty one means all. '' among the categories is
+// "Uncategorized".
+const EMPTY_FILTER = { text: '', categoryIds: [], types: [], from: '', to: '', min: '', max: '', accountIds: [] };
 const filterOf = (scope) => txFilters.get(scope) ?? EMPTY_FILTER;
-const filterActive = (f) => Boolean(f.text || f.categoryId != null || f.type || f.from || f.to || f.min || f.max || f.accountId);
+const filterActive = (f) => Boolean(f.text || f.categoryIds.length || f.types.length || f.from || f.to || f.min || f.max || f.accountIds.length);
 let filterTimer = null;
+
+// A filter menu for picking several values: a button saying what's picked ("All categories",
+// "Groceries", "3 categories") that opens a list of checkboxes, with a search box when `searchable`.
+// Each tick applies at once and the list stays open through the redraw (openMenu), so several can be
+// ticked in a row. ↓/↑ move between the boxes, Esc or a click outside closes it.
+// `options`: [{ value, label, sub?, hue?, child? }]; `onChange(values, focusKey)`.
+let openMenu = null; // { key, q } of the menu that's open
+let closeMenu = null; // hides it (and stops following the page's scrolling)
+function multiFilter({ key, label, all, many, options, picked, onChange, searchable = false }) {
+  const isOpen = openMenu?.key === key;
+  const chosen = options.filter((o) => picked.includes(o.value));
+  const summary = !chosen.length ? all : chosen.length === 1 ? chosen[0].label : `${chosen.length} ${many}`;
+  const btn = h('button', {
+    type: 'button', class: `fin-input fin-ms-btn${chosen.length ? ' is-on' : ''}`, 'data-key': key,
+    'aria-expanded': 'false', 'aria-controls': `ms-${key}`, 'aria-label': `${label}: ${summary}`,
+  }, h('span', { class: 'fin-ms-text' }, summary), h('span', { class: 'fin-ms-caret', 'aria-hidden': 'true' }, '▾'));
+  const menu = h('div', { id: `ms-${key}`, class: 'fin-options fin-options--float fin-ms-menu', role: 'group', 'aria-label': label, hidden: true });
+  const list = floatingList(btn, menu, 240);
+  const boxes = () => [...menu.querySelectorAll('input[type="checkbox"]')].filter((b) => !b.closest('li').hidden);
+  const show = (on) => {
+    if (closeMenu && on) closeMenu();
+    list.open(on);
+    openMenu = on ? { key, q: openMenu?.key === key ? openMenu.q : '' } : null;
+    closeMenu = on ? () => { list.open(false); if (openMenu?.key === key) openMenu = null; closeMenu = null; } : null;
+  };
+  const search = searchable && h('input', {
+    type: 'search', class: 'fin-input fin-input-sm fin-ms-search', placeholder: 'Search', autocomplete: 'off',
+    'aria-label': `Search ${many}`, 'data-key': `${key}-q`, value: isOpen ? openMenu.q : '',
+  });
+  const items = options.map((o) => {
+    const box = h('input', { type: 'checkbox', checked: picked.includes(o.value), 'data-key': `${key}-${o.value || 'none'}` });
+    box.addEventListener('change', () => {
+      const next = box.checked ? [...picked, o.value] : picked.filter((v) => v !== o.value);
+      onChange(next, box.dataset.key);
+    });
+    return h('li', { class: `fin-ms-item${o.child ? ' fin-option-child' : ''}`, 'data-text': normalize([o.label, o.sub].filter(Boolean).join(' ')) },
+      h('label', { class: 'fin-check' }, box,
+        o.hue != null && h('span', { class: 'fin-cat-dot', 'data-hue': o.hue, 'aria-hidden': 'true' }),
+        h('span', { class: 'fin-option-main' }, o.label),
+        o.sub && h('span', { class: 'fin-sub' }, o.sub)));
+  });
+  const none = h('p', { class: 'fin-option-none', hidden: true }, 'Nothing matches');
+  const filterList = () => {
+    const words = normalize(search?.value ?? '').split(/\s+/).filter(Boolean);
+    items.forEach((li) => { li.hidden = !words.every((w) => li.dataset.text.includes(w)); });
+    none.hidden = items.some((li) => !li.hidden);
+    // While searching, a child shows its parent's name (the list isn't a tree any more).
+    menu.classList.toggle('is-searching', words.length > 0);
+    if (openMenu?.key === key) openMenu.q = search?.value ?? '';
+  };
+  search && search.addEventListener('input', filterList);
+  // (Native append prints false; h() is what skips it.)
+  menu.append(...[
+    search,
+    h('ul', { class: 'fin-ms-list' }, items), none,
+    chosen.length > 0 && h('button', { type: 'button', class: 'fin-link fin-link-sm fin-ms-clear', 'data-key': `${key}-clear`, onclick: () => { closeMenu?.(); onChange([], key); } }, `Show ${all.toLowerCase()}`),
+  ].filter(Boolean));
+  btn.addEventListener('click', () => {
+    show(menu.hidden);
+    if (!menu.hidden) (search || boxes()[0])?.focus();
+  });
+  menu.addEventListener('keydown', (ev) => {
+    const shown = boxes();
+    const i = shown.indexOf(document.activeElement);
+    if (ev.key === 'Escape') { ev.preventDefault(); ev.stopPropagation(); show(false); btn.focus(); }
+    else if (ev.key === 'ArrowDown') { ev.preventDefault(); shown[Math.min(i + 1, shown.length - 1)]?.focus(); }
+    else if (ev.key === 'ArrowUp') { ev.preventDefault(); (i > 0 ? shown[i - 1] : search || shown[0])?.focus(); }
+    // Enter in the search box ticks the first match (a checkbox's own Enter would submit nothing).
+    else if (ev.key === 'Enter' && ev.target === search) { ev.preventDefault(); shown[0]?.click(); }
+  });
+  if (isOpen) {
+    // Open again after a tick redrew the bar: visible now (render puts focus back in it), placed once
+    // it's on the page.
+    if (closeMenu) closeMenu();
+    menu.hidden = false;
+    btn.setAttribute('aria-expanded', 'true');
+    openMenu = { key, q: search?.value ?? '' };
+    filterList();
+    queueMicrotask(() => { if (menu.isConnected && openMenu?.key === key) show(true); });
+  }
+  return h('div', { class: 'fin-ms', 'data-ms': key }, btn, menu);
+}
+// A click or focus outside the open filter menu closes it.
+const closeMenuOutside = (ev) => {
+  if (openMenu && !ev.target.closest?.(`[data-ms="${openMenu.key}"]`)) closeMenu?.();
+};
+document.addEventListener('mousedown', closeMenuOutside);
+document.addEventListener('focusin', closeMenuOutside);
 
 function filterBar(scope, { showAccount = false } = {}) {
   const f = filterOf(scope);
@@ -1118,10 +1208,19 @@ function filterBar(scope, { showAccount = false } = {}) {
   };
   const text = input({ type: 'search', value: f.text, placeholder: 'Search description, memo or amount', 'data-key': `${scope}-q`, 'aria-label': 'Search transactions' });
   text.addEventListener('input', () => set({ text: text.value }, `${scope}-q`, 250));
-  const cat = select([['*', 'All categories'], ['', 'Uncategorized'], ...catOptions()], f.categoryId == null ? '*' : f.categoryId, { 'data-key': `${scope}-cat`, 'aria-label': 'Category' });
-  cat.addEventListener('change', () => set({ categoryId: cat.value === '*' ? null : cat.value }, `${scope}-cat`));
-  const type = select([['', 'All types'], ['expense', 'Expenses'], ['income', 'Income'], ['refund', 'Refunds'], ['dividend', 'Dividends'], ['transfer', 'Transfers']], f.type ?? '', { 'data-key': `${scope}-type`, 'aria-label': 'Type' });
-  type.addEventListener('change', () => set({ type: type.value || null }, `${scope}-type`));
+  const cat = multiFilter({
+    key: `${scope}-cat`, label: 'Categories', all: 'All categories', many: 'categories', searchable: true,
+    picked: f.categoryIds, onChange: (ids, focus) => set({ categoryIds: ids }, focus),
+    options: [{ value: '', label: 'Uncategorized' }, ...sortedCategories(state.categories).map((c) => ({
+      value: c.id, label: c.name, hue: hueOf(c.id), child: Boolean(c.parentId && category(c.parentId)),
+      sub: c.parentId ? category(c.parentId)?.name : undefined,
+    }))],
+  });
+  const type = multiFilter({
+    key: `${scope}-type`, label: 'Types', all: 'All types', many: 'types',
+    picked: f.types, onChange: (types, focus) => set({ types }, focus),
+    options: [['expense', 'Expenses'], ['income', 'Income'], ['refund', 'Refunds'], ['dividend', 'Dividends'], ['transfer', 'Transfers']].map(([value, label]) => ({ value, label })),
+  });
   // A date box reports a "valid" date after almost every keystroke (typing 2026 passes through 0002,
   // 0020, 0202), and applying it redraws the list and resets the box mid-typing. So it applies a
   // moment after typing stops, only once the year looks real, and at once on Enter or leaving it.
@@ -1142,17 +1241,18 @@ function filterBar(scope, { showAccount = false } = {}) {
     el.addEventListener('input', () => set({ [k]: el.value }, `${scope}-${k}`, 400));
     return el;
   };
-  const acc = showAccount && select([['', 'All accounts'], ...[...state.accounts].sort(byName).map((a) => [a.id, a.archived ? `${accountLabel(a)}, archived` : accountLabel(a)])], f.accountId, { 'data-key': `${scope}-acc`, 'aria-label': 'Account' });
-  acc && acc.addEventListener('change', () => set({ accountId: acc.value }, `${scope}-acc`));
+  const acc = showAccount && multiFilter({
+    key: `${scope}-acc`, label: 'Accounts', all: 'All accounts', many: 'accounts', searchable: state.accounts.length > 8,
+    picked: f.accountIds, onChange: (ids, focus) => set({ accountIds: ids }, focus),
+    options: [...state.accounts].sort(byName).map((a) => ({ value: a.id, label: accountLabel(a), sub: a.archived ? 'archived' : undefined })),
+  });
   return h('div', { class: 'fin-filters', role: 'search', 'aria-label': 'Filter transactions' },
     h('div', { class: 'fin-filter-q' }, text),
     acc, cat, type,
     h('div', { class: 'fin-filter-pair' }, dateIn('from', 'From date'), h('span', { class: 'fin-muted' }, '–'), dateIn('to', 'To date')),
     h('div', { class: 'fin-filter-pair' }, amountIn('min', 'Min'), h('span', { class: 'fin-muted' }, '–'), amountIn('max', 'Max')),
-    filterActive(f) && button('Clear', () => { txFilters.delete(scope); txPage = 0; selected.clear(); render(`${scope}-q`); }, 'secondary fin-btn-sm', { 'data-key': `${scope}-clear` }));
+    filterActive(f) && button('Clear', () => { closeMenu?.(); txFilters.delete(scope); txPage = 0; selected.clear(); render(`${scope}-q`); }, 'secondary fin-btn-sm', { 'data-key': `${scope}-clear` }));
 }
-
-const toFilter = (f) => ({ ...f, accountIds: f.accountId ? new Set([f.accountId]) : null });
 
 function pager(page, pages, total, where, headingId = 'tx-h') {
   const go = (p, key) => {
@@ -1376,8 +1476,13 @@ async function fetchTransactions(get) {
 // After a save each is marked stale and asked for again, and keeps showing meanwhile.
 const listViews = new Map();
 const listLoading = new Map();
+// The last failure per scope, { key, message }: shown in place of the list, and not asked again
+// until the filters (the key) change, so a redraw doesn't retry it in a loop.
+const listErrors = new Map();
+const listError = (scope, key) => (listErrors.get(scope)?.key === key ? listErrors.get(scope).message : null);
 function requestList(scope, key, name, args) {
-  if (listLoading.get(scope) === key) return;
+  if (listLoading.get(scope) === key || listError(scope, key)) return;
+  listErrors.delete(scope);
   listLoading.set(scope, key);
   let page = null;
   let known = null;
@@ -1388,7 +1493,7 @@ function requestList(scope, key, name, args) {
   }).then((added) => {
     if (listLoading.get(scope) !== key) return;
     listLoading.delete(scope);
-    if (!added || !page) { say('Couldn’t load the transactions. Try again in a moment.'); return; }
+    if (!added || !page) { listErrors.set(scope, { key, message: 'Couldn’t load the transactions. Try again in a moment.' }); renderWhenIdle(); return; }
     listViews.set(scope, {
       key, total: Number(page.total), ids: page.rows.map((r) => r.id), known, page,
       balances: new Map(page.rows.filter((r) => r.balance != null).map((r) => [r.id, Number(r.balance)])),
@@ -1396,7 +1501,14 @@ function requestList(scope, key, name, args) {
     renderWhenIdle();
   }).catch((err) => {
     if (listLoading.get(scope) === key) listLoading.delete(scope);
-    say(`Couldn’t load the transactions: ${err.message}`);
+    // PostgREST's answer when a function's arguments changed in a newer schema.sql.
+    // Redraw once to show the notice (a redraw asks again, so not on every failure).
+    const outdated = /could not find the function/i.test(err.message);
+    if (outdated) markSchemaOutdated();
+    listErrors.set(scope, { key, message: outdated
+      ? 'The database needs updating for these filters: run tools/finance/schema.sql again in the Supabase SQL editor, then reload.'
+      : `Couldn’t load the transactions: ${err.message}` });
+    renderWhenIdle();
   });
 }
 
@@ -1406,7 +1518,8 @@ function filterArgs(f) {
   const asAmount = /^[\d.,]+$/.test(text) ? Math.abs(toMinor(text.replace(/,(\d{1,2})$/, '.$1').replace(/,/g, ''))) : null;
   return {
     p_text: normalize(text) || null, p_amount: Number.isFinite(asAmount) ? asAmount : null,
-    p_category: f.categoryId || null, p_uncategorized: f.categoryId === '', p_type: f.type || null,
+    p_categories: f.categoryIds.some(Boolean) ? f.categoryIds.filter(Boolean) : null,
+    p_uncategorized: f.categoryIds.includes(''), p_types: f.types.length ? f.types : null,
     p_from: f.from || null, p_to: f.to || null,
     p_min: f.min === '' || f.min == null ? null : toMinor(f.min), p_max: f.max === '' || f.max == null ? null : toMinor(f.max),
   };
@@ -1470,7 +1583,9 @@ function transactionsSection(account) {
     filterBar(scope),
     selected.size > 0 && bulkBar(rows),
     pages > 1 && pager(txPage, pages, total, 'top'),
-    !ready && rows.length === 0
+    !ready && rows.length === 0 && listError(scope, key)
+      ? h('p', { class: 'fin-error fin-pad', role: 'alert' }, listError(scope, key))
+      : !ready && rows.length === 0
       ? loader('Loading transactions…')
       : rows.length === 0 && !hasUpcoming
         ? h('p', { class: 'fin-empty fin-pad' }, filtered ? 'No transactions match these filters.' : 'No transactions yet.')
@@ -1524,7 +1639,7 @@ function renderSearch() {
   const ready = active && view0?.key === key;
   if (active && (!ready || view0.stale)) {
     requestList('search', key, 'search_transactions', {
-      p_accounts: f.accountId ? [f.accountId] : null, p_limit: TX_PAGE_SIZE, p_offset: txPage * TX_PAGE_SIZE,
+      p_accounts: f.accountIds.length ? f.accountIds : null, p_limit: TX_PAGE_SIZE, p_offset: txPage * TX_PAGE_SIZE,
       ...filterArgs(f), p_rates: ratesArg(),
     });
   }
@@ -1549,7 +1664,9 @@ function renderSearch() {
       filterBar('search', { showAccount: true }),
       selected.size > 0 && bulkBar(rows),
       !active
-        ? h('p', { class: 'fin-empty fin-pad' }, 'Type something to search for, or pick a category, type, dates or amounts.')
+        ? h('p', { class: 'fin-empty fin-pad' }, 'Type something to search for, or pick accounts, categories, types, dates or amounts.')
+        : !ready && listError('search', key)
+          ? h('p', { class: 'fin-error fin-pad', role: 'alert' }, listError('search', key))
         : !ready
           ? loader('Searching…')
           : rows.length === 0

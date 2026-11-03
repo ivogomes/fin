@@ -203,15 +203,21 @@ test('filters: text and amounts, categories with children, types, ranges, accoun
   assert.deepEqual(ids({ text: 'endesa' }), ['3', '1']);
   assert.deepEqual(ids({ text: 'ana' }), ['2']); // memo
   assert.deepEqual(ids({ text: '12,99' }), ['2']); // amount
-  assert.deepEqual(ids({ categoryId: 'casa' }), ['3', '1']); // the parent includes its children
-  assert.deepEqual(ids({ categoryId: '' }), ['4', '6']); // uncategorized, transfers excluded
-  assert.deepEqual(ids({ type: 'expense' }), ['2', '1', '6']);
-  assert.deepEqual(ids({ type: 'income' }), ['4']);
-  assert.deepEqual(ids({ type: 'refund' }), ['3']);
-  assert.deepEqual(ids({ type: 'transfer' }), ['5']);
+  assert.deepEqual(ids({ categoryIds: ['casa'] }), ['3', '1']); // the parent includes its children
+  assert.deepEqual(ids({ categoryIds: [''] }), ['4', '6']); // uncategorized, transfers excluded
+  assert.deepEqual(ids({ types: ['expense'] }), ['2', '1', '6']);
+  assert.deepEqual(ids({ types: ['income'] }), ['4']);
+  assert.deepEqual(ids({ types: ['refund'] }), ['3']);
+  assert.deepEqual(ids({ types: ['transfer'] }), ['5']);
   assert.deepEqual(ids({ min: '50', max: '100' }), ['5', '1']);
   assert.deepEqual(ids({ from: '2026-10-02', to: '2026-10-03' }), ['3', '2']);
-  assert.deepEqual(ids({ accountIds: new Set(['b']) }), ['3']);
+  assert.deepEqual(ids({ accountIds: ['b'] }), ['3']);
+  // Several of each: any of them matches.
+  assert.deepEqual(ids({ categoryIds: ['fun', ''] }), ['4', '2', '6']);
+  assert.deepEqual(ids({ categoryIds: ['casa', 'fun'] }), ['3', '2', '1']);
+  assert.deepEqual(ids({ types: ['income', 'transfer'] }), ['5', '4']);
+  assert.deepEqual(ids({ accountIds: ['a', 'b'], types: ['refund', 'income'] }), ['4', '3']);
+  assert.deepEqual(ids({ categoryIds: [], types: [], accountIds: [] }).length, 6);
 });
 
 test('rule suggestions: offered unless the rules already pick it; counts others to fill', () => {
@@ -872,7 +878,7 @@ test('dividends: income on their own line without a category, and a filter type'
   assert.equal(r.income, 2434);
   assert.equal(r.earning.find((c) => c.id === DIVIDENDS).amount, 1234);
   assert.equal(r.earning.find((c) => c.id === 'inv').amount, 500);
-  assert.deepEqual(filterTransactions(tx, { type: 'dividend' }).map((t) => t.id), ['d2', 'd1']);
+  assert.deepEqual(filterTransactions(tx, { types: ['dividend'] }).map((t) => t.id), ['d2', 'd1']);
 });
 
 test('recurring: monthly and weekly rhythms are suggested; irregular, stopped, varying or scheduled ones are not', () => {

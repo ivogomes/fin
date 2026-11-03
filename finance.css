@@ -1125,6 +1125,25 @@ input.fin-cat-add:focus { width: 10rem; border-style: solid; border-color: var(-
 .fin-filter-q .fin-input { width: 100%; }
 .fin-filter-pair { display: inline-flex; align-items: center; gap: 4px; }
 .fin-filter-pair input[type="number"] { width: 6.5rem; }
+/* Multi-pick filter menus (multiFilter): a select-like button opening a list of checkboxes. */
+.fin-ms { display: inline-block; }
+.fin-filters .fin-ms-btn { display: inline-flex; align-items: center; gap: 6px; max-width: 14rem; text-align: left; cursor: pointer; }
+.fin-ms-btn.is-on { border-color: var(--f-accent); color: var(--f-accent-strong); }
+.fin-ms-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fin-ms-caret { margin-left: auto; font-size: 10px; color: var(--f-muted); }
+.fin-ms-menu { padding-top: 0; }
+.fin-ms-search { position: sticky; top: 0; z-index: 1; width: 100%; max-width: none; margin: 0 0 4px; box-shadow: 0 -4px 0 var(--f-surface), 0 4px 0 var(--f-surface); }
+.fin-ms-menu > :first-child:not(.fin-ms-search) { margin-top: 4px; }
+.fin-ms-list { margin: 0; padding: 0; list-style: none; }
+.fin-ms-item[hidden] { display: none; }
+.fin-ms-item .fin-check { padding: 6px 8px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+.fin-ms-item .fin-check:hover { background: var(--f-accent-soft); }
+.fin-ms-item .fin-option-main { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fin-ms-item .fin-sub { margin-left: auto; white-space: nowrap; }
+.fin-ms-item.fin-option-child { padding-left: 14px; }
+.fin-ms-menu:not(.is-searching) .fin-option-child .fin-sub { display: none; }
+.fin-ms-menu.is-searching .fin-ms-item.fin-option-child { padding-left: 0; }
+.fin-ms-clear { display: block; margin: 4px 8px 6px; }
 .fin-search-totals { display: flex; gap: 16px; margin: 0; font-size: 13px; color: var(--f-muted); }
 
 .fin-tick-col { width: 36px; padding-right: 0 !important; }
@@ -1623,6 +1642,8 @@ input.fin-cat-add:focus { width: 10rem; border-style: solid; border-color: var(-
 
   .fin-filters { padding: 10px 12px; }
   .fin-filters .fin-input { flex: 1 1 8rem; }
+  .fin-ms { flex: 1 1 8rem; }
+  .fin-filters .fin-ms-btn { width: 100%; max-width: none; }
   .fin-filter-pair { flex: 1 1 100%; }
   .fin-filter-pair .fin-input { flex: 1 1 0; width: auto; }
   .fin-break-row { grid-template-columns: minmax(6rem, 1fr) minmax(3rem, 0.8fr) auto 2.5rem; gap: 8px; }

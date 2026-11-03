@@ -133,6 +133,8 @@ const NEW_COLUMNS = {
     'interest_every', 'interest_tax', 'investment_kind', 'opened_on', 'closed_on', 'institution', 'last_four', 'exclude_totals', 'color'], categories: ['parent_id'], transactions: ['category_ids', 'kind', 'splits', 'holding_id'], settings: ['fx', 'last_backup_at', 'backup_every', 'eodhd_api_key', 'hidden_suggestions'], holdings: ['price_history'], schedules: ['subscription', 'category_ids'] };
 let schemaOutdated = false;
 export const needsSchemaUpdate = () => schemaOutdated || missing.size > 0;
+// A database function the app calls doesn't take its arguments yet (schema.sql not run again).
+export const markSchemaOutdated = () => { schemaOutdated = true; };
 
 const toSettingsRow = (s) => ({
   quote_api_key: s.quoteApiKey || null, av_api_key: s.avApiKey || null, eodhd_api_key: s.eodhdApiKey || null, last_account_id: s.lastAccountId ?? null,
