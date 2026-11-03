@@ -21,8 +21,8 @@ import {
   backupData, restoreData, BACKUP_TABLES,
 } from './store.js';
 import { makeZip, readZip } from './zip.js';
-import { driveConfigured, uploadBackup, listBackups, disconnect as driveDisconnect, KEEP as DRIVE_KEEP } from './drive.js';
-import { configured, currentUser, completeSignIn, sendSignInLink, signOut, SignedOut, rpc, selectAll } from './cloud.js';
+import { driveConfigured, uploadBackup, listBackups, disconnect as driveDisconnect, KEEP as DRIVE_KEEP, renderGoogleButton } from './drive.js';
+import { configured, currentUser, completeSignIn, sendSignInLink, signInWithGoogle, signOut, SignedOut, rpc, selectAll } from './cloud.js';
 
 // Set once the signed-in user's data has loaded (see boot() at the bottom).
 let state = null;
@@ -5722,8 +5722,21 @@ function renderSetupNeeded() {
 function renderSignIn(message) {
   const email = input({ type: 'email', required: true, autocomplete: 'email' });
   const note = h('p', { class: message ? 'fin-error' : 'fin-hint', role: message ? 'alert' : null }, message ?? '');
+  const fail = (msg) => {
+    note.className = 'fin-error';
+    note.setAttribute('role', 'alert');
+    note.textContent = msg;
+  };
+  // With a Google client ID (config.js), "Sign in with Google" comes first; the email link stays
+  // for when Google can't be used. Both reach the same account when the email is the same.
+  const google = driveConfigured() && h('div', { class: 'fin-signin-google' },
+    h('div', { class: 'fin-google-btn' }),
+    h('p', { class: 'fin-or', 'aria-hidden': 'true' }, h('span', {}, 'or by email')));
   screen('Sign in to Fin',
-    h('p', { class: 'fin-empty' }, 'We’ll email you a link. Open it on this device to sign in. No password needed.'),
+    h('p', { class: 'fin-empty' }, google
+      ? 'Sign in with Google, or get a link by email to open on this device. No password needed.'
+      : 'We’ll email you a link. Open it on this device to sign in. No password needed.'),
+    google,
     h('form', {
       class: 'fin-signin',
       onsubmit: async (e) => {
@@ -5737,16 +5750,30 @@ function renderSignIn(message) {
             button('Use a different email', () => renderSignIn()));
           document.getElementById('screen-h').focus();
         } catch (err) {
-          note.className = 'fin-error';
-          note.setAttribute('role', 'alert');
-          note.textContent = err.message;
+          fail(err.message);
           submit.disabled = false;
         }
       },
     },
       field('Email', email), note,
-      h('button', { type: 'submit', class: 'fin-btn btn-primary' }, 'Email me a sign-in link')));
-  email.focus();
+      h('button', { type: 'submit', class: `fin-btn ${google ? 'secondary' : 'btn-primary'}` }, 'Email me a sign-in link')));
+  if (google) {
+    const dark = document.documentElement.dataset.theme === 'dark'
+      || (document.documentElement.dataset.theme !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
+    renderGoogleButton(google.querySelector('.fin-google-btn'), {
+      dark,
+      onToken: async (idToken, nonce) => {
+        try {
+          await signInWithGoogle(idToken, nonce);
+          boot();
+        } catch (err) {
+          fail(`Google sign-in didn’t work: ${err.message}`);
+        }
+      },
+    }).catch(() => { google.hidden = true; }); // Google unreachable: the email link still works
+  }
+  // With Google first, start at the heading rather than in the email box.
+  (google ? document.getElementById('screen-h') : email).focus();
 }
 
 const STATUS_TEXT = { saved: 'All changes saved', saving: 'Saving…', error: 'Not saved yet, retrying' };

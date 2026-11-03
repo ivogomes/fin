@@ -650,6 +650,12 @@ textarea.fin-input { resize: vertical; }
   .fin-screen-card { padding: 22px 20px 24px; }
 }
 .fin-signin .fin-hint:empty, .fin-signin .fin-error:empty { display: none; }
+/* "Sign in with Google" (Google draws the button itself), then a divider before the email form. */
+.fin-signin-google { margin-top: 20px; }
+.fin-google-btn { display: flex; justify-content: center; min-height: 44px; }
+.fin-or { display: flex; align-items: center; gap: 12px; margin: 18px 0 0; color: var(--f-muted); font-size: 13px; }
+.fin-or::before, .fin-or::after { content: ''; flex: 1; border-top: 1px solid var(--f-border); }
+.fin-signin-google + .fin-signin { margin-top: 12px; }
 
 /* A set of radio choices as small cards (Settings → Display). */
 .fin-choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: 8px; margin: 4px 0 8px; }

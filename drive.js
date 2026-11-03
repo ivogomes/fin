@@ -4,6 +4,7 @@
 // that lasts about an hour; after that Google gives a new one, usually without asking again.
 
 import { GOOGLE_CLIENT_ID } from './config.js';
+import { currentUser } from './cloud.js';
 
 const SCOPE = 'https://www.googleapis.com/auth/drive.file';
 const FOLDER = 'Fin backups';
@@ -15,7 +16,8 @@ export const driveConfigured = () => Boolean(GOOGLE_CLIENT_ID);
 
 let token = null; // { value, expires }
 let library = null;
-function loadLibrary() {
+// Google's sign-in library (also used to sign in to Fin, below), loaded once when first needed.
+export function loadLibrary() {
   library ??= new Promise((resolve, reject) => {
     const s = document.createElement('script');
     s.src = 'https://accounts.google.com/gsi/client';
@@ -38,6 +40,8 @@ async function getToken(interactive) {
       client_id: GOOGLE_CLIENT_ID,
       scope: SCOPE,
       prompt: interactive ? '' : 'none',
+      // Pre-select the Google account Fin is signed in with, so connecting is one click.
+      ...(currentUser()?.email && { login_hint: currentUser().email }),
       callback: (r) => {
         if (r.error) { reject(new Error(r.error_description || r.error)); return; }
         token = { value: r.access_token, expires: Date.now() + Number(r.expires_in) * 1000 };
@@ -106,4 +110,26 @@ export async function disconnect() {
     google?.accounts.oauth2.revoke(token.value, () => {});
   }
   token = null;
+}
+
+// ── Signing in to Fin with Google ────────────────────────────────────────────
+
+// Draws Google's "Sign in with Google" button into `el`. Google hands back a signed ID token that
+// says who you are (no access to anything); `onToken(idToken, nonce)` swaps it for a Supabase
+// session. The nonce ties the token to this page: Google gets its SHA-256, Supabase the original,
+// so a token picked up elsewhere can't be replayed. Rejects when Google can't be reached.
+export async function renderGoogleButton(el, { onToken, dark = false }) {
+  const google = await loadLibrary();
+  const nonce = [...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, '0')).join('');
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(nonce)));
+  google.accounts.id.initialize({
+    client_id: GOOGLE_CLIENT_ID,
+    nonce: [...digest].map((b) => b.toString(16).padStart(2, '0')).join(''),
+    callback: (r) => onToken(r.credential, nonce),
+    itp_support: true,
+  });
+  google.accounts.id.renderButton(el, {
+    type: 'standard', theme: dark ? 'filled_black' : 'outline', size: 'large', text: 'signin_with', shape: 'pill',
+    logo_alignment: 'center', width: Math.min(400, Math.max(200, Math.round(el.getBoundingClientRect().width) || 320)),
+  });
 }

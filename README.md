@@ -2,7 +2,7 @@
 
 Fin (*take care of your Finances*) is a personal finance tracker to replace Buxfer: accounts in EUR or USD (converted at the daily ECB rate), credit cards and investments, rule-based categories, transfers, stock and ETF holdings with live prices, and CSV import and export. Served at `/tools/finance/`.
 
-Data is stored in a Supabase project (Postgres) and you sign in with an emailed link, so the same data is available on every device. The browser keeps only the sign-in session and a few display preferences.
+Data is stored in a Supabase project (Postgres) and you sign in with Google or an emailed link, so the same data is available on every device. The browser keeps only the sign-in session and a few display preferences.
 
 | File | What it is |
 | --- | --- |
@@ -176,6 +176,8 @@ To set it up once:
 4. **APIs & Services → Credentials → Create credentials → OAuth client ID:** type Web application; under **Authorized JavaScript origins** add `https://ivogomes.com` and `http://localhost:4000`. No redirect URIs are needed.
 5. Copy the client ID (`….apps.googleusercontent.com`) into `GOOGLE_CLIENT_ID` in `config.js`. It's meant to be public, like the Supabase anon key: Google only accepts it from those origins.
 6. In Fin: Settings → Backup and restore → **Connect Google Drive and back up now**.
+
+**Signing in with Google.** With the client ID set, the sign-in screen also shows **Sign in with Google**, above the email link. Turn it on in Supabase: **Authentication → Sign In / Providers → Google**, enable it, and paste the same client ID (and a client secret from that Google client, if the form asks for one). Nothing more is needed in Google Cloud: the button runs from the same JavaScript origins, needs no redirect URI, and asks only for your name and email (basic scopes). Google's signed ID token is exchanged for a Supabase session (`signInWithGoogle` in `cloud.js`, with a nonce so a token can't be reused elsewhere), and Supabase links it to the account with the same email, so you get the same data either way. Signing in with Google doesn't connect Drive by itself (that's a separate permission), but connecting Drive then pre-selects that Google account.
 
 While the app is in Testing, Google may ask you to confirm again from time to time; that's the reminder's button.
 

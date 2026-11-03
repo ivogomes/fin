@@ -1,4 +1,4 @@
-// Supabase over plain fetch: email-link sign-in (GoTrue) and table access (PostgREST).
+// Supabase over plain fetch: sign-in by email link or Google (GoTrue) and table access (PostgREST).
 // Only the sign-in session is kept in the browser; the data itself lives in the database.
 
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config.js';
@@ -50,6 +50,12 @@ async function auth(path, body) {
 // Sends the sign-in email. The link brings you back to `redirectTo` with the session in the URL hash.
 export function sendSignInLink(email, redirectTo) {
   return auth(`otp?redirect_to=${encodeURIComponent(redirectTo)}`, { email, create_user: true });
+}
+
+// Signs in with an ID token from "Sign in with Google" (drive.js renderGoogleButton) and its nonce.
+// Supabase checks it with Google and links it to the account with the same verified email.
+export async function signInWithGoogle(idToken, nonce) {
+  writeSession(toSession(await auth('token?grant_type=id_token', { provider: 'google', id_token: idToken, nonce })));
 }
 
 // Call once on page load: picks up the session from a sign-in link, if the URL carries one.
