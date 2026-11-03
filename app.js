@@ -232,6 +232,10 @@ const ICONS = {
   trash: ['M4 7h16', 'M9.5 7V4.5h5V7', 'M6.5 7l1 12.5h9l1-12.5', 'M10 11v5M14 11v5'],
   plus: ['M12 5v14M5 12h14'],
   refund: ['M9 14 4 9l5-5', 'M4 9h10.5a5.5 5.5 0 0 1 0 11H11'],
+  // Alerts: a payment that's due, a balance that runs low
+  clock: ['M12 3.5a8.5 8.5 0 1 0 0 17 8.5 8.5 0 0 0 0-17Z', 'M12 7.5V12l3 2'],
+  warn: ['M12 4 2.8 19.5h18.4Z', 'M12 10v4.5', 'M12 17.2h.01'],
+  repeat: ['M17 3.5 20.5 7 17 10.5', 'M3.5 11V10a3 3 0 0 1 3-3h14', 'M7 20.5 3.5 17 7 13.5', 'M20.5 13v1a3 3 0 0 1-3 3h-14'],
   // Account types
   'type-cash': ['M3 7h18v10H3Z', 'M12 9.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5Z', 'M6.5 10v4M17.5 10v4'],
   'type-checking': ['M3 10 12 4.5l9 5.5', 'M5.5 10.5v7M10 10.5v7M14 10.5v7M18.5 10.5v7', 'M3 20h18'],
@@ -857,13 +861,16 @@ function accountAlerts(only = null) {
   return out;
 }
 
-// A list of alerts, each with its Pay button for a card payment.
+// A list of alerts in one card, a row each: a round badge (a clock for a payment due, a warning
+// sign for a low balance, a loop for payments that look recurring), what it's about, and its action:
+// the Pay button for a card payment, or `action` (an element, such as a link to the page).
 function alertsBox(list, { label = 'Heads up' } = {}) {
   if (!list.length) return null;
   return h('section', { class: 'fin-alerts', 'aria-label': label },
     h('ul', {}, list.map((al) => h('li', { class: `fin-alert fin-alert--${al.level}` },
-      h('span', { class: 'fin-alert-icon', 'aria-hidden': 'true' }, al.level === 'due' ? '⏰' : '⚠'),
-      h('span', {}, al.text),
+      h('span', { class: 'fin-alert-icon' }, icon({ due: 'clock', recurring: 'repeat' }[al.level] ?? 'warn')),
+      h('span', { class: 'fin-alert-text' }, al.text),
+      al.action,
       al.pay && button(al.pay.from ? 'Pay now' : 'Set where it’s paid from', () => payCard(al.pay), 'secondary fin-btn-sm',
         { 'aria-label': al.pay.from ? `Pay ${money(al.pay.amount, al.pay.card.currency)} to ${al.pay.card.name}` : `Set the account ${al.pay.card.name} is paid from` })))));
 }
@@ -4452,7 +4459,7 @@ function renderOverview() {
         h('p', { class: 'fin-meta' }, new Date(`${now}T00:00:00`).toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }))),
       button('Add transactions', quickAdd, 'primary', { 'data-key': 'ov-add', 'aria-haspopup': 'dialog' })),
     state.accounts.length === 0 ? renderWelcome() : [
-      alertsBox(accountAlerts()),
+      alertsBox([...accountAlerts(), recurringAlert()].filter(Boolean)),
       h('dl', { class: 'fin-stats' },
         h('div', {}, h('dt', {}, 'Net worth'), h('dd', { class: tone(nw.total) }, money(nw.total, 'EUR')),
           h('p', { class: 'fin-stat-note' }, nw.unconverted ? `${nw.unconverted} account(s) waiting for exchange rates` : 'across your open accounts, in EUR')),
@@ -4473,7 +4480,6 @@ function renderOverview() {
       h('div', { class: 'fin-overview-grid' },
         r && p ? monthCategoriesCard(r, p, sameDays) : h('section', { class: 'fin-card' }, loader('Working out this month…')),
         creditCardsCard()),
-      recurringNotice(),
     ]);
 }
 
@@ -4580,13 +4586,15 @@ function creditCardsCard() {
     })));
 }
 
-// A line pointing to payments that look recurring, when there are any.
-function recurringNotice() {
+// An alert pointing to payments that look recurring, when there are any (for alertsBox).
+function recurringAlert() {
   const list = scheduleSuggestions();
   if (!list?.length) return null;
-  return h('p', { class: 'fin-notice' },
-    `${list.length} payment${list.length === 1 ? '' : 's'} look${list.length === 1 ? 's' : ''} recurring but ${list.length === 1 ? 'has' : 'have'} no schedule: ${list.slice(0, 3).map((x) => x.description).join(', ')}${list.length > 3 ? '…' : ''}. `,
-    pageLink('Review them', { name: 'scheduled' }, 'fin-link'));
+  return {
+    level: 'recurring',
+    text: `${list.length} payment${list.length === 1 ? '' : 's'} look${list.length === 1 ? 's' : ''} recurring but ${list.length === 1 ? 'has' : 'have'} no schedule: ${list.slice(0, 3).map((x) => x.description).join(', ')}${list.length > 3 ? '…' : ''}.`,
+    action: pageLink('Review them', { name: 'scheduled' }, 'fin-btn secondary fin-btn-sm'),
+  };
 }
 
 // ── main: settings ───────────────────────────────────────────────────────────
