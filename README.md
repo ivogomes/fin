@@ -14,6 +14,7 @@ Data is stored in a Supabase project (Postgres) and you sign in with an emailed 
 | `store.js` | Loads the signed-in user's data and saves changes: compares with the last saved copy and sends only added, changed or removed rows. |
 | `cloud.js` | Supabase over plain `fetch`: email-link sign-in and table access. No SDK. |
 | `market.js` | Exchange rates (Frankfurter), symbol search and US prices (Twelve Data), non-US prices (Alpha Vantage). |
+| `drive.js` | Backups to Google Drive (optional, with a Google OAuth client ID in `config.js`). |
 | `schema.sql` | Database tables and row-level security. |
 | `config.js` | Your Supabase project URL and anon key. |
 | `finance.css` | The tool's styles, on the shared tokens (see `STYLEGUIDE.md`). |
@@ -164,6 +165,21 @@ Transactions you add with a date after today don't count in the balance or net w
 ## Backups
 
 Supabase's free plan keeps no backups, so the app makes them. **Settings → Backup and restore → Download backup** saves one `.zip`: `backup.json` (everything, ids and links included, for an exact restore) plus the same data as readable CSV files. API keys aren't in it. A banner reminds you when one is due (every week by default; every 2 weeks, every month or never in the same page), with "Remind me tomorrow". **Restore** reads a backup `.zip` (or its `backup.json`), shows what's in it next to what's there now, and after you type RESTORE replaces everything.
+
+**Backups to Google Drive.** Once connected (Settings → Backup and restore → Google Drive, once in each browser), Fin makes the backup by itself when one is due, as it opens: the same `.zip`, in a **Fin backups** folder in your Drive, keeping the latest 10 (older ones go to Drive's bin, which empties after 30 days). The page lists them. Fin asks Google only for the files it creates (the `drive.file` permission), so it can't see anything else in your Drive. Google's permission lasts about an hour and is renewed without asking; when Google does need you to confirm, the backup reminder has a **Back up to Google Drive** button. (Fin runs in your browser, so backups happen when you open it.) `drive.js` does this.
+
+To set it up once:
+
+1. In [Google Cloud Console](https://console.cloud.google.com/), create a project (say "Fin").
+2. **APIs & Services → Library:** enable the **Google Drive API**.
+3. **APIs & Services → OAuth consent screen:** user type External; app name Fin; your email as support and developer contact. Under **Data access**, add the scope `.../auth/drive.file`. Under **Audience**, leave it in Testing and add your Google account as a test user (only test users can connect, which is what you want).
+4. **APIs & Services → Credentials → Create credentials → OAuth client ID:** type Web application; under **Authorized JavaScript origins** add `https://ivogomes.com` and `http://localhost:4000`. No redirect URIs are needed.
+5. Copy the client ID (`….apps.googleusercontent.com`) into `GOOGLE_CLIENT_ID` in `config.js`. It's meant to be public, like the Supabase anon key: Google only accepts it from those origins.
+6. In Fin: Settings → Backup and restore → **Connect Google Drive and back up now**.
+
+While the app is in Testing, Google may ask you to confirm again from time to time; that's the reminder's button.
+
+**A copy on a Synology NAS:** in DSM, install **Cloud Sync**, add a Google Drive connection with your account, and sync the **Fin backups** folder to a folder on the NAS with the direction set to **Download remote changes only**. If it offers to keep local files when they're removed from Drive, turn that on, so the NAS keeps every backup even after Drive's copy rotates. Hyper Backup can then include that folder in the NAS's own backups.
 
 `.github/workflows/finance-keepalive.yml` pings the Supabase project every 3 days so the free plan doesn't pause it for inactivity. It uses the public URL and key from `config.js` and reads no data. GitHub turns scheduled workflows off after 60 days without commits to the repo; re-enable it from the Actions tab if that happens.
 
