@@ -4626,10 +4626,11 @@ function openSettings(key, focusKey) {
 }
 
 function accountSection() {
-  const email = currentUser()?.email;
+  const p = profile();
   return h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'settings-h' },
-    h('p', {}, email ? ['Signed in as ', h('strong', {}, email), '.'] : 'Signed in.'),
-    h('p', { class: 'fin-hint' }, 'Your data is saved to your account and loads on any device where you sign in with this email.'),
+    h('div', { class: 'fin-me-who fin-me-who--page' }, avatar(p, 48),
+      h('div', { class: 'fin-me-names' }, p.name && h('strong', {}, p.name), h('span', { class: p.name ? 'fin-sub' : '' }, p.email ? ['Signed in as ', p.email] : 'Signed in'))),
+    h('p', { class: 'fin-hint' }, 'Your data is saved to your account and loads on any device where you sign in with this email, or with Google using the same address.'),
     h('div', { class: 'fin-actions fin-mt' }, button('Sign out', () => signOutNow(), 'secondary', { 'data-key': 'sign-out' })));
 }
 
@@ -5683,9 +5684,10 @@ const layout = document.querySelector('.fin-layout');
 
 // Before sign-in only the main column shows; the account panel and the header controls appear after.
 function setShell(signedIn) {
+  if (!signedIn) openMe(false);
   side.hidden = !signedIn;
   layout.classList.toggle('fin-layout--solo', !signedIn);
-  document.querySelectorAll('[data-nav], #sync, #fab, #side-toggle, #hide-amounts, #cmd-open').forEach((el) => { el.hidden = !signedIn; });
+  document.querySelectorAll('[data-nav], #sync, #fab, #side-toggle, #hide-amounts, #cmd-open, #me').forEach((el) => { el.hidden = !signedIn; });
 }
 
 // The screens before the app (sign in, check your email, setup, a loading error): a card in the
@@ -5819,6 +5821,7 @@ async function boot() {
     return;
   }
   setShell(true);
+  paintMe();
   syncEl.textContent = STATUS_TEXT.saved;
   const add = new URLSearchParams(location.search).has('add');
   pageSection = sectionOf(view);
@@ -5876,6 +5879,64 @@ document.addEventListener('keydown', (e) => {
   }
 });
 showHidden();
+
+// ── You: who's signed in, in the header ──────────────────────────────────────
+
+// Name, email and photo of whoever is signed in. Signing in with Google brings the name and photo
+// (Supabase keeps them in user_metadata); with the email link there's only the email.
+function profile() {
+  const u = currentUser() ?? {};
+  const m = u.user_metadata ?? {};
+  return { name: m.full_name || m.name || '', email: u.email ?? '', photo: m.avatar_url || m.picture || '' };
+}
+// The photo, or the initials in a circle when there's none or it doesn't load. Decoration: the
+// name is always written next to it or in the button's label.
+function avatar(p, size) {
+  const words = (p.name || p.email).split(/[\s@._-]+/).filter(Boolean);
+  const initials = h('span', { class: 'fin-avatar fin-avatar--initials', 'data-size': String(size), 'aria-hidden': 'true' },
+    (p.name ? words.slice(0, 2).map((w) => w[0]) : [words[0]?.[0] ?? '?']).join('').toUpperCase());
+  if (!p.photo) return initials;
+  // no-referrer: Google's photo addresses can refuse requests that say where they come from.
+  const img = h('img', { class: 'fin-avatar', src: p.photo, alt: '', width: String(size), height: String(size), referrerpolicy: 'no-referrer', 'data-size': String(size) });
+  img.addEventListener('error', () => img.replaceWith(initials));
+  return img;
+}
+
+// The avatar button opens a small menu: who you are, your account's settings, and Sign out.
+// Esc, a click outside or tabbing away closes it; ↓/↑ move between its items.
+const meWrap = document.getElementById('me');
+const meBtn = document.getElementById('me-btn');
+const meMenu = document.getElementById('me-menu');
+function openMe(on) {
+  meMenu.hidden = !on;
+  meBtn.setAttribute('aria-expanded', String(on));
+}
+function paintMe() {
+  const p = profile();
+  meBtn.replaceChildren(avatar(p, 32));
+  meBtn.setAttribute('aria-label', `Your account, ${p.name || p.email || 'signed in'}`);
+  meBtn.title = p.name && p.email ? `${p.name} (${p.email})` : p.name || p.email;
+  const item = (label, run) => h('button', { type: 'button', class: 'fin-me-item', onclick: () => { openMe(false); run(); } }, label);
+  meMenu.replaceChildren(
+    h('div', { class: 'fin-me-who' }, avatar(p, 40),
+      h('div', { class: 'fin-me-names' }, p.name && h('strong', {}, p.name), p.email && h('span', { class: 'fin-sub' }, p.email))),
+    item('Account settings', () => openSettings('account', 'sign-out')),
+    item('Sign out', () => signOutNow()));
+}
+meBtn.addEventListener('click', () => {
+  openMe(meMenu.hidden);
+  if (!meMenu.hidden) meMenu.querySelector('.fin-me-item')?.focus();
+});
+meMenu.addEventListener('keydown', (e) => {
+  const items = [...meMenu.querySelectorAll('.fin-me-item')];
+  const i = items.indexOf(document.activeElement);
+  if (e.key === 'Escape') { e.preventDefault(); openMe(false); meBtn.focus(); }
+  else if (e.key === 'ArrowDown') { e.preventDefault(); items[(i + 1) % items.length].focus(); }
+  else if (e.key === 'ArrowUp') { e.preventDefault(); items[(i - 1 + items.length) % items.length].focus(); }
+});
+const closeMeOutside = (e) => { if (!meMenu.hidden && !meWrap.contains(e.target)) openMe(false); };
+document.addEventListener('mousedown', closeMeOutside);
+document.addEventListener('focusin', closeMeOutside);
 
 // ── Go to: jump anywhere or start something, from the keyboard (Ctrl/⌘+K) ─────
 
