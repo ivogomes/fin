@@ -1,6 +1,6 @@
 import {
   CURRENCIES, ACCOUNT_TYPES, ACCOUNT_TYPE_LABELS, toMinor, formatMoney, categorize, convert, rateFor, defaultState,
-  normalize, categoryPath, categoriesOf, sortedCategories,
+  normalize, categoryPath, categoriesOf, sortedCategories, searchCategories,
   IOU_KINDS, IOU_TYPES, personBalances, personHistory, PERIODS, periodRange, insightsFrom, completeMonths, REFUNDS_UNMATCHED, netWorthHistory, investedHistory, historyPoints, holdingHistory,
   suggestDescriptions, filterTransactions, ruleSuggestion,
   plannedTransactions, holdingValue, investmentValue, investmentValueFrom, newId,
@@ -1178,28 +1178,22 @@ function pager(page, pages, total, where, headingId = 'tx-h') {
 function bulkBar(pageRows) {
   const picked = state.transactions.filter((t) => selected.has(t.id));
   const categorizable = picked.filter((t) => !t.transferId);
-  const setCat = select([['', 'Set category…'], ...catOptions()], '', { 'aria-label': 'Set the category of the selected transactions', class: 'fin-input fin-input-sm' });
-  setCat.addEventListener('change', () => {
-    if (!setCat.value) return;
-    const id = setCat.value;
+  const setCat = categoryCombo({ label: 'Set the category of the selected transactions', placeholder: 'Set category…', onPick: (id) => {
     undoable(`${catLabel(id)} set on ${categorizable.length} transaction${categorizable.length === 1 ? '' : 's'}.`, ['transactions'], () => {
       for (const t of categorizable) { t.categoryIds = [id]; delete t.splits; }
     });
-  });
-  const addCat = select([['', 'Add category…'], ...catOptions()], '', { 'aria-label': 'Add a category to the selected transactions', class: 'fin-input fin-input-sm' });
-  addCat.addEventListener('change', () => {
-    if (!addCat.value) return;
-    const id = addCat.value;
+  } });
+  const addCat = categoryCombo({ label: 'Add a category to the selected transactions', placeholder: 'Add category…', onPick: (id) => {
     undoable(`${catLabel(id)} added to ${categorizable.length} transaction${categorizable.length === 1 ? '' : 's'}.`, ['transactions'], () => {
       // A split transaction keeps its parts (a category is added to a part in its edit form).
       for (const t of categorizable) if (!splitsOf(t) && !categoriesOf(t).includes(id)) t.categoryIds = [...categoriesOf(t), id];
     });
-  });
+  } });
   return h('div', { class: 'fin-bulk', role: 'region', 'aria-label': 'Selected transactions' },
     h('strong', {}, `${picked.length} selected`),
     picked.length < pageRows.length && button(`Select all ${pageRows.length} on this page`, () => { pageRows.forEach((t) => selected.add(t.id)); render('bulk-clear'); }, 'secondary fin-btn-sm'),
-    categorizable.length > 0 && setCat,
-    categorizable.length > 0 && addCat,
+    categorizable.length > 0 && setCat.el,
+    categorizable.length > 0 && addCat.el,
     categorizable.length > 0 && button('Remove categories', () => undoable(`Categories removed from ${categorizable.length} transaction${categorizable.length === 1 ? '' : 's'}.`, ['transactions'], () => {
       for (const t of categorizable) { t.categoryIds = []; delete t.splits; }
     }), 'secondary fin-btn-sm'),
@@ -1740,20 +1734,107 @@ function categoryCell(t) {
   return ious.length ? h('div', {}, picker, h('div', { class: 'fin-sub' }, iouLabel(ious))) : picker;
 }
 
-// Chosen categories as removable chips, plus a menu to add another. `value()` reads the choice;
-// `onChange(ids, message)` runs on every change.
-function categoryPicker(selected, { label, compact = false, onChange } = {}) {
+// A search box for categories (ARIA combobox + listbox): typing filters them by name or parent
+// (searchCategories), ↓/↑ move, Enter, Tab or a click picks one, Esc closes the list. After a pick the box
+// clears and keeps focus, so several can be added in a row. `exclude()` gives the ids to leave out
+// (those already picked); `onPick(id)` takes the choice; `onBackspace()` runs on Backspace in an empty
+// box. The box is drawn as a small dashed pill (.fin-cat-add) until it's used.
+function categoryCombo({ label, placeholder = '+ Category', exclude = () => [], onPick, onBackspace }) {
+  const listId = `cat-${newId().slice(0, 8)}`;
+  const box = h('input', {
+    type: 'text', class: 'fin-input fin-input-sm fin-cat-add', autocomplete: 'off', spellcheck: 'false',
+    role: 'combobox', 'aria-autocomplete': 'list', 'aria-expanded': 'false', 'aria-controls': listId,
+    'aria-label': label, placeholder,
+  });
+  const listbox = h('ul', { id: listId, role: 'listbox', class: 'fin-options fin-options--float', hidden: true, 'aria-label': 'Categories' });
+  const { open, isOpen } = floatingList(box, listbox, 224);
+  let results = [];
+  let active = -1;
+  const highlight = (i) => {
+    active = i;
+    [...listbox.children].forEach((li, j) => li.setAttribute('aria-selected', String(j === i)));
+    const li = listbox.children[i];
+    if (li?.id) { box.setAttribute('aria-activedescendant', li.id); li.scrollIntoView({ block: 'nearest' }); }
+  };
+  const update = () => {
+    results = searchCategories(state.categories, box.value, exclude());
+    // Children sit indented under their parent; only a search result names its parent.
+    const searching = Boolean(box.value.trim());
+    const parent = (c) => c.parentId && category(c.parentId)?.name;
+    listbox.replaceChildren(...(results.length ? results.map((c, i) => h('li', {
+      id: `${listId}-${i}`, role: 'option', class: `fin-option fin-option-cat${parent(c) && !searching ? ' fin-option-child' : ''}`, 'aria-selected': 'false',
+      onmousedown: (ev) => ev.preventDefault(), // keep focus in the box
+      onclick: () => pick(c.id),
+    },
+      h('span', { class: 'fin-cat-dot', 'data-hue': hueOf(c.id), 'aria-hidden': 'true' }),
+      h('span', { class: 'fin-option-main' }, c.name),
+      searching && parent(c) && h('span', { class: 'fin-sub' }, parent(c))))
+      : [h('li', { class: 'fin-option-none', role: 'presentation' }, box.value.trim() ? 'No category matches' : 'No more categories')]));
+    open(true);
+    if (results.length && box.value.trim()) highlight(0); else active = -1;
+  };
+  const pick = (id) => {
+    box.value = '';
+    onPick(id);
+    // The picker may have moved the box (a chip was added before it); keep the list where it is.
+    if (document.activeElement === box) update(); else open(false);
+  };
+  box.addEventListener('input', update);
+  box.addEventListener('mousedown', () => { if (!isOpen()) setTimeout(update); });
+  box.addEventListener('keydown', (ev) => {
+    if (ev.key === 'ArrowDown') {
+      ev.preventDefault();
+      if (!isOpen()) update();
+      else if (results.length) highlight(Math.min(active + 1, results.length - 1));
+    } else if (ev.key === 'ArrowUp' && isOpen()) {
+      ev.preventDefault();
+      highlight(Math.max(active - 1, 0));
+    } else if (ev.key === 'Enter' && isOpen() && active >= 0) {
+      ev.preventDefault();
+      ev.stopPropagation(); // not the form's Enter (submit, or next row)
+      pick(results[active].id);
+    } else if (ev.key === 'Enter' && box.value.trim()) {
+      ev.preventDefault(); // text that matches nothing: don't submit the form with it
+      ev.stopPropagation();
+    } else if (ev.key === 'Tab' && !ev.shiftKey && isOpen() && active >= 0 && box.value.trim()) {
+      pick(results[active].id); // and move on, as in the description box
+    } else if (ev.key === 'Escape' && isOpen()) {
+      ev.preventDefault();
+      ev.stopPropagation(); // close the list, not the dialog
+      open(false);
+    } else if (ev.key === 'Backspace' && !box.value && onBackspace) {
+      onBackspace();
+    }
+  });
+  box.addEventListener('blur', () => setTimeout(() => { if (document.activeElement !== box) { open(false); box.value = ''; } }, 100));
+  return { box, el: h('span', { class: 'fin-combo fin-cat-combo' }, box, listbox) };
+}
+
+// Chosen categories as removable chips, plus a search box to add more (categoryCombo). `value()`
+// reads the choice; `onChange(ids, message)` runs on every change. `placeholder()` is the box's text
+// while nothing is chosen (the quick-entry grid shows what the rules would pick); `refresh()`
+// redraws it.
+function categoryPicker(selected, { label, compact = false, onChange, placeholder } = {}) {
   const ids = [...selected];
   const wrap = h('div', { class: `fin-cats${compact ? ' fin-cats-compact' : ''}`, role: 'group', 'aria-label': label });
+  const combo = categoryCombo({
+    label: `Add a category (${label})`,
+    exclude: () => ids,
+    onPick: (id) => {
+      ids.push(id);
+      onChange?.([...ids], `Added ${catLabel(id)}.`);
+      paint();
+    },
+    // Backspace in the empty box removes the last chip, as in an email "To" field.
+    onBackspace: () => {
+      if (!ids.length) return;
+      const id = ids.pop();
+      onChange?.([...ids], `Removed ${catLabel(id)}.`);
+      paint();
+    },
+  });
   const paint = (focus) => {
-    const add = select([['', ids.length ? '+' : '+ Category'], ...catOptions().filter(([id]) => !ids.includes(id))], '',
-      { 'aria-label': `Add a category (${label})`, class: 'fin-input fin-input-sm fin-cat-add' });
-    add.addEventListener('change', () => {
-      if (!add.value) return;
-      ids.push(add.value);
-      onChange?.([...ids], `Added ${catLabel(add.value)}.`);
-      paint('add');
-    });
+    combo.box.placeholder = ids.length ? '+' : placeholder?.() ?? '+ Category';
     const chips = ids.map((id, i) => h('span', { class: 'fin-cat-chip', 'data-hue': hueOf(id) },
       h('span', {}, catLabel(id) || 'Deleted category'),
       h('button', {
@@ -1764,14 +1845,19 @@ function categoryPicker(selected, { label, compact = false, onChange } = {}) {
           paint(i);
         },
       }, '×')));
-    wrap.replaceChildren(...chips, add);
-    // After removing a chip, focus the next one (or the menu), so keyboard users don't lose their place.
-    if (focus === 'add') add.focus();
-    else if (typeof focus === 'number') (wrap.querySelectorAll('.fin-cat-x')[focus] ?? add).focus();
+    // Only the chips are redrawn: the box stays put, so it keeps focus and what's typed.
+    wrap.querySelectorAll(':scope > .fin-cat-chip').forEach((el) => el.remove());
+    if (combo.el.parentNode !== wrap) wrap.append(combo.el);
+    combo.el.before(...chips);
+    // After removing a chip, focus the next one (or the box), so keyboard users don't lose their place.
+    if (typeof focus === 'number') (wrap.querySelectorAll('.fin-cat-x')[focus] ?? combo.box).focus();
   };
   paint();
   // `set(ids)` replaces the choice (a suggestion filling in its categories).
-  return { el: wrap, value: () => [...ids], set: (next) => { ids.splice(0, ids.length, ...next.filter((id) => category(id))); paint(); onChange?.([...ids], ''); } };
+  return {
+    el: wrap, box: combo.box, value: () => [...ids], refresh: () => paint(),
+    set: (next) => { ids.splice(0, ids.length, ...next.filter((id) => category(id))); paint(); onChange?.([...ids], ''); },
+  };
 }
 
 // Categories as chips that only show (no × or menu): a schedule's in a list, a suggestion's.
@@ -1882,29 +1968,15 @@ function dialogHead(title, close) {
     button('×', close, 'secondary fin-btn-icon', { 'aria-label': 'Close' }));
 }
 
-const categoryOptions = (autoLabel = 'Auto') => [['', autoLabel], ...catOptions()];
-
-// A description box that suggests names from past transactions (ARIA combobox + listbox).
-// ↓/↑ move, Enter or Tab take the highlighted one, Esc closes the list. `onAccept(entry)` fills the
-// rest of the row. The list floats over the page (fixed to the window), so a dialog or a scrolling
-// table can't cut it off; it opens upwards when there isn't room below.
-// `index()` gives the earlier descriptions (descIndex).
-function descriptionCombo(index, { label, accountOf, onAccept }) {
-  const listId = `desc-${newId().slice(0, 8)}`;
-  const box = input({
-    type: 'text', autocomplete: 'off', role: 'combobox', 'aria-autocomplete': 'list',
-    'aria-expanded': 'false', 'aria-controls': listId, 'aria-label': label,
-  });
-  const listbox = h('ul', { id: listId, role: 'listbox', class: 'fin-options fin-options--float', hidden: true, 'aria-label': 'Earlier descriptions' });
-  let results = [];
-  let active = -1;
-  const isOpen = () => !listbox.hidden;
+// Shows a combobox's list floating under its box (fixed to the window, so a dialog or a scrolling
+// table can't cut it off), or above it when there isn't room below. `open(on)` shows or hides it.
+function floatingList(box, listbox, minWidth = 288) {
   // Lines the list up with the box; the position goes to CSS as custom properties.
   const place = () => {
     const r = box.getBoundingClientRect();
     const below = window.innerHeight - r.bottom - 12;
     const up = below < 240 && r.top > below;
-    const width = Math.min(Math.max(r.width, 288), window.innerWidth - 16);
+    const width = Math.min(Math.max(r.width, minWidth), window.innerWidth - 16);
     const set = (k, v) => listbox.style.setProperty(k, `${Math.round(v)}px`);
     listbox.classList.toggle('fin-options--up', up);
     set('--opt-left', Math.max(8, Math.min(r.left, window.innerWidth - 8 - width)));
@@ -1922,6 +1994,24 @@ function descriptionCombo(index, { label, accountOf, onAccept }) {
     if (!on) { box.removeAttribute('aria-activedescendant'); return; }
     place();
   };
+  return { open, isOpen: () => !listbox.hidden };
+}
+
+// A description box that suggests names from past transactions (ARIA combobox + listbox).
+// ↓/↑ move, Enter or Tab take the highlighted one, Esc closes the list. `onAccept(entry)` fills the
+// rest of the row. The list floats over the page (fixed to the window), so a dialog or a scrolling
+// table can't cut it off; it opens upwards when there isn't room below.
+// `index()` gives the earlier descriptions (descIndex).
+function descriptionCombo(index, { label, accountOf, onAccept }) {
+  const listId = `desc-${newId().slice(0, 8)}`;
+  const box = input({
+    type: 'text', autocomplete: 'off', role: 'combobox', 'aria-autocomplete': 'list',
+    'aria-expanded': 'false', 'aria-controls': listId, 'aria-label': label,
+  });
+  const listbox = h('ul', { id: listId, role: 'listbox', class: 'fin-options fin-options--float', hidden: true, 'aria-label': 'Earlier descriptions' });
+  let results = [];
+  let active = -1;
+  const { open, isOpen } = floatingList(box, listbox);
   const highlight = (i) => {
     active = i;
     [...listbox.children].forEach((li, j) => li.setAttribute('aria-selected', String(j === i)));
@@ -1994,7 +2084,8 @@ function multiTxForm(account, close, swap) {
     const n = rows.length + 1;
     const r = {};
     Object.assign(r, {
-      cat: select(categoryOptions(), '', { 'aria-label': `Category, row ${n}` }),
+      // Several categories, like the single form; none picked means the rules choose (shown as Auto).
+      cat: categoryPicker([], { label: `Categories, row ${n}`, compact: true, placeholder: () => autoLabel() }),
       type: typeSwitch(['expense', 'income', 'refund', 'transfer'], 'expense', { label: `Type, row ${n}`, compact: true, onChange: () => syncType() }),
       // For a transfer, the category cell shows where the money goes instead.
       to: select([['', 'To account…'], ...accounts.map((a) => [a.id, accountLabel(a)])], '', { 'aria-label': `Transfer to, row ${n}`, hidden: true }),
@@ -2009,8 +2100,7 @@ function multiTxForm(account, close, swap) {
       // same; the cursor goes there next.
       onAccept: (e) => {
         r.desc.value = e.description;
-        const cat = e.categoryIds.find((id) => category(id));
-        if (cat) r.cat.value = cat;
+        r.cat.set(e.categoryIds);
         r.type.value = e.kind === 'transfer' ? 'transfer' : e.kind === 'refund' ? 'refund' : e.amount < 0 ? 'expense' : 'income';
         // A transfer brings both of its accounts, when they're still open.
         if (e.kind === 'transfer') {
@@ -2024,11 +2114,13 @@ function multiTxForm(account, close, swap) {
       },
     });
     r.desc = combo.box;
-    // While the category is on Auto, its label shows what the rules would pick.
-    const syncAuto = () => {
-      const id = categorize(r.desc.value, state.rules);
-      r.cat.options[0].textContent = id ? `Auto: ${catLabel(id)}` : 'Auto';
-    };
+    // While no category is picked, the box shows what the rules would pick.
+    // (A function declaration: the picker asks for it while the row is still being built.)
+    function autoLabel() {
+      const id = r.desc && categorize(r.desc.value, state.rules);
+      return id ? `Auto: ${catLabel(id)}` : 'Auto';
+    }
+    const syncAuto = () => r.cat.refresh();
     r.desc.addEventListener('input', () => { syncAuto(); ensureSpareRow(); });
     r.amount.addEventListener('focus', () => r.amount.select());
     // In the amount, + and − switch the row to income or expense without leaving the keyboard.
@@ -2041,12 +2133,12 @@ function multiTxForm(account, close, swap) {
     });
     const syncType = () => {
       const transfer = r.type.value === 'transfer';
-      r.cat.hidden = transfer;
+      r.cat.el.hidden = transfer;
       r.to.hidden = !transfer;
     };
     rows.push(r);
     r.tr = h('tr', {},
-      h('td', {}, combo.el), h('td', {}, r.type.el), h('td', {}, r.cat, r.to),
+      h('td', {}, combo.el), h('td', {}, r.type.el), h('td', {}, r.cat.el, r.to),
       h('td', {}, r.amount), h('td', {}, r.date), h('td', {}, r.acc));
     body.append(r.tr);
     return r;
@@ -2078,7 +2170,7 @@ function multiTxForm(account, close, swap) {
       for (const [i, r] of rows.entries()) {
         const res = batchRow({
           description: r.desc.value, amount: r.amount.value, sign: SIGNS[r.type.value],
-          date: r.date.value, accountId: r.acc.value, categoryId: r.cat.value, toAccountId: r.to.value,
+          date: r.date.value, accountId: r.acc.value, categoryIds: r.cat.value(), toAccountId: r.to.value,
         }, state.rules);
         if (res.skip) continue;
         if (res.error) {
@@ -2124,7 +2216,7 @@ function multiTxForm(account, close, swap) {
     h('div', { class: 'fin-batch-wrap' }, h('table', { class: 'fin-batch' },
       h('thead', {}, h('tr', {}, ['Description', 'Type', 'Category or To', 'Amount', 'Date', 'Account (from)'].map((t) => h('th', { scope: 'col' }, t)))),
       body)),
-    h('p', { class: 'fin-hint' }, 'Empty rows are skipped. Leave the category on Auto to use your rules. A suggestion fills in its category and type, or both accounts for a transfer; you type the amount. For a transfer, pick ⇄ and the account the money goes to.'),
+    h('p', { class: 'fin-hint' }, 'Empty rows are skipped. Type to find a category, and add as many as you like; leave it on Auto to use your rules. A suggestion fills in its category and type, or both accounts for a transfer; you type the amount. For a transfer, pick ⇄ and the account the money goes to.'),
     error,
     h('div', { class: 'fin-dialog-foot' },
       h('button', { type: 'submit', class: 'fin-btn btn-primary' }, 'Add transactions'),

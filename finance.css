@@ -798,32 +798,33 @@ textarea.fin-input { resize: vertical; }
   font-weight: 500;
   white-space: nowrap;
 }
-.fin-cat-chip[data-hue="1"] { --chip-bg: #E6EEFB; --chip-ink: #2A4F9E; }
-.fin-cat-chip[data-hue="2"] { --chip-bg: #EFE9FB; --chip-ink: #5B3FA6; }
-.fin-cat-chip[data-hue="3"] { --chip-bg: #FBE8F1; --chip-ink: #9E2D66; }
-.fin-cat-chip[data-hue="4"] { --chip-bg: #FDECE1; --chip-ink: #9E4719; }
-.fin-cat-chip[data-hue="5"] { --chip-bg: #FBF2D9; --chip-ink: #82600C; }
-.fin-cat-chip[data-hue="6"] { --chip-bg: #E3F3E8; --chip-ink: #1D6B3C; }
-.fin-cat-chip[data-hue="7"] { --chip-bg: #ECEFF1; --chip-ink: #44535D; }
+.fin-cat-dot { --chip-ink: #0F5E6B; }
+:is(.fin-cat-chip, .fin-cat-dot)[data-hue="1"] { --chip-bg: #E6EEFB; --chip-ink: #2A4F9E; }
+:is(.fin-cat-chip, .fin-cat-dot)[data-hue="2"] { --chip-bg: #EFE9FB; --chip-ink: #5B3FA6; }
+:is(.fin-cat-chip, .fin-cat-dot)[data-hue="3"] { --chip-bg: #FBE8F1; --chip-ink: #9E2D66; }
+:is(.fin-cat-chip, .fin-cat-dot)[data-hue="4"] { --chip-bg: #FDECE1; --chip-ink: #9E4719; }
+:is(.fin-cat-chip, .fin-cat-dot)[data-hue="5"] { --chip-bg: #FBF2D9; --chip-ink: #82600C; }
+:is(.fin-cat-chip, .fin-cat-dot)[data-hue="6"] { --chip-bg: #E3F3E8; --chip-ink: #1D6B3C; }
+:is(.fin-cat-chip, .fin-cat-dot)[data-hue="7"] { --chip-bg: #ECEFF1; --chip-ink: #44535D; }
 @media (prefers-color-scheme: dark) {
-  :where(:root:not([data-theme="light"])) .fin-cat-chip { --chip-bg: rgb(91 191 181 / 0.16); --chip-ink: #8AD8CF; }
-  :where(:root:not([data-theme="light"])) .fin-cat-chip[data-hue="1"] { --chip-bg: rgb(110 150 240 / 0.18); --chip-ink: #A9C2F7; }
-  :where(:root:not([data-theme="light"])) .fin-cat-chip[data-hue="2"] { --chip-bg: rgb(160 130 240 / 0.18); --chip-ink: #C7B5F6; }
-  :where(:root:not([data-theme="light"])) .fin-cat-chip[data-hue="3"] { --chip-bg: rgb(240 120 170 / 0.16); --chip-ink: #F2A9C9; }
-  :where(:root:not([data-theme="light"])) .fin-cat-chip[data-hue="4"] { --chip-bg: rgb(245 150 90 / 0.16); --chip-ink: #F5B78F; }
-  :where(:root:not([data-theme="light"])) .fin-cat-chip[data-hue="5"] { --chip-bg: rgb(230 190 80 / 0.16); --chip-ink: #EBCB7C; }
-  :where(:root:not([data-theme="light"])) .fin-cat-chip[data-hue="6"] { --chip-bg: rgb(90 200 130 / 0.16); --chip-ink: #93DDAE; }
-  :where(:root:not([data-theme="light"])) .fin-cat-chip[data-hue="7"] { --chip-bg: rgb(160 175 185 / 0.16); --chip-ink: #BAC6CD; }
+  :where(:root:not([data-theme="light"])) :is(.fin-cat-chip, .fin-cat-dot) { --chip-bg: rgb(91 191 181 / 0.16); --chip-ink: #8AD8CF; }
+  :where(:root:not([data-theme="light"])) :is(.fin-cat-chip, .fin-cat-dot)[data-hue="1"] { --chip-bg: rgb(110 150 240 / 0.18); --chip-ink: #A9C2F7; }
+  :where(:root:not([data-theme="light"])) :is(.fin-cat-chip, .fin-cat-dot)[data-hue="2"] { --chip-bg: rgb(160 130 240 / 0.18); --chip-ink: #C7B5F6; }
+  :where(:root:not([data-theme="light"])) :is(.fin-cat-chip, .fin-cat-dot)[data-hue="3"] { --chip-bg: rgb(240 120 170 / 0.16); --chip-ink: #F2A9C9; }
+  :where(:root:not([data-theme="light"])) :is(.fin-cat-chip, .fin-cat-dot)[data-hue="4"] { --chip-bg: rgb(245 150 90 / 0.16); --chip-ink: #F5B78F; }
+  :where(:root:not([data-theme="light"])) :is(.fin-cat-chip, .fin-cat-dot)[data-hue="5"] { --chip-bg: rgb(230 190 80 / 0.16); --chip-ink: #EBCB7C; }
+  :where(:root:not([data-theme="light"])) :is(.fin-cat-chip, .fin-cat-dot)[data-hue="6"] { --chip-bg: rgb(90 200 130 / 0.16); --chip-ink: #93DDAE; }
+  :where(:root:not([data-theme="light"])) :is(.fin-cat-chip, .fin-cat-dot)[data-hue="7"] { --chip-bg: rgb(160 175 185 / 0.16); --chip-ink: #BAC6CD; }
   :where(:root:not([data-theme="light"])) .fin-tag--iou { background: rgb(230 190 80 / 0.16); color: #EBCB7C; }
 }
-:where(:root[data-theme="dark"]) .fin-cat-chip { --chip-bg: rgb(91 191 181 / 0.16); --chip-ink: #8AD8CF; }
-:where(:root[data-theme="dark"]) .fin-cat-chip[data-hue="1"] { --chip-bg: rgb(110 150 240 / 0.18); --chip-ink: #A9C2F7; }
-:where(:root[data-theme="dark"]) .fin-cat-chip[data-hue="2"] { --chip-bg: rgb(160 130 240 / 0.18); --chip-ink: #C7B5F6; }
-:where(:root[data-theme="dark"]) .fin-cat-chip[data-hue="3"] { --chip-bg: rgb(240 120 170 / 0.16); --chip-ink: #F2A9C9; }
-:where(:root[data-theme="dark"]) .fin-cat-chip[data-hue="4"] { --chip-bg: rgb(245 150 90 / 0.16); --chip-ink: #F5B78F; }
-:where(:root[data-theme="dark"]) .fin-cat-chip[data-hue="5"] { --chip-bg: rgb(230 190 80 / 0.16); --chip-ink: #EBCB7C; }
-:where(:root[data-theme="dark"]) .fin-cat-chip[data-hue="6"] { --chip-bg: rgb(90 200 130 / 0.16); --chip-ink: #93DDAE; }
-:where(:root[data-theme="dark"]) .fin-cat-chip[data-hue="7"] { --chip-bg: rgb(160 175 185 / 0.16); --chip-ink: #BAC6CD; }
+:where(:root[data-theme="dark"]) :is(.fin-cat-chip, .fin-cat-dot) { --chip-bg: rgb(91 191 181 / 0.16); --chip-ink: #8AD8CF; }
+:where(:root[data-theme="dark"]) :is(.fin-cat-chip, .fin-cat-dot)[data-hue="1"] { --chip-bg: rgb(110 150 240 / 0.18); --chip-ink: #A9C2F7; }
+:where(:root[data-theme="dark"]) :is(.fin-cat-chip, .fin-cat-dot)[data-hue="2"] { --chip-bg: rgb(160 130 240 / 0.18); --chip-ink: #C7B5F6; }
+:where(:root[data-theme="dark"]) :is(.fin-cat-chip, .fin-cat-dot)[data-hue="3"] { --chip-bg: rgb(240 120 170 / 0.16); --chip-ink: #F2A9C9; }
+:where(:root[data-theme="dark"]) :is(.fin-cat-chip, .fin-cat-dot)[data-hue="4"] { --chip-bg: rgb(245 150 90 / 0.16); --chip-ink: #F5B78F; }
+:where(:root[data-theme="dark"]) :is(.fin-cat-chip, .fin-cat-dot)[data-hue="5"] { --chip-bg: rgb(230 190 80 / 0.16); --chip-ink: #EBCB7C; }
+:where(:root[data-theme="dark"]) :is(.fin-cat-chip, .fin-cat-dot)[data-hue="6"] { --chip-bg: rgb(90 200 130 / 0.16); --chip-ink: #93DDAE; }
+:where(:root[data-theme="dark"]) :is(.fin-cat-chip, .fin-cat-dot)[data-hue="7"] { --chip-bg: rgb(160 175 185 / 0.16); --chip-ink: #BAC6CD; }
 :where(:root[data-theme="dark"]) .fin-tag--iou { background: rgb(230 190 80 / 0.16); color: #EBCB7C; }
 /* A chip with no × (one that only shows) is padded evenly, the same height as one with it. */
 .fin-cat-chip:not(:has(.fin-cat-x)) { padding: 2px 10px; min-height: 22px; }
@@ -859,12 +860,20 @@ textarea.fin-input { resize: vertical; }
   cursor: pointer;
 }
 .fin-cat-add:hover { border-color: var(--f-accent); color: var(--f-accent-strong); }
+/* As a search box (categoryCombo): the pill until it's used, then a plain small field. */
+.fin-cat-combo { display: inline-block; }
+input.fin-cat-add { width: 7.5rem; min-width: 0; cursor: text; }
+input.fin-cat-add::placeholder { color: var(--f-muted); opacity: 1; }
+input.fin-cat-add:hover::placeholder { color: var(--f-accent-strong); }
+input.fin-cat-add:focus { width: 10rem; border-style: solid; border-color: var(--f-accent); color: var(--f-text); }
+.fin-batch input.fin-cat-add { min-width: 0; }
+.fin-bulk input.fin-cat-add { width: 9rem; }
 /* In the table, a row that already has categories shows "+" only on hover or focus. */
 @media (hover: hover) {
-  .fin-table .fin-cats-compact .fin-cat-chip ~ .fin-cat-add,
+  .fin-table .fin-cats-compact .fin-cat-chip ~ .fin-cat-combo .fin-cat-add,
   .fin-table .fin-cats-compact .fin-cat-x { opacity: 0; transition: opacity 0.12s ease; }
-  .fin-table tr:hover .fin-cats-compact .fin-cat-add,
-  .fin-table tr:focus-within .fin-cats-compact .fin-cat-add { opacity: 1; }
+  .fin-table tr:hover .fin-cats-compact .fin-cat-combo .fin-cat-add,
+  .fin-table tr:focus-within .fin-cats-compact .fin-cat-combo .fin-cat-add { opacity: 1; }
   .fin-table tr:hover .fin-cats-compact .fin-cat-x,
   .fin-table tr:focus-within .fin-cats-compact .fin-cat-x { opacity: 0.55; }
   .fin-table .fin-cats-compact .fin-cat-x:hover { opacity: 1; }
@@ -1276,6 +1285,13 @@ textarea.fin-input { resize: vertical; }
 .fin-option { padding: 8px 10px; border-radius: 6px; cursor: pointer; }
 .fin-option:hover, .fin-option[aria-selected="true"] { background: var(--f-accent-soft); }
 .fin-option-main { display: block; }
+/* Category matches: a dot in the family's colour, the name, and the parent's name after it. */
+.fin-option-cat { display: flex; align-items: baseline; gap: 8px; }
+.fin-option-cat .fin-option-main { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fin-option-cat .fin-sub { margin-left: auto; white-space: nowrap; }
+.fin-option-child { padding-left: 22px; }
+.fin-option-none { padding: 8px 10px; color: var(--f-muted); }
+.fin-cat-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--chip-ink); align-self: center; }
 
 /* ── Holdings ─────────────────────────────────────────── */
 .fin-chip-buy { background: var(--f-accent-soft); border-color: transparent; color: var(--f-accent-strong); }

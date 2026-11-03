@@ -7,7 +7,7 @@ import {
   crossConvert, batchRow, makeTransfer,
   parseCsv, toCsv, parseAmount, parseDate, guessDateFormat, guessDecimal, guessMapping, importRows,
   findTransferPairs, detectBuxferFile, buxferImport, isFundMovements, fundMovementsToFt,
-  categoryPath, categoryResolver, categoriesOf, sortedCategories,
+  categoryPath, categoryResolver, categoriesOf, sortedCategories, searchCategories,
   parseBuxferIou, iouSign, iouType, personBalances, personHistory,
   periodRange, granularity, insights, completeMonths, holdingHistory, accountRuns, historyPoints, incomeCategories, REFUNDS_UNMATCHED, netWorthHistory, isFtExport, ftImport, lotSummary, investedHistory,
   descriptionIndex, suggestDescriptions, filterTransactions, ruleSuggestion,
@@ -182,7 +182,7 @@ test('description suggestions: one per name, latest use wins, ranked by match, a
 });
 
 test('batch rows: transfers need a different account to go to', () => {
-  const base = { description: 'Card payment', amount: '100', sign: 't', date: '2026-11-02', accountId: 'bank', categoryId: '' };
+  const base = { description: 'Card payment', amount: '100', sign: 't', date: '2026-11-02', accountId: 'bank', categoryIds: [] };
   assert.equal(batchRow(base, []).error, 'needs an account to transfer to');
   assert.equal(batchRow({ ...base, toAccountId: 'bank' }, []).error, 'transfers to the same account');
   assert.deepEqual(batchRow({ ...base, toAccountId: 'card' }, []).transfer,
@@ -281,7 +281,7 @@ test('zip: what makeZip writes, readZip reads back; also compressed entries from
 });
 
 test('batch rows: refunds are positive and marked', () => {
-  const { tx } = batchRow({ description: 'Refund', amount: '5', sign: 'r', date: '2026-11-02', accountId: 'a', categoryId: '' }, []);
+  const { tx } = batchRow({ description: 'Refund', amount: '5', sign: 'r', date: '2026-11-02', accountId: 'a', categoryIds: [] }, []);
   assert.deepEqual([tx.amount, tx.kind], [500, 'refund']);
 });
 
@@ -603,7 +603,7 @@ test('import: creates missing accounts and categories, applies type, skips dupli
 
 test('batch rows: skip empty, reject half-filled, sign and rules applied', () => {
   const rules = [{ pattern: 'lunch', match: 'contains', categoryId: 'meals' }];
-  const base = { date: '2026-11-02', accountId: 'a', categoryId: '', sign: '-' };
+  const base = { date: '2026-11-02', accountId: 'a', categoryIds: [], sign: '-' };
   assert.deepEqual(batchRow({ ...base, description: ' ', amount: '' }, rules), { skip: true });
   assert.equal(batchRow({ ...base, description: 'Lunch', amount: '' }, rules).error, 'needs an amount above zero');
   assert.equal(batchRow({ ...base, description: '', amount: '5' }, rules).error, 'needs a description');
@@ -611,7 +611,8 @@ test('batch rows: skip empty, reject half-filled, sign and rules applied', () =>
   assert.equal(tx.amount, -1250);
   assert.deepEqual(tx.categoryIds, ['meals']);
   assert.equal(batchRow({ ...base, description: 'Refund', amount: '3', sign: '+' }, rules).tx.amount, 300);
-  assert.deepEqual(batchRow({ ...base, description: 'Lunch', amount: '1', categoryId: 'fun' }, rules).tx.categoryIds, ['fun']);
+  assert.deepEqual(batchRow({ ...base, description: 'Lunch', amount: '1', categoryIds: ['fun'] }, rules).tx.categoryIds, ['fun']);
+  assert.deepEqual(batchRow({ ...base, description: 'Lunch', amount: '1', categoryIds: ['fun', 'meals'] }, rules).tx.categoryIds, ['fun', 'meals']);
   assert.deepEqual(batchRow({ ...base, description: 'Taxi', amount: '1' }, rules).tx.categoryIds, []);
 });
 
@@ -1023,4 +1024,19 @@ test('account settings: statement and due dates, balance dips, savings interest,
   const r = importRows([['2026-01-02', 'Shop', '-5', 'VISA ****4321']], { mapping: { date: 0, description: 1, amount: 2, account: 3, type: -1, category: -1, memo: -1, currency: -1, reference: -1, iou: -1 }, dateFormat: 'ymd', decimal: '.', defaultAccountId: null },
     { accounts: [{ id: 'card', name: 'Travel card', currency: 'EUR', lastFour: '4321' }], categories: [], rules: [], transactions: [], id: (() => { let i = 0; return () => `n${i += 1}`; })() });
   assert.deepEqual([r.transactions[0].accountId, r.newAccounts.length], ['card', 0]);
+});
+
+test('category search: every word in the path, accents ignored, name prefix first', () => {
+  const cats = [
+    { id: 'food', name: 'Food' }, { id: 'gro', name: 'Groceries', parentId: 'food' }, { id: 'rest', name: 'Restaurants', parentId: 'food' },
+    { id: 'home', name: 'Home' }, { id: 'furn', name: 'Furniture', parentId: 'home' }, { id: 'sau', name: 'Saúde' },
+  ];
+  const ids = (q, ex) => searchCategories(cats, q, ex).map((c) => c.id);
+  assert.deepEqual(ids(''), ['food', 'gro', 'rest', 'home', 'furn', 'sau']);
+  assert.deepEqual(ids('food'), ['food', 'gro', 'rest']);
+  assert.deepEqual(ids('food gro'), ['gro']);
+  assert.deepEqual(ids('saude'), ['sau']);
+  assert.deepEqual(ids('f'), ['food', 'furn', 'gro', 'rest']);
+  assert.deepEqual(ids('food', ['gro']), ['food', 'rest']);
+  assert.deepEqual(ids('nothing'), []);
 });

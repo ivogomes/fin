@@ -105,6 +105,20 @@ export function sortedCategories(categories) {
   return top.flatMap((p) => [p, ...categories.filter((c) => c.parentId === p.id).sort(byName)]);
 }
 
+// Categories matching what's typed, for a category search box. Every word must appear in the
+// category's path ("Parent / Child", case and accents ignored), so "food gro" finds "Food /
+// Groceries" and a parent's name finds its children too. Names that start with the text come first,
+// then the rest in list order. An empty query lists them all. `exclude` holds ids already picked.
+export function searchCategories(categories, query, exclude = []) {
+  const words = normalize(query).split(/\s+/).filter(Boolean);
+  const skip = new Set(exclude);
+  const found = sortedCategories(categories).filter((c) => !skip.has(c.id)).map((c, order) => {
+    const path = normalize(categoryPath(c, categories));
+    return { c, order, path, starts: words.length > 0 && normalize(c.name).startsWith(words.join(' ')) };
+  }).filter((x) => words.every((w) => x.path.includes(w)));
+  return found.sort((a, b) => (b.starts - a.starts) || (a.order - b.order)).map((x) => x.c);
+}
+
 // ── Account settings by type ─────────────────────────────────────────────────
 
 // What an investment account is: pensions and retirement savings are locked away until later, so
@@ -186,7 +200,8 @@ export function batchRow(row, rules) {
       // sign: '-' expense, '+' income, 'r' refund (money back that cancels part of an expense);
       // 't' is a transfer, returned as { transfer } above
       amount: toMinor(raw) * (row.sign === '-' ? -1 : 1),
-      categoryIds: [row.categoryId || categorize(description, rules)].filter(Boolean),
+      // The categories picked, or else the one the rules pick.
+      categoryIds: row.categoryIds?.length ? [...row.categoryIds] : [categorize(description, rules)].filter(Boolean),
       memo: '',
       ...(row.sign === 'r' ? { kind: 'refund' } : {}),
     },
