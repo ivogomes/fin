@@ -29,8 +29,9 @@ export const FORECAST_DAYS = 30;
 export const daysFromToday = (n) => new Date(Date.now() + n * 864e5).toISOString().slice(0, 10);
 export const scheduleAccounts = (s) => [accountName(s.accountId), s.kind === 'transfer' && accountName(s.toAccountId)].filter(Boolean).join(' → ');
 
-// Enter one due date: add its transaction(s) with that date and move the schedule on.
-export async function enterScheduled(s, focusKey) {
+// Enter one due date: add its transaction(s) with that date and move the schedule on. `edit`: then
+// open the one in `edit` (an account id) for editing, to change just this date ("Change this one").
+export async function enterScheduled(s, focusKey, { edit = null } = {}) {
   const rows = scheduledTransactions(s, s.nextDate, state.accounts);
   const currencyOf = (t) => state.accounts.find((a) => a.id === t.accountId)?.currency ?? 'EUR';
   for (const t of rows) t.rate = await ensureRate(currencyOf(t), t.date);
@@ -40,8 +41,12 @@ export async function enterScheduled(s, focusKey) {
   }
   state.transactions.push(...rows);
   Object.assign(s, advanceSchedule(s));
-  persist(); render(focusKey);
-  say(`Added ${s.description}. Next one on ${shortDate(s.nextDate)}.`);
+  const open = edit && rows.find((t) => t.accountId === edit);
+  if (open) setEditingTxId(open.id);
+  persist(); render(open ? 'tx-desc-edit' : focusKey);
+  say(open
+    ? `Added ${s.description} for ${shortDate(open.date)}, open to change; the schedule goes on from ${shortDate(s.nextDate)}.`
+    : `Added ${s.description}. Next one on ${shortDate(s.nextDate)}.`);
 }
 
 export function skipScheduled(s, focusKey) {
@@ -176,11 +181,17 @@ export function upcomingRows(account, { cols, inEur, balance }) {
         : catChips(categoriesOf(s))),
       inEur && h('td', { class: 'c-eur' }),
       // Only the next date of a schedule can be entered or skipped; later ones follow from it.
-      h('td', { class: 'fin-r c-act' }, first && h('div', { class: 'fin-actions fin-row-actions fin-upcoming-actions' },
-        button('Enter', () => enterScheduled(s, `up-enter-${s.id}`), 'secondary fin-btn-sm',
+      // The schedule itself can be changed from any of its dates (every one after follows).
+      h('td', { class: 'fin-r c-act' }, h('div', { class: 'fin-actions fin-row-actions fin-upcoming-actions' },
+        first && button('Enter', () => enterScheduled(s, `up-enter-${s.id}`), 'secondary fin-btn-sm',
           { 'aria-label': `Enter ${s.description} for ${shortDate(date)}`, 'data-key': `up-enter-${s.id}` }),
-        button('Skip', () => skipScheduled(s, `up-skip-${s.id}`), 'secondary fin-btn-sm',
-          { 'aria-label': `Skip ${s.description} on ${shortDate(date)}`, 'data-key': `up-skip-${s.id}` }))));
+        first && button('Skip', () => skipScheduled(s, `up-skip-${s.id}`), 'secondary fin-btn-sm',
+          { 'aria-label': `Skip ${s.description} on ${shortDate(date)}`, 'data-key': `up-skip-${s.id}` }),
+        // Just this date different (this month's rent, say): entered now, open to change.
+        first && button('Change this one', () => enterScheduled(s, `up-enter-${s.id}`, { edit: account.id }), 'secondary fin-btn-sm',
+          { 'aria-label': `Change just ${s.description} of ${shortDate(date)}`, 'data-key': `up-change-${s.id}` }),
+        iconButton('edit', `Edit the schedule of ${s.description} (all its dates)`, () => openScheduleDialog(s),
+          { 'data-key': `up-sched-${s.id}`, 'aria-haspopup': 'dialog' }))));
   };
   // A card's statement payment, with Pay (a transfer from the account it's paid from, today).
   const payRow = ({ pay, date, amount, balance: b }) => {
