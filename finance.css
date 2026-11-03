@@ -1621,6 +1621,10 @@ input.fin-cat-add:focus { width: 10rem; border-style: solid; border-color: var(-
   .tool-header .fin-nav, .tool-header .fin-cmd-open, .tool-header .fin-hide-toggle { display: none; }
   .fin-me-phone { display: block; }
 
+  /* The page never scrolls sideways: anything wider than the screen (a table) scrolls inside its
+     own card. Otherwise iOS widens the page to fit it and the tab bar slides down off the screen. */
+  html { overflow-x: clip; }
+
   /* The tab bar: the main sections along the bottom, above the home indicator. */
   .fin-tabbar:not([hidden]) {
     display: flex;
