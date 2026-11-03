@@ -79,7 +79,14 @@ When you categorize a transaction by hand and no rule would already do that, the
 
 ## On a phone
 
-On small screens the account panel folds behind an **Accounts** button, the header tabs scroll sideways, transactions stack as cards, dialogs fill the screen, and a round **+** button opens quick entry for the account on screen. The tool installs as an app (manifest and icons in this folder; `sw.js` keeps the app's own files so it opens instantly, while data always comes from the database). The app's "Add transactions" shortcut opens `?add`.
+On small screens (up to 52rem wide):
+
+- **Tab bar** along the bottom: Overview, Accounts, Search, Insights, and **More** (Scheduled, IOUs, Settings). The header keeps the logo, the save status and your avatar; **Go to…** and **Hide amounts** are in the avatar's menu.
+- **Accounts** is a page of its own: net worth, then the accounts by type; picking one opens it, with **‹ Accounts** above it to go back. Settings keeps its pages behind a **Settings menu** button.
+- Transactions stack as cards, and a round **+** button above the tab bar opens quick entry for the account on screen (or the main account).
+- Dialogs fill the screen, with their title bar and buttons (Save, Add…) pinned while the form scrolls between them.
+- On touch screens, fields use 16px text so iOS doesn't zoom in when one is tapped, and small controls (a chip's ×, row actions, small links, checkboxes) get a 44px tap area.
+- As an installed app, everything stays clear of the notch and the home indicator (`viewport-fit=cover` and the safe-area insets), and **pulling down** from the top of a page reloads it, saving anything pending first. The tool installs as an app (manifest and icons in this folder; `sw.js` keeps the app's own files so it opens instantly, while data always comes from the database). The app's "Add transactions" shortcut opens `?add`.
 
 ## Splitting a transaction
 

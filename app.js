@@ -123,6 +123,8 @@ function writePref(key, value) {
   try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* per-viewer convenience only */ }
 }
 
+// Phone layout (the same width as the CSS's): bottom tab bar, Accounts as a page of its own.
+const isPhone = () => matchMedia('(max-width: 52rem)').matches;
 const say = (msg) => { status.textContent = ''; setTimeout(() => { status.textContent = msg; }, 30); };
 const category = (id) => state.categories.find((c) => c.id === id);
 // A category as shown everywhere: "Parent / Child" for children.
@@ -521,6 +523,19 @@ function renderSide() {
   ];
 }
 
+// Phones: the Accounts tab is a page of its own, the side panel's list (net worth on top), and
+// picking an account opens it, with a way back at the top (backToAccounts).
+function accountsPage() {
+  return h('div', {},
+    h('div', { class: 'fin-account-head' }, h('h2', { class: 'fin-title', id: 'accounts-h', tabindex: '-1', 'data-key': 'accounts-h' }, 'Accounts')),
+    h('div', { class: 'fin-side-list' }, renderSide()));
+}
+// Shown on phones only (CSS), above an account.
+const backToAccounts = () => h('button', {
+  type: 'button', class: 'fin-back', 'data-key': 'back-accounts',
+  onclick: () => { view = { name: 'account', id: '' }; editingTxId = null; render('accounts-h'); window.scrollTo(0, 0); },
+}, h('span', { 'aria-hidden': 'true' }, '‹ '), 'Accounts');
+
 // Credit card networks, and a small mark for each beside the card's name (simple drawings of the
 // brands' marks, not their artwork). Screen readers get the network's name.
 const CARD_NETWORKS = { visa: 'Visa', mastercard: 'Mastercard' };
@@ -604,6 +619,7 @@ function selectAccount(id) {
   state.settings.lastAccountId = id;
   persist();
   render();
+  if (isPhone()) window.scrollTo(0, 0); // from the Accounts page: start at the top of the account
   say(`Showing ${state.accounts.find((a) => a.id === id)?.name}.`);
 }
 
@@ -5662,7 +5678,8 @@ function render(focusKey) {
   iouByTx = null;
   hueOrder = null;
   const account = view.name === 'account' && state.accounts.find((a) => a.id === view.id);
-  if (view.name === 'account' && !account && state.accounts[0]) view = { name: 'account', id: state.accounts[0].id };
+  // On a phone, an account view without one is the Accounts page (the list); elsewhere, the first.
+  if (view.name === 'account' && !account && state.accounts[0] && !(isPhone() && !view.id)) view = { name: 'account', id: state.accounts[0].id };
   const current = view.name === 'account' && state.accounts.find((a) => a.id === view.id);
 
   document.querySelectorAll('[data-nav]').forEach((b) => {
@@ -5670,9 +5687,14 @@ function render(focusKey) {
     if (on) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
   });
   const inSettings = view.name === 'settings';
+  // The More tab stands for the sections in its menu.
+  moreBtn.classList.toggle('is-on', ['scheduled', 'ious', 'settings'].includes(view.name));
+  document.body.dataset.view = view.name; // phones show the side panel's button only in Settings
   if (!side.classList.contains('is-open')) sideToggle.textContent = inSettings ? 'Settings menu' : 'Accounts';
   side.setAttribute('aria-label', inSettings ? 'Settings' : 'Accounts');
-  side.replaceChildren(...(inSettings ? renderSettingsNav() : renderSide()).flat().filter(Boolean));
+  // On a phone the accounts are a page (accountsPage), so the hidden panel stays empty: no second
+  // copy of its buttons for focus to land on.
+  side.replaceChildren(...(inSettings ? renderSettingsNav() : isPhone() ? [] : renderSide()).flat().filter(Boolean));
   main.replaceChildren(
     needsSchemaUpdate() ? h('p', { class: 'fin-notice fin-legacy', role: 'alert' },
       'This version needs a database update: run tools/finance/schema.sql again in the Supabase SQL editor (it keeps your data), then reload. Until then, changes aren’t saved.') : '',
@@ -5684,7 +5706,8 @@ function render(focusKey) {
         : view.name === 'ious' ? renderIous()
           : view.name === 'search' ? renderSearch()
           : view.name === 'insights' ? renderInsights()
-        : current ? renderAccount(current) : renderWelcome());
+        : view.name === 'account' && isPhone() && !view.id ? accountsPage()
+        : current ? h('div', {}, backToAccounts(), renderAccount(current)) : renderWelcome());
   // The address follows what's shown (an account, a settings page…), so reloading stays there.
   shownView = view;
   const url = urlOf(view);
@@ -5730,10 +5753,10 @@ const layout = document.querySelector('.fin-layout');
 
 // Before sign-in only the main column shows; the account panel and the header controls appear after.
 function setShell(signedIn) {
-  if (!signedIn) openMe(false);
+  if (!signedIn) { openMe(false); openMore(false); }
   side.hidden = !signedIn;
   layout.classList.toggle('fin-layout--solo', !signedIn);
-  document.querySelectorAll('[data-nav], #sync, #fab, #side-toggle, #hide-amounts, #cmd-open, #me').forEach((el) => { el.hidden = !signedIn; });
+  document.querySelectorAll('[data-nav], #sync, #fab, #side-toggle, #hide-amounts, #cmd-open, #me, #tabbar').forEach((el) => { el.hidden = !signedIn; });
 }
 
 // The screens before the app (sign in, check your email, setup, a loading error): a card in the
@@ -5845,7 +5868,7 @@ async function loadData() {
     }
   }
   // On an account page: the one in the address, else the last one opened, else the first.
-  if (view.name === 'account' && !state.accounts.some((a) => a.id === view.id)) {
+  if (view.name === 'account' && !state.accounts.some((a) => a.id === view.id) && !(isPhone() && !view.id)) {
     view = { name: 'account', id: state.settings.lastAccountId ?? state.accounts[0]?.id, tab: view.tab };
   }
 }
@@ -5968,15 +5991,21 @@ function paintMe() {
   meMenu.replaceChildren(
     h('div', { class: 'fin-me-who' }, avatar(p, 40),
       h('div', { class: 'fin-me-names' }, p.name && h('strong', {}, p.name), p.email && h('span', { class: 'fin-sub' }, p.email))),
+    // On phones the header keeps only the logo, save status and this button, so Go to and Hide
+    // amounts move in here (CSS shows them on phones only).
+    h('button', { type: 'button', class: 'fin-me-item fin-me-phone', onclick: () => { openMe(false); openPalette(); } }, 'Go to…'),
+    h('button', { type: 'button', class: 'fin-me-item fin-me-phone', onclick: () => { openMe(false); setHideAmounts(!hideAmounts); } },
+      hideAmounts ? 'Show amounts' : 'Hide amounts'),
     item('Account settings', () => openSettings('account', 'sign-out')),
     item('Sign out', () => signOutNow()));
 }
 meBtn.addEventListener('click', () => {
+  if (meMenu.hidden) paintMe(); // "Hide amounts" or "Show amounts", as it is now
   openMe(meMenu.hidden);
-  if (!meMenu.hidden) meMenu.querySelector('.fin-me-item')?.focus();
+  if (!meMenu.hidden) [...meMenu.querySelectorAll('.fin-me-item')].find((b) => b.offsetParent)?.focus();
 });
 meMenu.addEventListener('keydown', (e) => {
-  const items = [...meMenu.querySelectorAll('.fin-me-item')];
+  const items = [...meMenu.querySelectorAll('.fin-me-item')].filter((b) => b.offsetParent);
   const i = items.indexOf(document.activeElement);
   if (e.key === 'Escape') { e.preventDefault(); openMe(false); meBtn.focus(); }
   else if (e.key === 'ArrowDown') { e.preventDefault(); items[(i + 1) % items.length].focus(); }
@@ -5985,6 +6014,67 @@ meMenu.addEventListener('keydown', (e) => {
 const closeMeOutside = (e) => { if (!meMenu.hidden && !meWrap.contains(e.target)) openMe(false); };
 document.addEventListener('mousedown', closeMeOutside);
 document.addEventListener('focusin', closeMeOutside);
+
+// The tab bar's More: a menu above it with the sections that don't fit (Scheduled, IOUs, Settings).
+const moreBtn = document.getElementById('more-btn');
+const moreMenu = document.getElementById('more-menu');
+function openMore(on) {
+  moreMenu.hidden = !on;
+  moreBtn.setAttribute('aria-expanded', String(on));
+}
+moreBtn.addEventListener('click', () => {
+  openMore(moreMenu.hidden);
+  if (!moreMenu.hidden) moreMenu.querySelector('a')?.focus();
+});
+moreMenu.addEventListener('keydown', (e) => {
+  const items = [...moreMenu.querySelectorAll('a')];
+  const i = items.indexOf(document.activeElement);
+  if (e.key === 'Escape') { e.preventDefault(); openMore(false); moreBtn.focus(); }
+  else if (e.key === 'ArrowDown') { e.preventDefault(); items[(i + 1) % items.length].focus(); }
+  else if (e.key === 'ArrowUp') { e.preventDefault(); items[(i - 1 + items.length) % items.length].focus(); }
+});
+const closeMoreOutside = (e) => { if (!moreMenu.hidden && !moreBtn.parentElement.contains(e.target)) openMore(false); };
+document.addEventListener('mousedown', closeMoreOutside);
+document.addEventListener('focusin', closeMoreOutside);
+// Turning the phone (or resizing the window) across the phone width switches layouts.
+matchMedia('(max-width: 52rem)').addEventListener('change', () => { if (state) render(); });
+
+// Pull to refresh, in the installed app on a touch screen (browsers have their own): pulling down
+// from the top of the page reloads it, sending what's waiting to be saved first. A circle follows
+// the finger and turns when far enough.
+const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+if (standalone && matchMedia('(pointer: coarse)').matches) {
+  const PULL = 80;
+  const ptr = h('div', { class: 'fin-ptr', 'aria-hidden': 'true' },
+    svgEl('svg', { class: 'fin-icon', viewBox: '0 0 24 24' }, svgEl('path', { d: 'M12 5v13M6 12l6 6 6-6' })));
+  document.body.append(ptr);
+  let startY = null;
+  let pulled = 0;
+  addEventListener('touchstart', (e) => {
+    const busy = window.scrollY > 0 || e.touches.length !== 1 || document.querySelector('dialog[open]')
+      || e.target.closest('input, textarea, select, .fin-options, .fin-ms-menu, .fin-me-menu, .fin-more-menu, .fin-tabbar');
+    startY = busy || !state ? null : e.touches[0].clientY;
+    pulled = 0;
+  }, { passive: true });
+  addEventListener('touchmove', (e) => {
+    if (startY == null) return;
+    pulled = window.scrollY > 0 ? 0 : Math.max(0, e.touches[0].clientY - startY);
+    ptr.style.setProperty('--pull', `${Math.min(pulled, PULL * 1.5)}px`);
+    ptr.classList.toggle('is-pulling', pulled > 8);
+    ptr.classList.toggle('is-ready', pulled >= PULL);
+  }, { passive: true });
+  addEventListener('touchend', async () => {
+    if (startY == null) return;
+    startY = null;
+    ptr.classList.remove('is-pulling');
+    if (pulled < PULL) { ptr.classList.remove('is-ready'); return; }
+    ptr.classList.add('is-loading');
+    say('Reloading…');
+    await leave(location.href, { ask: true });
+    // Still here: leaving was cancelled (something typed isn't saved).
+    setTimeout(() => { if (!leaving) ptr.classList.remove('is-loading', 'is-ready'); }, 1200);
+  });
+}
 
 // ── Go to: jump anywhere or start something, from the keyboard (Ctrl/⌘+K) ─────
 

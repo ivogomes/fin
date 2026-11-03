@@ -416,9 +416,9 @@ body {
 nav .fin-account { padding-left: 12px; }
 .fin-account-danger { color: var(--f-neg); }
 /* In the panel, positive balances stay plain so the negative ones (cards, debts) stand out. */
-.fin-side .fin-account .fin-pos { color: var(--f-muted); }
-.fin-side .fin-group-head .fin-pos { color: var(--f-text); }
-.fin-side .fin-account[aria-current="page"] .fin-num { color: inherit; }
+:is(.fin-side, .fin-side-list) .fin-account .fin-pos { color: var(--f-muted); }
+:is(.fin-side, .fin-side-list) .fin-group-head .fin-pos { color: var(--f-text); }
+:is(.fin-side, .fin-side-list) .fin-account[aria-current="page"] .fin-num { color: inherit; }
 
 .fin-side-foot { padding: 12px 6px 0; }
 .fin-side-foot .fin-btn { width: 100%; border-style: dashed; color: var(--f-muted); }
@@ -1603,21 +1603,91 @@ input.fin-cat-add:focus { width: 10rem; border-style: solid; border-color: var(-
 .fin-ov-card .fin-usage, .fin-ov-card .fin-sub { grid-column: 1 / -1; }
 
 /* ── Phone and small screens ──────────────────────────── */
-.fin-side-toggle, .fin-fab { display: none; }
+.fin-side-toggle, .fin-fab, .fin-tabbar, .fin-back, .fin-me-phone { display: none; }
+/* The accounts list as a page (phones): the side panel's content in a card. */
+.fin-side-list { padding: 12px 6px; background: var(--f-surface); border: 1px solid var(--f-border); border-radius: var(--f-radius); }
 .fin-cat-time-pick .fin-input { width: auto; max-width: 16rem; }
 
 @media (max-width: 52rem) {
-  /* The header: logo and save status on one line, the section tabs scrolling sideways below. */
-  .tool-header { position: sticky; flex-wrap: wrap; gap: 6px 10px; padding: 8px 12px; min-height: 0; }
-  .tool-logo { flex: 1 1 auto; }
+  /* The header: logo, save status and your avatar on one line, clear of the notch. The sections
+     are in the tab bar at the bottom; Go to and Hide amounts are in the avatar's menu. */
+  .tool-header {
+    position: sticky; flex-wrap: nowrap; gap: 10px; min-height: 0;
+    padding: calc(8px + env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) 8px max(12px, env(safe-area-inset-left));
+  }
+  .tool-logo { flex: 1 1 auto; min-width: 0; }
   .tool-logo-text { font-size: 19px; }
   .fin-sync { margin: 0; }
-  .fin-nav { order: 3; flex: 1 1 100%; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
-  .fin-nav::-webkit-scrollbar { display: none; }
-  .tool-header .fin-nav .fin-btn { flex: none; padding: 7px 12px; }
+  .tool-header .fin-nav, .tool-header .fin-cmd-open, .tool-header .fin-hide-toggle { display: none; }
+  .fin-me-phone { display: block; }
+
+  /* The tab bar: the main sections along the bottom, above the home indicator. */
+  .fin-tabbar:not([hidden]) {
+    display: flex;
+    position: fixed;
+    inset: auto 0 0 0;
+    z-index: 30;
+    padding: 4px max(4px, env(safe-area-inset-right)) env(safe-area-inset-bottom) max(4px, env(safe-area-inset-left));
+    background: var(--f-surface);
+    border-top: 1px solid var(--f-border);
+  }
+  .fin-tabbar > a, .fin-more { flex: 1 1 0; min-width: 0; }
+  .fin-tabbar > a[hidden] { display: none; }
+  .fin-tabbar > a, .fin-more-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    width: 100%;
+    min-height: 52px;
+    padding: 4px 2px;
+    border: 0;
+    border-radius: var(--f-radius-sm);
+    background: none;
+    color: var(--f-muted);
+    font: 500 11px var(--font-sans);
+    text-decoration: none;
+    cursor: pointer;
+  }
+  .fin-tabbar .fin-icon { width: 22px; height: 22px; }
+  .fin-tabbar > a[aria-current="page"], .fin-more-btn.is-on, .fin-more-btn[aria-expanded="true"] { color: var(--f-accent-strong); }
+  .fin-tabbar > a[aria-current="page"] .fin-icon, .fin-more-btn.is-on .fin-icon { stroke-width: 2.2; }
+  .fin-tabbar > a:focus-visible, .fin-more-btn:focus-visible { outline: none; box-shadow: var(--f-ring); }
+  .fin-more { position: relative; }
+  .fin-more-menu {
+    position: absolute;
+    right: 0;
+    bottom: calc(100% + 8px);
+    min-width: 12rem;
+    padding: 6px;
+    background: var(--f-surface);
+    border: 1px solid var(--f-border);
+    border-radius: var(--f-radius-sm);
+    box-shadow: var(--f-shadow-lg);
+  }
+  .fin-more-menu[hidden], .fin-more-menu [hidden] { display: none; }
+  .fin-more-menu .fin-me-item { text-decoration: none; }
+  .fin-more-menu .fin-me-item[aria-current="page"] { color: var(--f-accent-strong); font-weight: 600; }
+
+  /* An account opened from the Accounts page has a way back above it. */
+  .fin-back {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    margin: -8px 0 4px -4px;
+    padding: 0 4px;
+    border: 0;
+    background: none;
+    color: var(--f-accent-strong);
+    font: 500 15px var(--font-sans);
+    cursor: pointer;
+  }
 
   /* The account panel folds away behind a button and opens over the page. */
   .fin-side-toggle[hidden] { display: none; }
+  /* Only Settings keeps the panel (its pages) behind a button; the accounts are the Accounts tab. */
+  body:not([data-view="settings"]) .fin-side-toggle:not([hidden]) { display: none; }
   .fin-side-toggle:not([hidden]) {
     display: flex;
     align-items: center;
@@ -1635,7 +1705,8 @@ input.fin-cat-add:focus { width: 10rem; border-style: solid; border-color: var(-
   .fin-side-toggle[aria-expanded="true"]::after { content: '▴'; }
   .fin-side { display: none; position: static; height: auto; margin: 8px 16px 0; border: 1px solid var(--f-border); border-radius: var(--f-radius); }
   .fin-side.is-open:not([hidden]) { display: block; }
-  .fin-main { padding: 16px 16px 96px; }
+  /* Room at the bottom for the tab bar and the + button. */
+  .fin-main { padding: 16px max(16px, env(safe-area-inset-right)) calc(150px + env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); }
   .fin-title { font-size: 24px; }
   .fin-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
   .fin-stats > div { padding: 12px 14px; }
@@ -1647,8 +1718,8 @@ input.fin-cat-add:focus { width: 10rem; border-style: solid; border-color: var(-
     display: grid;
     place-items: center;
     position: fixed;
-    right: 18px;
-    bottom: 18px;
+    right: max(18px, env(safe-area-inset-right));
+    bottom: calc(76px + env(safe-area-inset-bottom)); /* above the tab bar */
     z-index: 40;
     width: 56px;
     height: 56px;
@@ -1660,11 +1731,28 @@ input.fin-cat-add:focus { width: 10rem; border-style: solid; border-color: var(-
     box-shadow: 0 6px 20px rgb(16 24 20 / 0.3);
     cursor: pointer;
   }
-  .fin-toast { bottom: 88px; }
+  .fin-toast { bottom: calc(146px + env(safe-area-inset-bottom)); }
 
-  /* Dialogs take the whole screen. */
-  .fin-dialog, .fin-dialog-wide { width: 100vw; max-width: 100vw; height: 100dvh; max-height: 100dvh; margin: 0; border-radius: 0; padding: 16px; }
-  .fin-dialog.fin-cmd { padding: 0; }
+  /* Dialogs take the whole screen, clear of the notch and the home indicator. Their title bar and
+     buttons stay pinned while the form scrolls between them, so Save is always in reach. */
+  .fin-dialog, .fin-dialog-wide {
+    --pad-top: calc(16px + env(safe-area-inset-top));
+    --pad-bottom: calc(16px + env(safe-area-inset-bottom));
+    width: 100vw; max-width: 100vw; height: 100dvh; max-height: 100dvh; margin: 0; border-radius: 0; overflow-y: auto;
+    padding: var(--pad-top) max(16px, env(safe-area-inset-right)) var(--pad-bottom) max(16px, env(safe-area-inset-left));
+  }
+  .fin-dialog .fin-dialog-head {
+    position: sticky; top: calc(-1 * var(--pad-top)); z-index: 2;
+    margin: calc(-1 * var(--pad-top)) -16px 0; padding: var(--pad-top) 16px 10px;
+    background: var(--f-surface); border-bottom: 1px solid var(--f-border);
+  }
+  .fin-dialog :is(.fin-dialog-foot, .fin-dialog-actions) {
+    position: sticky; bottom: calc(-1 * var(--pad-bottom)); z-index: 2;
+    margin: auto -16px calc(-1 * var(--pad-bottom)); padding: 12px 16px var(--pad-bottom);
+    background: var(--f-surface); border-top: 1px solid var(--f-border);
+  }
+  .fin-dialog form { min-height: 100%; }
+  .fin-dialog.fin-cmd { padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom); }
   .fin-cmd-list { max-height: calc(100dvh - 140px); }
 }
 
@@ -1719,3 +1807,48 @@ input.fin-cat-add:focus { width: 10rem; border-style: solid; border-color: var(-
   .fin-split-row { grid-template-columns: minmax(0, 1fr) 7rem 32px; }
   .fin-tip { max-width: 14rem; }
 }
+
+/* ── Touch screens ────────────────────────────────────── */
+@media (pointer: coarse) {
+  /* iOS zooms into a field whose text is under 16px when it's tapped, and the page jumps; fields
+     use 16px on touch screens (overriding the small sizes above, hence !important). */
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]), select, textarea { font-size: 16px !important; }
+  /* Small controls keep their look but get a 44px tap area around them. */
+  :is(.fin-cat-x, .fin-icon-btn, .fin-link, .fin-toast-close) { position: relative; }
+  :is(.fin-cat-x, .fin-icon-btn, .fin-link, .fin-toast-close)::before {
+    content: '';
+    position: absolute;
+    top: min(0px, calc(50% - 22px)); bottom: min(0px, calc(50% - 22px));
+    left: min(0px, calc(50% - 22px)); right: min(0px, calc(50% - 22px));
+  }
+  .fin-tick, .fin-check input { width: 22px; height: 22px; }
+  .fin-cat-x { width: 24px; height: 24px; }
+}
+
+/* Pull to refresh (installed app): a circle that follows the finger down from the top. */
+.fin-ptr {
+  --pull: 0px;
+  position: fixed;
+  top: calc(env(safe-area-inset-top) + 8px);
+  left: 50%;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: var(--f-surface);
+  color: var(--f-accent-strong);
+  box-shadow: var(--f-shadow-lg);
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, calc(var(--pull) * 0.6 - 48px));
+}
+.fin-ptr .fin-icon { width: 20px; height: 20px; transition: transform 0.15s ease; }
+.fin-ptr.is-pulling, .fin-ptr.is-loading { opacity: 1; }
+.fin-ptr.is-ready .fin-icon { transform: rotate(180deg); }
+.fin-ptr.is-loading { transform: translate(-50%, 24px); }
+.fin-ptr.is-loading .fin-icon { animation: fin-ptr-spin 0.8s linear infinite; }
+@keyframes fin-ptr-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .fin-ptr .fin-icon { transition: none; } .fin-ptr.is-loading .fin-icon { animation: none; } }
+@media (display-mode: standalone) { html { overscroll-behavior-y: none; } }
