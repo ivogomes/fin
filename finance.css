@@ -1490,7 +1490,8 @@ input.fin-cat-add:focus { width: 10rem; border-style: solid; border-color: var(-
 }
 .fin-alert { --alert: var(--f-accent-strong); display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 12px 16px; font-size: 13px; }
 .fin-alert + .fin-alert { border-top: 1px solid var(--f-border); }
-.fin-alert--warn { --alert: var(--f-warn); }
+.fin-alert--warn, .fin-alert--overdue, .fin-alert--backup { --alert: var(--f-warn); }
+.fin-alert-actions { flex-wrap: nowrap; gap: 6px; }
 .fin-alert > a.fin-btn { text-decoration: none; }
 .fin-alert-icon {
   display: grid; place-items: center; flex: none;
@@ -1503,7 +1504,7 @@ input.fin-cat-add:focus { width: 10rem; border-style: solid; border-color: var(-
   /* The button goes under the text, lined up with it rather than with the badge. */
   .fin-alert { padding: 12px 14px; }
   .fin-alert-text { flex-basis: calc(100% - 44px); }
-  .fin-alert > .fin-btn { margin-left: 44px; }
+  .fin-alert > :is(.fin-btn, .fin-alert-actions) { margin-left: 44px; }
 }
 .fin-account-head + .fin-alerts ul, .fin-overview > .fin-alerts ul { margin-top: 16px; }
 

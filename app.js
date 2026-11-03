@@ -235,6 +235,8 @@ const ICONS = {
   // Alerts: a payment that's due, a balance that runs low
   clock: ['M12 3.5a8.5 8.5 0 1 0 0 17 8.5 8.5 0 0 0 0-17Z', 'M12 7.5V12l3 2'],
   warn: ['M12 4 2.8 19.5h18.4Z', 'M12 10v4.5', 'M12 17.2h.01'],
+  pause: ['M9.5 6v12', 'M14.5 6v12'],
+  cloud: ['M7 18.5h10.5a4 4 0 0 0 .4-7.98A6 6 0 0 0 6.3 9.7 4.4 4.4 0 0 0 7 18.5Z', 'M12 11v4.5', 'M12 18h.01'],
   repeat: ['M17 3.5 20.5 7 17 10.5', 'M3.5 11V10a3 3 0 0 1 3-3h14', 'M7 20.5 3.5 17 7 13.5', 'M20.5 13v1a3 3 0 0 1-3 3h-14'],
   // Account types
   'type-cash': ['M3 7h18v10H3Z', 'M12 9.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5Z', 'M6.5 10v4M17.5 10v4'],
@@ -849,6 +851,17 @@ function accountAlerts(only = null) {
       }
     }
   }
+  // A credit card with a limit that's 80% or more used.
+  for (const a of state.accounts) {
+    if (a.archived || (only && a.id !== only.id)) continue;
+    const use = limitUse(a, accountValue(a));
+    if (use && use.used >= 80) {
+      out.push({
+        account: a, level: 'warn',
+        text: `${a.name} has used ${use.used}% of its ${money(a.creditLimit, a.currency)} limit, with ${money(Math.max(0, use.left), a.currency)} left.`,
+      });
+    }
+  }
   for (const p of cardPayments()) {
     if (only && p.card.id !== only.id && p.from?.id !== only.id) continue;
     const days = Math.round((Date.parse(p.date) - Date.parse(today())) / 864e5);
@@ -868,7 +881,7 @@ function alertsBox(list, { label = 'Heads up' } = {}) {
   if (!list.length) return null;
   return h('section', { class: 'fin-alerts', 'aria-label': label },
     h('ul', {}, list.map((al) => h('li', { class: `fin-alert fin-alert--${al.level}` },
-      h('span', { class: 'fin-alert-icon' }, icon({ due: 'clock', recurring: 'repeat' }[al.level] ?? 'warn')),
+      h('span', { class: 'fin-alert-icon' }, icon({ due: 'clock', overdue: 'clock', recurring: 'repeat', stopped: 'pause', backup: 'cloud' }[al.level] ?? 'warn')),
       h('span', { class: 'fin-alert-text' }, al.text),
       al.action,
       al.pay && button(al.pay.from ? 'Pay now' : 'Set where it’s paid from', () => payCard(al.pay), 'secondary fin-btn-sm',
@@ -4459,7 +4472,7 @@ function renderOverview() {
         h('p', { class: 'fin-meta' }, new Date(`${now}T00:00:00`).toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }))),
       button('Add transactions', quickAdd, 'primary', { 'data-key': 'ov-add', 'aria-haspopup': 'dialog' })),
     state.accounts.length === 0 ? renderWelcome() : [
-      alertsBox([...accountAlerts(), recurringAlert()].filter(Boolean)),
+      alertsBox(overviewAlerts()),
       h('dl', { class: 'fin-stats' },
         h('div', {}, h('dt', {}, 'Net worth'), h('dd', { class: tone(nw.total) }, money(nw.total, 'EUR')),
           h('p', { class: 'fin-stat-note' }, nw.unconverted ? `${nw.unconverted} account(s) waiting for exchange rates` : 'across your open accounts, in EUR')),
@@ -4584,6 +4597,43 @@ function creditCardsCard() {
                 : `${money(st.left, a.currency)} to pay${st.due ? ` by ${shortDate(st.due)}` : ''}`);
           })()));
     })));
+}
+
+// The Overview's alerts, most pressing first: schedules left overdue, the accounts' own (low
+// balances, cards near their limit, card payments due), a Drive backup that didn't go through,
+// subscriptions that stopped but are still scheduled, and payments that look recurring.
+function overviewAlerts() {
+  const now = today();
+  const days = (d) => Math.round((Date.parse(now) - Date.parse(d)) / 864e5);
+  const overdue = state.schedules.filter((s) => s.nextDate < now).sort((a, b) => a.nextDate.localeCompare(b.nextDate))
+    .map((s) => ({
+      level: 'overdue',
+      text: `${s.description} was due on ${shortDate(s.nextDate)}, ${days(s.nextDate) === 1 ? 'yesterday' : `${days(s.nextDate)} days ago`}, and hasn’t been entered or skipped.`,
+      action: h('div', { class: 'fin-actions fin-alert-actions' },
+        button('Enter', () => enterScheduled(s, 'ov-add'), 'secondary fin-btn-sm', { 'aria-label': `Enter ${s.description} of ${shortDate(s.nextDate)}` }),
+        button('Skip', () => skipScheduled(s, 'ov-add'), 'secondary fin-btn-sm', { 'aria-label': `Skip ${s.description} of ${shortDate(s.nextDate)}` })),
+    }));
+  // Found by the subscription finder as stopped, while its schedule still expects the next charge.
+  const stopped = (subscriptionsFound() ?? []).filter((x) => x.status === 'stopped' && x.scheduleId).map((x) => {
+    const sched = state.schedules.find((y) => y.id === x.scheduleId);
+    return sched && {
+      level: 'stopped',
+      text: `${x.description} hasn’t been charged since ${shortDate(x.lastDate)}, but its schedule still expects it on ${shortDate(sched.nextDate)}.`,
+      action: button('Stop the schedule', () => deleteScheduled(sched), 'secondary fin-btn-sm', { 'aria-label': `Stop the schedule of ${x.description}` }),
+    };
+  });
+  return [...overdue, ...accountAlerts(), driveAlert(), ...stopped, recurringAlert()].filter(Boolean);
+}
+
+// Today's backup to Google Drive didn't go through when Fin opened (Google needed you to confirm,
+// say); the button tries again, letting Google ask.
+function driveAlert() {
+  if (!driveFailed || !driveOn() || !driveBackupDue()) return null;
+  return {
+    level: 'backup',
+    text: `Today’s backup to Google Drive didn’t go through (${driveFailed.replace(/\.$/, '')}).`,
+    action: button('Back up now', () => backupToDrive({ interactive: true }), 'secondary fin-btn-sm'),
+  };
 }
 
 // An alert pointing to payments that look recurring, when there are any (for alertsBox).
@@ -5447,6 +5497,7 @@ async function downloadBackup() {
 // Backups to Google Drive (drive.js), once connected in this browser: made when Fin opens and one is
 // due, or from a button. `interactive`: from a click, so Google may show its window.
 let driveBusy = false;
+let driveFailed = null; // why the backup made on opening didn't go through, for the Overview's alert
 // finance:drive is true once connected in this browser, false after Disconnect, unset before either.
 const driveOn = () => driveConfigured() && readPref('finance:drive', null) === true;
 // Signed in with Google (or with an email that has Google linked): that account's Drive can be used
@@ -5472,12 +5523,14 @@ async function backupToDrive({ interactive = false } = {}) {
     state.settings.lastBackupAt = new Date().toISOString();
     persist();
     driveFiles = null;
+    driveFailed = null;
     renderWhenIdle();
     say(`Backed up to Google Drive, in “Fin backups” (the latest ${DRIVE_KEEP} are kept).`);
     return true;
   } catch (err) {
-    // Opening the page: Google wanted to ask something, so the reminder offers the button instead.
+    // Opening the page: Google wanted to ask something, so the Overview's alert offers the button.
     if (interactive) showToast(`Couldn’t back up to Google Drive: ${err.message}`);
+    else { driveFailed = err.message || 'Google didn’t answer'; renderWhenIdle(); }
     return false;
   } finally {
     driveBusy = false;

@@ -55,7 +55,7 @@ Settings → **Display** → Appearance picks light, dark, or the same as your d
 
 ## Overview
 
-The first page. It shows net worth, what you've spent and earned this month against last month up to the same day, everything coming up in the next two weeks across accounts (scheduled dates, with **Enter** and **Skip** for the ones due, and transactions added with a later date), this month's spending by category against the same days last month, and each credit card with what's owed and how much of its limit is left. When some payments look recurring but have no schedule, a line points to them.
+The first page. It shows net worth, what you've spent and earned this month against last month up to the same day, everything coming up in the next two weeks across accounts (scheduled dates, with **Enter** and **Skip** for the ones due, and transactions added with a later date), this month's spending by category against the same days last month, and each credit card with what's owed and how much of its limit is left. Above it all, a **Heads up** card lists what needs doing, most pressing first: schedules left overdue (with **Enter** and **Skip**), checking accounts heading below their low-balance alert, credit cards at 80% or more of their limit, card payments due in the next 5 days (with **Pay now**), a daily Google Drive backup that didn't go through (with **Back up now**), subscriptions that seem to have stopped while their schedule still expects them (with **Stop the schedule**, undoable), and payments that look recurring but have no schedule (with **Review them**). An account's page shows its own low-balance, limit and card-payment alerts.
 
 ## Go to (Ctrl/⌘+K)
 
