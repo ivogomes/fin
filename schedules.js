@@ -207,8 +207,8 @@ export function upcomingRows(account, { cols, inEur, balance }) {
       h('td', { class: 'c-cat' }, h('span', { class: 'fin-tag fin-tag--transfer' }, ...(toCard ? ['From ', ...(pay.from ? accountBadge(pay.from.id) : ['…'])] : ['To ', ...accountBadge(pay.card.id)]))),
       inEur && h('td', { class: 'c-eur' }),
       h('td', { class: 'fin-r c-act' }, h('div', { class: 'fin-actions fin-row-actions fin-upcoming-actions' },
-        button(pay.from ? 'Pay' : 'Set up', () => payCard(pay), 'secondary fin-btn-sm',
-          { 'aria-label': pay.from ? `Pay ${money(pay.amount, pay.card.currency)} to ${pay.card.name} from ${pay.from.name}` : `Set the account ${pay.card.name} is paid from` }))));
+        button(pay.from ? 'Pay…' : 'Set up', () => payCard(pay), 'secondary fin-btn-sm',
+          { 'aria-label': pay.from ? `Pay ${pay.card.name}, ${money(pay.amount, pay.card.currency)} left to pay` : `Set the account ${pay.card.name} is paid from`, 'aria-haspopup': 'dialog' }))));
   };
   // A transaction added ahead of time: already saved, so it's edited or deleted like any other.
   const plannedRow = ({ t, balance: b }) => {

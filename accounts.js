@@ -198,16 +198,78 @@ export function cardPayments() {
     .map(({ card, st }) => ({ card, st, from: state.accounts.find((x) => x.id === card.payFrom && !x.archived) ?? null, date: st.due, amount: st.left }));
 }
 
-// Pays what's left on a card's statement from its "Paid from" account today, as a transfer.
-export async function payCard(p) {
+// Paying a card: a dialog with what's left on its statement filled in, today's date and the account
+// it's paid from, each of which can be changed (the minimum, part of it, another date or account).
+// Paying less leaves the rest to pay, as the statement takes off what's paid. Between currencies,
+// what leaves the other account is converted at that day's rate unless typed. Without a "Paid from"
+// account set yet, the card's own dialog opens to set one.
+export function payCard(p) {
   if (!p.from) { openAccountDialog(p.card); return; }
-  const date = today();
-  const [rf, rt] = [await ensureRate(p.from.currency, date), await ensureRate(p.card.currency, date)];
-  const sent = p.from.currency === p.card.currency || rf == null || rt == null ? p.amount : crossConvert(p.amount, rt, rf);
-  const legs = makeTransfer({ from: p.from, to: p.card, sent, received: p.amount, date, description: `${p.card.name} payment` });
-  legs[0].rate = rf;
-  legs[1].rate = rt;
-  undoable(`Paid ${money(p.amount, p.card.currency)} to ${p.card.name} from ${p.from.name}.`, ['transactions'], () => { state.transactions.push(...legs); });
+  const card = p.card;
+  const returnKey = document.activeElement?.dataset?.key;
+  const close = () => { dialog.close(); render(returnKey); };
+  const sources = state.accounts.filter((a) => a.id !== card.id && !a.archived).sort(byName);
+  const amount = input({ type: 'number', step: '0.01', min: '0.01', required: true, inputmode: 'decimal', value: (p.amount / 100).toFixed(2) });
+  const date = input({ type: 'date', required: true, value: today() });
+  const from = select(sources.map((a) => [a.id, `${a.name} (${a.currency})`]), p.from.id);
+  const sent = input({ type: 'number', step: '0.01', min: '0.01', inputmode: 'decimal' });
+  const sentField = field('Amount sent', sent, 'Converted at that day’s rate. Change it to what actually left the account.');
+  const note = h('p', { class: 'fin-hint', 'aria-live': 'polite' });
+  const error = h('p', { class: 'fin-error', role: 'alert' });
+  let sentTouched = false;
+  const acc = () => state.accounts.find((a) => a.id === from.value);
+  // What leaves the other account: the same, or converted at the day's rate (unless typed).
+  const sync = async () => {
+    const a = acc();
+    const cross = a && a.currency !== card.currency;
+    sentField.hidden = !cross;
+    sent.required = Boolean(cross);
+    const left = p.amount - toMinor(amount.value);
+    note.textContent = toMinor(amount.value) > 0 && left > 0 ? `${money(left, card.currency)} of the statement stays to pay.` : '';
+    if (!cross) return;
+    sentField.querySelector('label').textContent = `Amount sent (${a.currency})`;
+    if (sentTouched) return;
+    const [rf, rt] = await Promise.all([ensureRate(a.currency, date.value), ensureRate(card.currency, date.value)]);
+    if (rf != null && rt != null && toMinor(amount.value) > 0) sent.value = (crossConvert(toMinor(amount.value), rt, rf) / 100).toFixed(2);
+  };
+  amount.addEventListener('input', sync);
+  date.addEventListener('change', sync);
+  from.addEventListener('change', () => { sentTouched = false; sync(); });
+  sent.addEventListener('input', () => { sentTouched = true; });
+  dialog.replaceChildren(h('form', {
+    onsubmit: async (e) => {
+      e.preventDefault();
+      const received = toMinor(amount.value);
+      const a = acc();
+      if (!(received > 0)) { error.textContent = 'The amount must be above zero.'; amount.focus(); return; }
+      if (!a) { error.textContent = 'Pick the account it’s paid from.'; from.focus(); return; }
+      const [rf, rt] = [await ensureRate(a.currency, date.value), await ensureRate(card.currency, date.value)];
+      const paid = a.currency === card.currency ? received
+        : sentTouched && toMinor(sent.value) > 0 ? toMinor(sent.value)
+          : rf == null || rt == null ? received : crossConvert(received, rt, rf);
+      const legs = makeTransfer({ from: a, to: card, sent: paid, received, date: date.value, description: `${card.name} payment` });
+      legs[0].rate = rf;
+      legs[1].rate = rt;
+      dialog.close();
+      undoable(`Paid ${money(received, card.currency)} to ${card.name} from ${a.name}${date.value > today() ? `, on ${shortDate(date.value)} (it waits under Upcoming)` : ''}.`,
+        ['transactions'], () => { state.transactions.push(...legs); });
+    },
+  },
+    h('h2', { id: 'account-dialog-h', class: 'fin-dialog-title' }, `Pay ${card.name}`),
+    h('p', { class: 'fin-hint' }, p.st
+      ? `${money(p.amount, card.currency)} left to pay on the ${shortDate(p.st.close)} statement${p.date ? `, due ${shortDate(p.date)}` : ''}.`
+      : `${money(p.amount, card.currency)} left to pay.`),
+    h('div', { class: 'fin-grid fin-grid-2' },
+      field(`Amount (${card.currency})`, amount), field('Date', date),
+      field('From', from), sentField),
+    note, error,
+    h('div', { class: 'fin-dialog-actions' },
+      button('Cancel', close),
+      h('button', { type: 'submit', class: 'fin-btn btn-primary' }, 'Pay'))));
+  sync();
+  dialog.showModal();
+  amount.focus();
+  amount.select();
 }
 
 // What's coming for an account in the next 30 days, as { date, amount } in its currency: scheduled
@@ -276,8 +338,8 @@ export function alertsBox(list, { label = 'Heads up' } = {}) {
       h('span', { class: 'fin-alert-icon' }, icon({ due: 'clock', overdue: 'clock', recurring: 'repeat', stopped: 'pause', backup: 'cloud' }[al.level] ?? 'warn')),
       h('span', { class: 'fin-alert-text' }, al.text),
       al.action,
-      al.pay && button(al.pay.from ? 'Pay now' : 'Set where it’s paid from', () => payCard(al.pay), 'secondary fin-btn-sm',
-        { 'aria-label': al.pay.from ? `Pay ${money(al.pay.amount, al.pay.card.currency)} to ${al.pay.card.name}` : `Set the account ${al.pay.card.name} is paid from` })))));
+      al.pay && button(al.pay.from ? 'Pay…' : 'Set where it’s paid from', () => payCard(al.pay), 'secondary fin-btn-sm',
+        { 'aria-label': al.pay.from ? `Pay ${al.pay.card.name}, ${money(al.pay.amount, al.pay.card.currency)} left to pay` : `Set the account ${al.pay.card.name} is paid from`, 'aria-haspopup': 'dialog' })))));
 }
 
 // ── main: account ────────────────────────────────────────────────────────────
@@ -403,7 +465,7 @@ export function statementCard(card) {
     h('p', { class: 'fin-stat-note' }, st.owed === 0 ? 'nothing to pay'
       : st.left === 0 ? 'paid'
         : [st.paid ? `${money(st.left, cur)} left to pay` : 'to pay', st.due && `, due ${shortDate(st.due)}`].filter(Boolean).join('')),
-    p && h('div', { class: 'fin-stat-action' }, button(p.from ? `Pay from ${p.from.name}` : 'Set where it’s paid from', () => payCard(p), 'secondary fin-btn-sm', { 'data-key': 'pay-card' })));
+    p && h('div', { class: 'fin-stat-action' }, button(p.from ? `Pay from ${p.from.name}…` : 'Set where it’s paid from', () => payCard(p), 'secondary fin-btn-sm', { 'data-key': 'pay-card', 'aria-haspopup': 'dialog' })));
 }
 
 export function interestCard(account, value) {
