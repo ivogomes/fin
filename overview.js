@@ -11,10 +11,10 @@ import { backupToDrive, driveBackupDue, driveFailed, driveOn } from './backups.j
 import { insightsFor, transactionsLoaded } from './insights.js';
 import {
   daysFromToday, deleteScheduled, dueLabel, enterScheduled, scheduleAccounts, scheduleSuggestions,
-  skipScheduled, subEur, subscriptionsFound,
+  skipScheduled, subEur, subscriptionChip, subscriptionsFound,
 } from './schedules.js';
 import { accountName, transferPartner } from './transactions.js';
-import { button, catLabel, h, loader, money, shortDate, signed, tone } from './ui.js';
+import { button, catLabel, h, icon, loader, money, shortDate, signed, tone } from './ui.js';
 
 // ── overview ─────────────────────────────────────────────────────────────────
 
@@ -114,7 +114,9 @@ export function comingUpCard() {
             : t ? (t.transferId ? `${accountName(t.accountId)} → ${accountName(transferPartner(t)?.accountId)}` : accountName(t.accountId)) : scheduleAccounts(it.s);
           return h('li', { class: `fin-coming-row${due ? ' fin-due' : ''}` },
             h('time', { class: 'fin-coming-date fin-nowrap', datetime: it.date }, shortDate(it.date)),
-            h('span', { class: 'fin-coming-what' }, name,
+            // A card payment leads with the card: its network's mark, else a card icon.
+            h('span', { class: 'fin-coming-what' }, it.pay && (cardMark(it.pay.card) ?? h('span', { class: 'fin-coming-card' }, icon('type-credit'))), name,
+              t ? subscriptionChip(t) : it.s && subscriptionChip(null, it.s),
               h('span', { class: 'fin-sub' }, where, ' · ', it.pay ? `statement of ${shortDate(it.pay.st.close)}` : t ? 'added ahead' : frequencyLabel(it.s).toLowerCase()),
               due && h('span', { class: 'fin-chip fin-chip-inline fin-chip-due' }, due)),
             amountOf(it),

@@ -21,7 +21,7 @@ import {
 import { comboField, descriptionCombo, floatingList, openTxDialog } from './entry.js';
 import { inEur } from './insights.js';
 import { personName } from './ious.js';
-import { FORECAST_DAYS, daysFromToday, openScheduleDialog, upcomingRows } from './schedules.js';
+import { FORECAST_DAYS, daysFromToday, openScheduleDialog, subscriptionChip, upcomingRows } from './schedules.js';
 import {
   button, catLabel, catOptions, category, field, h, hueOf, icon, iconButton, input, latestRate,
   flag, loader, money, monthLabel, num, say, select, shortDate, signed, status, tone,
@@ -409,6 +409,7 @@ export function txTable(rows, { caption, showBalance = false, showAccount = fals
           signed(t.amount, cur))),
         showBalance && h('td', { class: 'fin-r fin-num fin-muted c-bal' }, t.balance == null ? '' : money(t.balance, cur)),
         h('td', { class: 'c-desc' }, quickCell(t, 'description', label, t.description),
+          subscriptionChip(t),
           t.kind === 'dividend' && h('span', { class: 'fin-sub' }, holdingOf(t.holdingId) ? `Dividend from ${holdingOf(t.holdingId).symbol}` : 'Dividend'),
           t.memo && h('span', { class: 'fin-sub' }, t.memo)),
         showAccount && h('td', { class: 'c-acc' }, h('button', {

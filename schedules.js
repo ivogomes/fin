@@ -3,7 +3,7 @@
 import { today } from './market.js';
 import {
   UNITS, advanceSchedule, categoriesOf, convert, crossConvert, findSubscriptions, frequencyLabel,
-  newId, occurrences, plannedTransactions, scheduledEffect, scheduledTransactions,
+  newId, normalize, occurrences, plannedTransactions, scheduledEffect, scheduledTransactions,
   suggestSchedules, toMinor, withMarkedSchedules,
 } from './model.js';
 import { persist } from './store.js';
@@ -172,7 +172,7 @@ export function upcomingRows(account, { cols, inEur, balance }) {
       dateCell(date, h('span', { class: `fin-chip fin-chip-inline${due ? ' fin-chip-due' : ''}` }, due ?? 'Scheduled')),
       amountCell(amount),
       balanceCell(b),
-      h('td', { class: 'c-desc' }, s.description, h('span', { class: 'fin-sub' },
+      h('td', { class: 'c-desc' }, s.description, subscriptionChip(null, s), h('span', { class: 'fin-sub' },
         `${frequencyLabel(s)}${s.kind === 'transfer' ? ` · ${scheduleAccounts(s)}` : ''}`)),
       // A transfer shows where it goes (or comes from), like an entered one; anything else its
       // categories as chips (changed in the schedule, not here).
@@ -219,7 +219,7 @@ export function upcomingRows(account, { cols, inEur, balance }) {
       dateCell(t.date),
       amountCell(t.amount, t.kind === 'refund'),
       balanceCell(b),
-      h('td', { class: 'c-desc' }, t.description, t.memo && h('span', { class: 'fin-sub' }, t.memo)),
+      h('td', { class: 'c-desc' }, t.description, subscriptionChip(t), t.memo && h('span', { class: 'fin-sub' }, t.memo)),
       h('td', { class: 'c-cat' }, categoryCell(t)),
       inEur && h('td', { class: 'c-eur' }),
       h('td', { class: 'fin-r c-act' }, h('div', { class: 'fin-row-actions' },
@@ -303,6 +303,44 @@ export function subscriptionsFound() {
   const found = findSubscriptions(groups, { today: today(), hidden: state.settings.hiddenSuggestions ?? [] });
   return withMarkedSchedules(found, state.schedules, today())
     .filter((x) => state.accounts.some((a) => a.id === x.accountId && !a.archived));
+}
+// The subscription a transaction is a charge of (same account and description, like the finder),
+// or null. Indexed once per render (render calls resetSubscriptionIndex), as it's asked for every row.
+let subIndex = null;
+export const resetSubscriptionIndex = () => { subIndex = null; };
+export function subscriptionOf(t) {
+  if (t.transferId || t.amount >= 0) return null;
+  if (!subIndex) {
+    const list = subscriptionsFound();
+    if (!list) return null; // still being worked out; the next render has it
+    subIndex = new Map(list.map((x) => [`${x.accountId}|${normalize(x.description)}`, x]));
+  }
+  return subIndex.get(`${t.accountId}|${normalize(t.description)}`) ?? null;
+}
+// A schedule's subscription: one marked as such, or the one the finder matched to it.
+export function subscriptionOfSchedule(s) {
+  if (s.kind === 'transfer') return null;
+  return subscriptionOf({ accountId: s.accountId, description: s.description, amount: -1 })
+    ?? (s.subscription ? { scheduleId: s.id, description: s.description } : null);
+}
+// A "Subscription" chip, for a transaction that's a charge of one or a schedule that is one (`s`):
+// it opens the subscription's schedule, or a new one filled in from it when it has none yet.
+export function subscriptionChip(t, s = null) {
+  const x = s ? subscriptionOfSchedule(s) : subscriptionOf(t);
+  if (!x) return null;
+  const what = (t ?? s).description;
+  return h('button', {
+    type: 'button', class: 'fin-chip fin-chip-inline fin-chip-link', 'aria-haspopup': 'dialog',
+    'aria-label': `Subscription: ${x.scheduleId ? 'edit its schedule' : 'schedule it'} (${what})`,
+    title: x.scheduleId ? 'Edit the schedule' : 'Schedule it',
+    onclick: () => openSubscriptionSchedule(x),
+  }, 'Subscription');
+}
+// Its schedule, to change it; one that isn't scheduled yet opens a new schedule filled in from it.
+export function openSubscriptionSchedule(x) {
+  const sched = x.scheduleId && state.schedules.find((y) => y.id === x.scheduleId);
+  if (sched) openScheduleDialog(sched);
+  else openScheduleDialog(null, { ...x, kind: 'expense', subscription: true });
 }
 export const subCurrency = (x) => state.accounts.find((a) => a.id === x.accountId)?.currency ?? 'EUR';
 export const subEur = (x, minor) => convert(minor, latestRate(subCurrency(x)) ?? 1);

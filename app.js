@@ -19,7 +19,7 @@ import { answers, ask, recordSnapshot, renderInsights } from './insights.js';
 import { renderIous } from './ious.js';
 import { renderOverview } from './overview.js';
 import { openPalette } from './palette.js';
-import { FORECAST_DAYS, daysFromToday, renderSchedules } from './schedules.js';
+import { FORECAST_DAYS, daysFromToday, renderSchedules, resetSubscriptionIndex } from './schedules.js';
 import { openSettings, renderSettings, renderSettingsNav } from './settings.js';
 import {
   fetchTransactions, focusTransaction, listViews, renderSearch, renderWhenIdle, selected, setDescCache,
@@ -498,6 +498,7 @@ export function render(focusKey) {
   if (view.name === 'account' && view.tx) focusTransaction();
   totalsCache = null;
   setIouByTx(null);
+  resetSubscriptionIndex();
   setHueOrder(null);
   const account = view.name === 'account' && state.accounts.find((a) => a.id === view.id);
   // On a phone, an account view without one is the Accounts page (the list); elsewhere, the first.

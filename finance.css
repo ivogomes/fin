@@ -1898,3 +1898,12 @@ input.fin-cat-add:focus { width: 10rem; border-style: solid; border-color: var(-
 label > .fin-flag { margin-right: 6px; }
 /* In a table header ("In EUR"), lined up with the column's right edge. */
 .fin-th-flag { display: inline-flex; align-items: center; gap: 6px; }
+
+/* A chip that's a button (a transaction's Subscription chip, opening its schedule). */
+.fin-chip-link { font: inherit; font-size: 11px; font-weight: 500; color: inherit; cursor: pointer; }
+.fin-chip-link:hover { background: var(--f-accent-soft); color: var(--f-accent-strong); }
+.fin-chip-link:focus-visible { outline: none; box-shadow: var(--f-ring); }
+
+/* Coming up (Overview): a card payment without a network mark gets a card icon in its place. */
+.fin-coming-card { display: inline-flex; margin-right: 8px; color: var(--f-muted); vertical-align: -3px; }
+.fin-coming-card .fin-icon { width: 18px; height: 18px; }
