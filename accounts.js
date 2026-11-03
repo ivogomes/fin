@@ -71,8 +71,8 @@ export function openAccountDialog(existing = null) {
   const sections = {
     credit: group('Credit card',
       field('Network', network), field('Credit limit', limit, 'Shows how much is left to spend.'),
-      field('Statement day', statementDay, 'Day of the month the statement closes.'),
-      field('Payment due day', dueDay, 'Day of the month it must be paid by.'),
+      field('Statement day', statementDay, 'Day of the month the statement closes. 31 means the last day of every month (30 in April, 28 or 29 in February).'),
+      field('Payment due day', dueDay, 'Day of the month it must be paid by. 31 means the last day of every month, too.'),
       field('Paid from', payFrom, 'The account the card is paid from: the payment shows there as upcoming.')),
     checking: group('Checking',
       field('Warn below', lowBalance, `Warns when what’s scheduled or due in the next ${FORECAST_DAYS} days takes the balance below this.`),

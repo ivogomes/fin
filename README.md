@@ -126,7 +126,7 @@ Two levels, like Buxfer: a category is top-level or sits under one, and is shown
 
 A credit card account can have a credit limit. It then shows what's left to spend, the limit less what's owed, with how much of the limit is used. Its Insights tab is about spending only: no income, net or savings.
 
-With a **statement day**, the card shows its latest statement: what was owed on that day (`balances_at`), less payments into the card since. With a **payment due day** and **Paid from** (the account it's paid from), what's left to pay is an upcoming payment on both accounts (and in the 30-day forecasts, and in the Overview's Coming up), with **Pay**: a transfer of that amount from the Paid from account, today. Five days before it's due, or once it's overdue, it's also an alert on the Overview.
+A day past the end of a month counts as that month's last day, so 31 means the last day of every month (30 in April, 28 or 29 in February), for both days. With a **statement day**, the card shows its latest statement: what was owed on that day (`balances_at`), less payments into the card since. With a **payment due day** and **Paid from** (the account it's paid from), what's left to pay is an upcoming payment on both accounts (and in the 30-day forecasts, and in the Overview's Coming up), with **Pay**: a transfer of that amount from the Paid from account, today. Five days before it's due, or once it's overdue, it's also an alert on the Overview.
 
 ## Charts over time
 
