@@ -103,6 +103,18 @@ export async function uploadBackup(name, bytes, { interactive = false } = {}) {
   return file;
 }
 
+// Whether Drive can be used without asking: Google keeps the permission per Google account, not per
+// browser, so after signing in with Google (login_hint) it usually answers at once. False when
+// Google would need to show its window; then a click (interactive) is needed.
+export async function canUseSilently() {
+  try { await getToken(false); return true; } catch { return false; }
+}
+
+// The Google account the backups go to: { emailAddress, displayName, photoLink }, or null.
+export async function driveAccount() {
+  try { return (await call(`${API}/about?fields=user(emailAddress,displayName,photoLink)`)).user ?? null; } catch { return null; }
+}
+
 // Forgets the permission (Google's side too), for "Disconnect".
 export async function disconnect() {
   if (token) {
