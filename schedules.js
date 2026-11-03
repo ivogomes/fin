@@ -20,7 +20,7 @@ import {
 } from './transactions.js';
 import {
   button, catLabel, dialog, field, h, icon, iconButton, input, latestRate, loader, money, readPref,
-  say, select, shortDate, signed, thisYear, tone, writePref,
+  say, select, shortDate, signed, tone, writePref,
 } from './ui.js';
 
 // ── scheduled transactions ───────────────────────────────────────────────────
@@ -154,8 +154,7 @@ export function upcomingRows(account, { cols, inEur, balance }) {
   let running = balance;
   for (const it of items) it.balance = (running += it.amount);
   const cur = account.currency;
-  const dateCell = (date, chip) => h('td', { class: 'fin-nowrap c-date' }, h('time', { datetime: date }, shortDate(date)),
-    date.slice(0, 4) != thisYear && ` ${date.slice(0, 4)}`, chip);
+  const dateCell = (date, chip) => h('td', { class: 'fin-nowrap c-date' }, h('time', { datetime: date }, shortDate(date)), chip);
   const amountCell = (amount, refund) => h('td', { class: `fin-r fin-num c-amt ${tone(amount)}` },
     refund && h('span', { class: 'fin-refund', title: 'Refund' }, icon('refund'), h('span', { class: 'fin-sr' }, 'Refund: ')),
     signed(amount, cur));
@@ -316,7 +315,6 @@ export function subscriptionsPanel() {
   const name = (x) => h('td', {}, x.description,
     h('span', { class: 'fin-sub' }, [...categoriesOf(x).map(catLabel), accountName(x.accountId)].filter(Boolean).join(' · ')));
   const find = (x) => pageLink('Find', { name: 'search', q: x.description }, 'fin-link fin-link-sm');
-  const year = (d) => (d.slice(0, 4) != thisYear ? ` ${d.slice(0, 4)}` : '');
   return h('div', {},
     h('dl', { class: 'fin-stats' },
       h('div', {}, h('dt', {}, 'A month'), h('dd', { class: 'fin-neg' }, money(monthly, 'EUR')),
@@ -346,10 +344,10 @@ export function subscriptionsPanel() {
                   `${up ? '↑' : '↓'} from ${money(x.priceChange.from, cur)} in ${new Date(`${x.priceChange.date}T00:00:00`).toLocaleDateString(undefined, { month: 'short', year: 'numeric' })}`)),
               h('td', { class: 'fin-r fin-num' }, money(subEur(x, x.monthly), 'EUR')),
               x.lastDate
-                ? h('td', { class: 'fin-nowrap' }, h('time', { datetime: x.lastDate }, shortDate(x.lastDate)), year(x.lastDate),
-                  h('span', { class: 'fin-sub' }, `${x.count} charges since ${shortDate(x.firstDate)}${year(x.firstDate)}`))
+                ? h('td', { class: 'fin-nowrap' }, h('time', { datetime: x.lastDate }, shortDate(x.lastDate)),
+                  h('span', { class: 'fin-sub' }, `${x.count} charges since ${shortDate(x.firstDate)}`))
                 : h('td', { class: 'fin-muted' }, 'Not seen yet'),
-              h('td', { class: 'fin-nowrap' }, h('time', { datetime: x.nextDate }, shortDate(x.nextDate)), year(x.nextDate),
+              h('td', { class: 'fin-nowrap' }, h('time', { datetime: x.nextDate }, shortDate(x.nextDate)),
                 x.scheduleId && h('span', { class: 'fin-sub' }, x.marked ? 'marked in its schedule' : 'scheduled')),
               h('td', { class: 'fin-r' }, h('div', { class: 'fin-actions fin-row-actions' },
                 !x.scheduleId && button('Schedule…', () => openScheduleDialog(null, { ...x, kind: 'expense', subscription: true }), 'secondary fin-btn-sm', { 'aria-label': `Schedule ${x.description}`, 'aria-haspopup': 'dialog' }),
@@ -367,8 +365,8 @@ export function subscriptionsPanel() {
         h('tbody', {}, stopped.map((x) => h('tr', {},
           name(x),
           h('td', { class: 'fin-r fin-num' }, money(x.amount, subCurrency(x)), h('span', { class: 'fin-sub' }, frequencyLabel(x).toLowerCase())),
-          h('td', { class: 'fin-nowrap' }, x.lastDate ? [h('time', { datetime: x.lastDate }, shortDate(x.lastDate)), year(x.lastDate)] : '—'),
-          h('td', { class: 'fin-nowrap' }, h('time', { datetime: x.nextDate }, shortDate(x.nextDate)), year(x.nextDate),
+          h('td', { class: 'fin-nowrap' }, x.lastDate ? [h('time', { datetime: x.lastDate }, shortDate(x.lastDate))] : '—'),
+          h('td', { class: 'fin-nowrap' }, h('time', { datetime: x.nextDate }, shortDate(x.nextDate)),
             x.marked && h('span', { class: 'fin-sub' }, 'its schedule has ended')),
           h('td', { class: 'fin-r' }, h('div', { class: 'fin-actions fin-row-actions' },
             find(x),

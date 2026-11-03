@@ -7,7 +7,7 @@ import { byName, loadHistory, refreshPrices, render, setView, state, undoable, v
 import { priceCell, symbolPicker } from './entry.js';
 import {
   button, dialog, field, h, hideAmounts, iconButton, input, latestRate, money, num, say, select,
-  shortDate, shownQty, signed, thisYear, tone,
+  shortDate, shownQty, signed, tone,
 } from './ui.js';
 
 // ── editing a holding ────────────────────────────────────────────────────────
@@ -347,7 +347,7 @@ export function lotsPanel(x) {
         h('thead', {}, h('tr', {}, ['Date', '', 'Units', 'Price', 'Fees', 'Total'].map((t, i) => h('th', { scope: 'col', class: i > 1 ? 'fin-r' : null }, t)),
           h('th', { scope: 'col' }, h('span', { class: 'fin-sr' }, 'Actions')))),
         h('tbody', {}, [...own].reverse().map((l) => h('tr', {},
-          h('td', { class: 'fin-nowrap' }, shortDate(l.date), l.date.slice(0, 4) != thisYear && ` ${l.date.slice(0, 4)}`),
+          h('td', { class: 'fin-nowrap' }, shortDate(l.date)),
           h('td', {}, h('span', { class: `fin-chip ${l.kind === 'sell' ? 'fin-chip-sell' : 'fin-chip-buy'}` }, l.kind === 'sell' ? 'Sell' : 'Buy')),
           h('td', { class: 'fin-r fin-num' }, shownQty(l.quantity)),
           h('td', { class: 'fin-r fin-num' }, money(Math.round(l.price * 100), x.currency)),

@@ -14,7 +14,7 @@ import { chartTip, lotsOfHolding, timeChart } from './holdings.js';
 import { fetchTransactions, ratesArg, renderWhenIdle } from './transactions.js';
 import {
   button, catLabel, catOptions, category, field, h, hideAmounts, icon, input, latestRate, loader,
-  money, monthLabel, num, numLocale, readPref, say, select, shortDate, shownQty, signed, thisYear,
+  money, monthLabel, num, numLocale, readPref, say, select, shortDate, shownQty, signed,
   tone, writePref,
 } from './ui.js';
 
@@ -57,7 +57,7 @@ export function periodControls(range) {
     field('Period', preset),
     custom && field('From', dateIn('from')),
     custom && field('To', dateIn('to')),
-    h('p', { class: 'fin-period-range' }, `${shortDate(range.from)} – ${shortDate(range.to)}${range.from.slice(0, 4) !== range.to.slice(0, 4) || range.to.slice(0, 4) != thisYear ? ` ${range.to.slice(0, 4)}` : ''}`));
+    h('p', { class: 'fin-period-range' }, `${shortDate(range.from)} – ${shortDate(range.to)}`));
 }
 
 // Income and spending per bucket as paired columns. One y-axis from 0; a readout above the plot
@@ -642,7 +642,7 @@ export function investmentInsights(account) {
         h('p', { class: 'fin-stat-note' }, byLots ? 'cost of the units held' : 'money moved into the account')),
       h('div', {}, h('dt', {}, 'Gain'), h('dd', { class: tone(gain) }, signed(gain, 'EUR')),
         now.investments > 0 && h('p', { class: 'fin-stat-note' }, `${gain >= 0 ? '+' : ''}${num((gain / now.investments) * 100)}%`)),
-      h('div', {}, h('dt', {}, `Change since ${shortDate(pts[0].date)}${pts[0].date.slice(0, 4) != thisYear ? ` ${pts[0].date.slice(0, 4)}` : ''}`),
+      h('div', {}, h('dt', {}, `Change since ${shortDate(pts[0].date)}`),
         h('dd', { class: tone(change) }, signed(change, 'EUR')),
         h('p', { class: 'fin-stat-note' }, 'value, including new money')),
       // Money-weighted (XIRR): money added late counts for less time. Over everything, not the period.
@@ -730,7 +730,7 @@ export function renderNetWorth() {
       periodControls(range),
       h('dl', { class: 'fin-stats' },
         h('div', {}, h('dt', {}, 'Net worth today'), h('dd', {}, money(now.total, 'EUR'))),
-        h('div', {}, h('dt', {}, `Change since ${shortDate(start.date)}${start.date.slice(0, 4) != thisYear ? ` ${start.date.slice(0, 4)}` : ''}`),
+        h('div', {}, h('dt', {}, `Change since ${shortDate(start.date)}`),
           h('dd', { class: tone(change) }, signed(change, 'EUR')),
           start.total > 0 && h('p', { class: 'fin-stat-note' }, `${change >= 0 ? '+' : ''}${num((change / start.total) * 100)}%`)),
         h('div', {}, h('dt', {}, 'Investments'), h('dd', {}, money(now.investments, 'EUR')),

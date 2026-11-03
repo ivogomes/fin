@@ -24,7 +24,7 @@ import { personName } from './ious.js';
 import { FORECAST_DAYS, daysFromToday, openScheduleDialog, upcomingRows } from './schedules.js';
 import {
   button, catLabel, catOptions, category, field, h, hueOf, icon, iconButton, input, latestRate,
-  flag, loader, money, monthLabel, num, say, select, shortDate, signed, status, thisYear, tone,
+  flag, loader, money, monthLabel, num, say, select, shortDate, signed, status, tone,
   typeSwitch,
 } from './ui.js';
 
@@ -403,7 +403,7 @@ export function txTable(rows, { caption, showBalance = false, showAccount = fals
         })),
         // Date, amount and description: click (or Enter) to change just that, in place.
         h('td', { class: 'fin-nowrap c-date' }, quickCell(t, 'date', label,
-          h('time', { datetime: t.date }, shortDate(t.date)), showAccount && t.date.slice(0, 4) != thisYear && ` ${t.date.slice(0, 4)}`)),
+          h('time', { datetime: t.date }, shortDate(t.date)))),
         h('td', { class: `fin-r fin-num c-amt ${tone(t.amount)}` }, quickCell(t, 'amount', label,
           t.kind === 'refund' && h('span', { class: 'fin-refund', title: 'Refund' }, icon('refund'), h('span', { class: 'fin-sr' }, 'Refund: ')),
           signed(t.amount, cur))),
