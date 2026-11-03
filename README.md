@@ -1,6 +1,6 @@
 # Fin
 
-Fin (*swim ahead of your money*) is a personal finance tracker to replace Buxfer: accounts in EUR or USD (converted at the daily ECB rate), credit cards and investments, rule-based categories, transfers, stock and ETF holdings with live prices, and CSV import and export. Served at `/tools/finance/`.
+Fin (*take care of your Finances*) is a personal finance tracker to replace Buxfer: accounts in EUR or USD (converted at the daily ECB rate), credit cards and investments, rule-based categories, transfers, stock and ETF holdings with live prices, and CSV import and export. Served at `/tools/finance/`.
 
 Data is stored in a Supabase project (Postgres) and you sign in with an emailed link, so the same data is available on every device. The browser keeps only the sign-in session and a few display preferences.
 

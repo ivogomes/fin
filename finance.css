@@ -83,7 +83,7 @@ body {
 /* ── Header: the tool's teal bar, with the sections as tabs ── */
 /* The tagline after the name: small and quiet, and left out where the header is tight. */
 .fin-tagline { align-self: flex-end; margin-bottom: 1px; font-size: 13px; font-weight: 400; opacity: 0.75; white-space: nowrap; }
-.fin-tagline-screen { margin: 4px 0 0; color: var(--f-muted); font-style: italic; }
+.fin-tagline-screen { margin: 2px 0 0; color: var(--f-muted); font-style: italic; }
 @media (max-width: 64rem) { .fin-tagline { display: none; } }
 .tool-header { min-height: 64px; padding-block: 10px; }
 .fin-nav {
@@ -592,6 +592,63 @@ textarea.fin-input { resize: vertical; }
 .fin-welcome { max-width: 32rem; padding-top: 48px; }
 .fin-welcome .fin-empty { margin: 8px 0 20px; font-size: 15px; }
 .fin-signin { display: flex; flex-direction: column; gap: 14px; max-width: 24rem; margin-top: 20px; }
+
+/* Sign-in and the other screens before the app: a card centred on the page, over a sea of fins. */
+.fin-layout--solo .fin-main { max-width: none; padding: 0; }
+.fin-screen {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-height: calc(100dvh - 64px);
+  padding: 32px 16px 168px; /* room for the sea */
+  overflow: hidden;
+  background: linear-gradient(to bottom, var(--f-bg) 40%, color-mix(in srgb, var(--f-wave) 14%, var(--f-bg)));
+}
+.fin-screen-card {
+  position: relative;
+  z-index: 1;
+  width: min(26rem, 100%);
+  padding: 28px;
+  border: 1px solid var(--f-border);
+  border-radius: 20px;
+  background: var(--f-surface);
+  box-shadow: var(--f-shadow-lg);
+  text-align: center;
+}
+.fin-screen-card > * { text-align: left; }
+.fin-screen-card > .fin-tagline-screen { text-align: center; }
+.fin-screen-card .fin-title { margin: 6px 0 0; font-size: 22px; }
+.fin-screen-card .fin-empty { margin: 6px 0 0; font-size: 14px; }
+.fin-screen-card .fin-signin { max-width: none; }
+.fin-screen-card .fin-signin .fin-btn { justify-content: center; }
+.fin-screen-card .fin-title, .fin-screen-card > .fin-empty, .fin-screen-card > .fin-error { text-align: center; }
+.fin-screen-card > .fin-btn { display: flex; margin: 18px auto 0; }
+
+.fin-sea { position: absolute; left: 0; right: 0; bottom: 0; width: 100%; height: 200px; pointer-events: none; }
+.fin-sea-wave-1 { opacity: 0.35; animation: fin-roll-sea 9s linear infinite reverse; }
+.fin-sea-wave-2 { opacity: 0.6; animation: fin-roll-sea-2 6s linear infinite; }
+.fin-sea-wave-3 { opacity: 1; animation: fin-roll-sea-3 4.5s linear infinite reverse; }
+.fin-far { opacity: 0.5; animation: fin-bob 3.4s ease-in-out infinite; }
+.fin-far-2 { animation-delay: -1.2s; }
+/* The big fin cruises across the whole width, then comes round again. */
+.fin-cruise { animation: fin-cruise 22s linear infinite; }
+@keyframes fin-roll-sea { to { transform: translateX(-120px); } }
+@keyframes fin-roll-sea-2 { to { transform: translateX(-160px); } }
+@keyframes fin-roll-sea-3 { to { transform: translateX(-200px); } }
+@keyframes fin-cruise {
+  0% { transform: translate(-90px, 6px) rotate(-2deg); }
+  50% { transform: translate(600px, 0) rotate(1deg); }
+  100% { transform: translate(1290px, 6px) rotate(-2deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .fin-sea-wave-1, .fin-sea-wave-2, .fin-sea-wave-3, .fin-far { animation: none; }
+  .fin-cruise { animation: none; transform: translate(760px, 2px); }
+}
+@media (max-width: 40rem) {
+  .fin-screen { padding: 20px 12px 140px; align-items: start; }
+  .fin-sea { height: 150px; }
+  .fin-screen-card { padding: 22px 20px 24px; }
+}
 .fin-signin .fin-hint:empty, .fin-signin .fin-error:empty { display: none; }
 
 /* A set of radio choices as small cards (Settings → Display). */

@@ -266,7 +266,9 @@ function wavePath(x0, x1, y, period, height, bottom) {
   for (let x = x0, up = true; x < x1; x += period / 2, up = !up) d += `q${period / 4} ${up ? -height : height} ${period / 2} 0`;
   return `${d}V${bottom}H${x0}Z`;
 }
-const FIN_SHAPE = 'M0 26Q7 5 24 0Q17 9 20 26Z'; // the logo's fin, 24 wide and 26 tall
+// The logo's fin, 24 wide and 26 tall, facing right: the tip leans back to the left, so it swims
+// forward as the animations move it rightwards (the logo's own faces the other way; it stays still).
+const FIN_SHAPE = 'M24 26Q17 5 0 0Q7 9 4 26Z';
 
 // Opening a page: a fin circling across the middle of the screen (gliding along, diving at the
 // edge, surfacing on the other side), with a joke under the message that changes every few seconds.
@@ -5396,9 +5398,30 @@ function setShell(signedIn) {
   document.querySelectorAll('[data-nav], #sync, #fab, #side-toggle, #hide-amounts, #cmd-open').forEach((el) => { el.hidden = !signedIn; });
 }
 
+// The screens before the app (sign in, check your email, setup, a loading error): a card in the
+// middle of the page (the header has the logo), on a sea along the bottom with fins in it.
 function screen(title, ...body) {
   setShell(false);
-  main.replaceChildren(h('div', { class: 'fin-welcome' }, h('h2', { class: 'fin-title', tabindex: '-1', id: 'screen-h' }, title), ...body));
+  main.replaceChildren(h('div', { class: 'fin-screen' },
+    h('div', { class: 'fin-screen-card' },
+      h('p', { class: 'fin-tagline-screen' }, 'Take care of your Finances'),
+      h('h2', { class: 'fin-title', tabindex: '-1', id: 'screen-h' }, title), ...body),
+    seaScene()));
+}
+
+// The sea along the bottom of those screens (decoration): three rolling waves, two small fins far
+// off on the back one, and a big one cruising across on the middle one. Still when motion is reduced.
+function seaScene() {
+  const W = 1200;
+  const fin = (x, scale, cls) => svgEl('g', { transform: `translate(${x} 0)` },
+    svgEl('g', { class: cls }, svgEl('path', { d: FIN_SHAPE, class: 'fin-shape', transform: `scale(${scale})` })));
+  return svgEl('svg', { class: 'fin-sea', viewBox: `0 0 ${W} 200`, preserveAspectRatio: 'xMidYMax slice', 'aria-hidden': 'true' },
+    svgEl('g', { class: 'fin-sea-back' },
+      svgEl('g', { transform: 'translate(0 70)' }, fin(260, 0.9, 'fin-far fin-far-1'), fin(880, 0.7, 'fin-far fin-far-2')),
+      svgEl('path', { d: wavePath(-240, W + 240, 92, 120, 8, 200), class: 'fin-wave fin-sea-wave fin-sea-wave-1' })),
+    svgEl('g', { transform: 'translate(0 76)' }, svgEl('g', { class: 'fin-cruise' }, svgEl('path', { d: FIN_SHAPE, class: 'fin-shape', transform: 'scale(2.6)' }))),
+    svgEl('path', { d: wavePath(-240, W + 240, 136, 160, 10, 200), class: 'fin-wave fin-sea-wave fin-sea-wave-2' }),
+    svgEl('path', { d: wavePath(-240, W + 240, 168, 200, 7, 200), class: 'fin-wave fin-sea-wave fin-sea-wave-3' }));
 }
 
 function renderSetupNeeded() {
@@ -5409,8 +5432,7 @@ function renderSetupNeeded() {
 function renderSignIn(message) {
   const email = input({ type: 'email', required: true, autocomplete: 'email' });
   const note = h('p', { class: message ? 'fin-error' : 'fin-hint', role: message ? 'alert' : null }, message ?? '');
-  screen('Sign in',
-    h('p', { class: 'fin-tagline-screen' }, 'Fin · Swim ahead of your money'),
+  screen('Sign in to Fin',
     h('p', { class: 'fin-empty' }, 'We’ll email you a link. Open it on this device to sign in. No password needed.'),
     h('form', {
       class: 'fin-signin',
