@@ -16,7 +16,7 @@ import {
 import { colorDot, counted, mainAccount, openAccountDialog, renderAccount, renderWelcome } from './accounts.js';
 import { adoptGoogleDrive, backupBanner, backupToDrive, driveBackupDue, driveOn } from './backups.js';
 import { openTxDialog } from './entry.js';
-import { answers, ask, netWorthSinceYesterday, recordSnapshot, renderInsights } from './insights.js';
+import { answers, ask, recordSnapshot, renderInsights, sinceYesterday } from './insights.js';
 import { renderIous } from './ious.js';
 import { renderOverview } from './overview.js';
 import { openPalette } from './palette.js';
@@ -28,7 +28,7 @@ import {
 } from './transactions.js';
 import {
   FIN_SHAPE, button, field, h, hideAmounts, icon, input, isPhone, latestRate, main, money,
-  pageLoader, readPref, say, setHideAmountsValue, setHueOrder, side, signed, svgEl, tone, wavePath,
+  pageLoader, readPref, say, setHideAmountsValue, setHueOrder, side, svgEl, tone, wavePath,
   writePref,
 } from './ui.js';
 
@@ -289,8 +289,9 @@ export function netWorthNow() {
 
 export function renderSide() {
   const nw = netWorthNow();
-  const day = state.accounts.length ? netWorthSinceYesterday() : undefined;
-  const dayText = day == null ? '' : day === 0 ? 'no change since yesterday' : `${signed(day, 'EUR')} since yesterday`;
+  const since = sinceYesterday();
+  const day = since?.day;
+  const dayText = since?.text ?? '';
   return [
     // The net-worth card opens its own page (net worth over time and by account type), with how it
     // changed since yesterday under the figure.

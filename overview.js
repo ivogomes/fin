@@ -8,7 +8,7 @@ import {
   state, urlOf, usageBar,
 } from './app.js';
 import { backupToDrive, driveBackupDue, driveFailed, driveOn } from './backups.js';
-import { insightsFor, transactionsLoaded } from './insights.js';
+import { insightsFor, sinceYesterday, transactionsLoaded } from './insights.js';
 import {
   daysFromToday, deleteScheduled, dueLabel, enterScheduled, scheduleAccounts, scheduleSuggestions,
   skipScheduled, subEur, subscriptionChip, subscriptionsFound,
@@ -43,6 +43,7 @@ export function renderOverview() {
   const r = insightsFor({ from: monthStart, to: now }, null);
   const p = insightsFor({ from: prevStart, to: prevEnd }, null);
   const nw = netWorthNow();
+  const since = sinceYesterday();
   const lastMonth = new Date(`${prevStart}T00:00:00`).toLocaleDateString(undefined, { month: 'long' });
   const sameDays = `${lastMonth} 1–${Number(prevEnd.slice(8, 10))}`;
   const vsLast = (a, b) => (!b ? `nothing by this day in ${lastMonth}` : (() => {
@@ -59,6 +60,9 @@ export function renderOverview() {
       alertsBox(overviewAlerts()),
       h('dl', { class: 'fin-stats' },
         h('div', { class: `fin-stat-key${nw.total < 0 ? ' is-neg' : ''}` }, h('dt', {}, 'Net worth'), h('dd', { class: tone(nw.total) }, money(nw.total, 'EUR')),
+          // How it changed since yesterday, as on the side panel's card.
+          since && h('p', { class: `fin-stat-note fin-stat-day ${tone(since.day)}` },
+            since.day !== 0 && h('span', { 'aria-hidden': 'true' }, since.day > 0 ? '▲ ' : '▼ '), since.text),
           h('p', { class: 'fin-stat-note' }, nw.unconverted ? `${nw.unconverted} account(s) waiting for exchange rates` : 'across your open accounts, in EUR')),
         h('div', {}, h('dt', {}, 'Spent this month'), h('dd', { class: 'fin-neg' }, r ? money(r.expenses, 'EUR') : '…'),
           h('p', { class: 'fin-stat-note' }, r && p ? vsLast(r.expenses, p.expenses) : 'working it out…')),

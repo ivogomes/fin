@@ -713,6 +713,12 @@ export function netWorthSinceYesterday() {
   }).points;
   return now.total - before.total;
 }
+// The same, said: { day, text }, or null while it's worked out (or with no accounts).
+export function sinceYesterday() {
+  const day = state.accounts.length ? netWorthSinceYesterday() : undefined;
+  if (day == null) return null;
+  return { day, text: day === 0 ? 'no change since yesterday' : `${signed(day, 'EUR')} since yesterday` };
+}
 
 // The Net worth tab of Insights (without the page's heading).
 export function renderNetWorth() {
