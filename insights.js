@@ -600,7 +600,8 @@ export function investmentInsights(account) {
   const dividendsReady = transactionsLoaded('dividends', '&kind=eq.dividend');
   const movesReady = byLots || transactionsLoaded(`account:${account.id}`, `&account_id=eq.${encodeURIComponent(account.id)}`);
   if (!runs || !paidIn || !dividendsReady || !movesReady) return h('div', { class: 'fin-insights' }, periodControls(range), loader('Working out the history…'));
-  const hist = netWorthHistory({ ...state, accounts: [account] }, { from: range.from, to, today: today(), holdingsValue: holdingsValueEUR, rateOf, runs: runMap(runs), estimate: estimateOpts });
+  // This account alone: not the assets, which would otherwise come along with the rest of the state.
+  const hist = netWorthHistory({ ...state, accounts: [account], assets: [] }, { from: range.from, to, today: today(), holdingsValue: holdingsValueEUR, rateOf, runs: runMap(runs), estimate: estimateOpts });
   const invested = investedHistory(account, state, dates, rateOf, runMap(paidIn).get(account.id) ?? { values: [] });
   const pts = hist.points.map((p, i) => ({ key: p.key, date: p.date, total: p.total, investments: invested[i] }));
   const now = pts.at(-1);
