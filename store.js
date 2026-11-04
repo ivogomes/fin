@@ -102,6 +102,24 @@ const TABLES = {
     to: (x) => ({ id: x.date, date: x.date, values: x.values }),
     from: (r) => ({ id: r.id, date: r.date, values: r.values ?? {} }),
   },
+  // A home, a vehicle… (model.js, Assets): valued from valuations, apart from the accounts.
+  assets: {
+    to: (x, i) => ({
+      id: x.id, name: x.name, kind: x.kind, currency: x.currency, purchase_price: x.purchasePrice ?? null, bought_on: x.boughtOn ?? null,
+      value_change: x.valueChange ?? null, value_floor: x.valueFloor ?? null, valuations: x.valuations ?? [],
+      sold_on: x.soldOn ?? null, exclude_totals: Boolean(x.excludeTotals), position: i,
+    }),
+    from: (r) => {
+      const x = { id: r.id, name: r.name, kind: r.kind, currency: r.currency, valuations: (r.valuations ?? []).map((v) => ({ date: v.date, value: Number(v.value) })) };
+      if (r.purchase_price != null) x.purchasePrice = Number(r.purchase_price);
+      if (r.bought_on) x.boughtOn = r.bought_on;
+      if (r.value_change != null) x.valueChange = Number(r.value_change);
+      if (r.value_floor != null) x.valueFloor = Number(r.value_floor);
+      if (r.sold_on) x.soldOn = r.sold_on;
+      if (r.exclude_totals) x.excludeTotals = true;
+      return x;
+    },
+  },
   transactions: {
     to: (t) => ({
       id: t.id, account_id: t.accountId, date: t.date, description: t.description, amount: t.amount,
@@ -119,10 +137,10 @@ const TABLES = {
   },
 };
 // Parents before children when saving; children before parents when deleting.
-const ORDER = ['categories', 'accounts', 'people', 'rules', 'holdings', 'lots', 'schedules', 'transactions', 'ious', 'snapshots'];
+const ORDER = ['categories', 'accounts', 'people', 'rules', 'holdings', 'lots', 'schedules', 'transactions', 'ious', 'snapshots', 'assets'];
 // Tables added after the first release. If the database doesn't have one yet (schema.sql not
 // re-run), the app still loads and simply doesn't save that table.
-const OPTIONAL = new Set(['schedules', 'people', 'ious', 'snapshots', 'lots']);
+const OPTIONAL = new Set(['schedules', 'people', 'ious', 'snapshots', 'lots', 'assets']);
 const missing = new Set();
 export const missingTables = () => [...missing];
 
@@ -191,6 +209,8 @@ export async function load({ allTransactions: everything = false, today, until }
   state.transactions.forEach((t) => fromDb.add(t.id));
   state.rules = rows[ORDER.indexOf('rules')]
     .sort((a, b) => a.position - b.position).map(TABLES.rules.from);
+  state.assets = rows[ORDER.indexOf('assets')]
+    .sort((a, b) => (a.position ?? 0) - (b.position ?? 0)).map(TABLES.assets.from);
   const s = settingsRows[0] ?? {};
   state.settings = {
     quoteApiKey: s.quote_api_key ?? '', avApiKey: s.av_api_key ?? '', eodhdApiKey: s.eodhd_api_key ?? '', lastAccountId: s.last_account_id ?? undefined,

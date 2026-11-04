@@ -21,6 +21,7 @@ Data is stored in a Supabase project (Postgres) and you sign in with Google or a
 | `imports.js` | Imports (CSV, Buxfer, holdings, rules) and CSV export. |
 | `backups.js` | Backups: download, restore, Google Drive. |
 | `palette.js` | Go to (Ctrl/⌘+K). |
+| `assets.js` | Assets: a home, vehicles and other things of value, their dashboard, valuations and value over time. |
 | `theme.js` | Applies the picked appearance (light, dark or the system's) before the page is drawn. |
 | `model.js` | Pure logic: money in cents, categories by rule, balances, transfers, net worth, CSV parsing and import mapping. No DOM, no I/O. |
 | `model.test.mjs` | The spec for `model.js`. |
@@ -166,6 +167,14 @@ An investment account's Insights tab shows its value against the money invested 
 **Price history:** an investment account's Insights has **Load price history**: weekly closing prices per holding (Alpha Vantage for non-US exchanges, Twelve Data for US ones; one lookup each), kept in `holdings.price_history` and refreshed weekly after that. With it, past values use each week's close instead of the last trade price.
 
 **Insights comparisons:** income and spending are compared with the period of the same length just before (this year against last year), and the **Spending on a category** card shows one category (with its children) over the period against the previous one.
+
+## Assets
+
+**Assets** in the header (under **More** on a phone) is a dashboard for a home, vehicles and anything else of value, kept apart from the accounts (`assets.js`, the `assets` table). At the top: what they're worth together in EUR, what they were bought for and the gain since, and how much of it counts in net worth. Then a card for each: its value, saying when it's an estimate and from what; what it was bought for and the gain or loss; an **In net worth** switch among its actions; its **value over time** as a chart, green while above where it started and red below, with the purchase price as a dashed line; and its **valuations**, to add (a date and what it was worth: an appraisal, a price seen for one like it, an insurance value) or remove, with Undo. **Add asset** asks for a name, the kind (home, vehicle or other), currency, its value today and/or what it was bought for and when, and optionally its yearly change and lowest value; **Edit** also sets when it was sold (it then moves under Sold).
+
+Between valuations, an asset's value is estimated from the latest (the purchase price counts as the first) at its **yearly change**, compounding: +2% a year for a home, −15% for a vehicle and 0% for other things unless it has its own; a falling value stops at its **lowest value** (`assetValue` in `model.js`). An asset not valued for over a year gets a Heads up alert on the Overview.
+
+Each asset counts in net worth unless its card's **In net worth** switch is off (a car you don't think of as wealth, say); the Net worth page's Assets card says how many count. The Net worth page shows **Net worth today** (what counts in totals, pensions and assets included) and **Within reach** (without pensions or assets), both from the same point of its history, and net worth over time. When some accounts or assets are left out of totals, **Count everything** (remembered in this browser) adds them back for a **total worth**: the figures, the chart and the by-type list then count everything, without changing what's left out elsewhere. Net worth over time values each asset on each date the same way, and the by-type list shows them as one more line. `schema.sql` creates the `assets` table.
 
 ## Net worth
 

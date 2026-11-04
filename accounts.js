@@ -335,7 +335,7 @@ export function alertsBox(list, { label = 'Heads up' } = {}) {
   if (!list.length) return null;
   return h('section', { class: 'fin-alerts', 'aria-label': label },
     h('ul', {}, list.map((al) => h('li', { class: `fin-alert fin-alert--${al.level}` },
-      h('span', { class: 'fin-alert-icon' }, icon({ due: 'clock', overdue: 'clock', recurring: 'repeat', stopped: 'pause', backup: 'cloud' }[al.level] ?? 'warn')),
+      h('span', { class: 'fin-alert-icon' }, icon({ due: 'clock', overdue: 'clock', recurring: 'repeat', stopped: 'pause', backup: 'cloud', revalue: 'asset-home' }[al.level] ?? 'warn')),
       h('span', { class: 'fin-alert-text' }, al.text),
       al.action,
       al.pay && button(al.pay.from ? 'Pay…' : 'Set where it’s paid from', () => payCard(al.pay), 'secondary fin-btn-sm',

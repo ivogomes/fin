@@ -1,7 +1,7 @@
 // The Overview: where things stand, alerts, what's coming up, this month's spending, credit cards.
 
 import { today } from './market.js';
-import { REFUNDS_UNMATCHED, frequencyLabel, occurrences } from './model.js';
+import { REFUNDS_UNMATCHED, assetValuations, frequencyLabel, occurrences } from './model.js';
 import { accountAlerts, alertsBox, cardPayments, payCard, renderWelcome, statementOf } from './accounts.js';
 import {
   accountValue, byName, cardMark, limitUse, netWorthNow, quickAdd, render, selectAccount, setView,
@@ -208,7 +208,17 @@ export function overviewAlerts() {
       action: button('Stop the schedule', () => deleteScheduled(sched), 'secondary fin-btn-sm', { 'aria-label': `Stop the schedule of ${x.description}` }),
     };
   });
-  return [...overdue, ...accountAlerts(), driveAlert(), ...stopped, recurringAlert()].filter(Boolean);
+  // An asset not valued for over a year: its value since is an estimate, worth checking.
+  const revalue = state.assets.filter((x) => !x.soldOn).flatMap((x) => {
+    const last = assetValuations(x).at(-1);
+    if (!last || days(last.date) < 365) return [];
+    return [{
+      level: 'revalue',
+      text: `${x.name} was last valued on ${shortDate(last.date)}${last.bought ? ' (its purchase)' : ''}; what it’s worth since is an estimate.`,
+      action: button('Value it', () => { setView({ name: 'assets' }); render(); }, 'secondary fin-btn-sm', { 'aria-label': `Value ${x.name} now` }),
+    }];
+  });
+  return [...overdue, ...accountAlerts(), driveAlert(), ...stopped, ...revalue, recurringAlert()].filter(Boolean);
 }
 
 // Today's backup to Google Drive didn't go through when Fin opened (Google needed you to confirm,

@@ -2,6 +2,7 @@
 
 import { ACCOUNT_TYPE_LABELS, normalize } from './model.js';
 import { openAccountDialog } from './accounts.js';
+import { openAssetDialog } from './assets.js';
 import {
   accountValue, byName, quickAdd, render, selectAccount, setHideAmounts, setView, state, view,
 } from './app.js';
@@ -33,6 +34,7 @@ export function paletteItems(query) {
     { group: 'Pages', label: 'Subscriptions', words: 'recurring netflix spotify streaming cancel', run: go({ name: 'scheduled', tab: 'subscriptions' }) },
     { group: 'Pages', label: 'Insights: income and spending', words: 'charts categories budget', run: go({ name: 'insights' }) },
     { group: 'Pages', label: 'Insights: net worth', words: 'wealth history allocation', run: go({ name: 'insights', tab: 'networth' }) },
+    { group: 'Pages', label: 'Assets', words: 'home house car vehicle property value', run: go({ name: 'assets' }) },
     { group: 'Pages', label: 'IOUs', words: 'loans owe people friends', run: go({ name: 'ious' }) },
   );
   for (const a of [...state.accounts].sort((x, y) => (x.archived - y.archived) || byName(x, y))) {
@@ -49,6 +51,7 @@ export function paletteItems(query) {
     } },
     { group: 'Actions', label: 'Add an account', words: 'new card bank', run: () => openAccountDialog() },
     { group: 'Actions', label: 'Schedule a transaction', words: 'new recurring repeat', run: () => openScheduleDialog() },
+    { group: 'Actions', label: 'Add an asset', words: 'new home house car vehicle property', run: () => openAssetDialog() },
     { group: 'Actions', label: hideAmounts ? 'Show amounts' : 'Hide amounts', words: 'privacy mask', run: () => setHideAmounts(!hideAmounts) },
   );
   for (const page of SETTINGS_PAGES) {

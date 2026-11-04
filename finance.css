@@ -320,6 +320,7 @@ body {
 .fin-group--credit { --tint-bg: #FDECE1; --tint-ink: #9E4719; }
 .fin-group--investment { --tint-bg: #EFE9FB; --tint-ink: #5B3FA6; }
 .fin-group--savings { --tint-bg: #E2F0F1; --tint-ink: #0F5E6B; }
+.fin-group--assets { --tint-bg: #FDECE1; --tint-ink: #9E4719; }
 @media (prefers-color-scheme: dark) {
   :where(:root:not([data-theme="light"])) .fin-group { --tint-bg: rgb(160 175 185 / 0.16); --tint-ink: #BAC6CD; }
   :where(:root:not([data-theme="light"])) .fin-group--cash { --tint-bg: rgb(90 200 130 / 0.16); --tint-ink: #93DDAE; }
@@ -327,6 +328,7 @@ body {
   :where(:root:not([data-theme="light"])) .fin-group--credit { --tint-bg: rgb(245 150 90 / 0.16); --tint-ink: #F5B78F; }
   :where(:root:not([data-theme="light"])) .fin-group--investment { --tint-bg: rgb(160 130 240 / 0.18); --tint-ink: #C7B5F6; }
   :where(:root:not([data-theme="light"])) .fin-group--savings { --tint-bg: rgb(91 191 181 / 0.16); --tint-ink: #8AD8CF; }
+  :where(:root:not([data-theme="light"])) .fin-group--assets { --tint-bg: rgb(245 150 90 / 0.16); --tint-ink: #F5B78F; }
 }
 :where(:root[data-theme="dark"]) .fin-group { --tint-bg: rgb(160 175 185 / 0.16); --tint-ink: #BAC6CD; }
 :where(:root[data-theme="dark"]) .fin-group--cash { --tint-bg: rgb(90 200 130 / 0.16); --tint-ink: #93DDAE; }
@@ -334,6 +336,7 @@ body {
 :where(:root[data-theme="dark"]) .fin-group--credit { --tint-bg: rgb(245 150 90 / 0.16); --tint-ink: #F5B78F; }
 :where(:root[data-theme="dark"]) .fin-group--investment { --tint-bg: rgb(160 130 240 / 0.18); --tint-ink: #C7B5F6; }
 :where(:root[data-theme="dark"]) .fin-group--savings { --tint-bg: rgb(91 191 181 / 0.16); --tint-ink: #8AD8CF; }
+:where(:root[data-theme="dark"]) .fin-group--assets { --tint-bg: rgb(245 150 90 / 0.16); --tint-ink: #F5B78F; }
 
 .fin-group-head {
   display: flex;
@@ -1572,6 +1575,8 @@ input.fin-cat-add:focus { width: 10rem; border-style: solid; border-color: var(-
 /* Small segmented choice inside a card (allocation by holding or currency). */
 .fin-tabs.fin-tabs-sm { margin: 0; border-bottom: 0; }
 .fin-tabs-sm .fin-tab { padding: 4px 10px; font-size: 13px; }
+/* Net worth: Count everything (also what's left out of totals), under the period. */
+.fin-nw-all { margin-top: 14px; }
 
 /* ── Overview ─────────────────────────────────────────── */
 .fin-overview .fin-stats { margin-top: 20px; }
@@ -1992,3 +1997,36 @@ label > .fin-flag { margin-right: 6px; }
 /* Coming up (Overview): a card payment without a network mark gets a card icon in its place. */
 .fin-coming-card { display: inline-flex; margin-right: 8px; color: var(--f-muted); vertical-align: -3px; }
 .fin-coming-card .fin-icon { width: 18px; height: 18px; }
+
+/* Assets page: a card per asset (its kind's icon and name, figures, value over time, valuations). */
+.fin-asset-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
+.fin-asset-title { display: flex; align-items: center; gap: 10px; margin: 0; font-size: 17px; font-weight: 600; }
+.fin-asset-head .fin-meta { margin: 0 auto 0 0; }
+.fin-asset-icon { --tint-bg: #FDECE1; --tint-ink: #9E4719; }
+.fin-asset-icon--vehicle { --tint-bg: #E6EEFB; --tint-ink: #2A4F9E; }
+.fin-asset-icon--other { --tint-bg: #ECEFF1; --tint-ink: #44535D; }
+@media (prefers-color-scheme: dark) {
+  :where(:root:not([data-theme="light"])) .fin-asset-icon { --tint-bg: rgb(245 150 90 / 0.16); --tint-ink: #F5B78F; }
+  :where(:root:not([data-theme="light"])) .fin-asset-icon--vehicle { --tint-bg: rgb(110 150 240 / 0.18); --tint-ink: #A9C2F7; }
+  :where(:root:not([data-theme="light"])) .fin-asset-icon--other { --tint-bg: rgb(160 175 185 / 0.16); --tint-ink: #BAC6CD; }
+}
+:where(:root[data-theme="dark"]) .fin-asset-icon { --tint-bg: rgb(245 150 90 / 0.16); --tint-ink: #F5B78F; }
+:where(:root[data-theme="dark"]) .fin-asset-icon--vehicle { --tint-bg: rgb(110 150 240 / 0.18); --tint-ink: #A9C2F7; }
+:where(:root[data-theme="dark"]) .fin-asset-icon--other { --tint-bg: rgb(160 175 185 / 0.16); --tint-ink: #BAC6CD; }
+.fin-asset-stats { margin: 0; padding: 0 20px; }
+.fin-asset-chart { padding-top: 4px; }
+/* Its "In net worth" switch, among its actions: a pill the size of the buttons beside it. */
+.fin-asset-switch { min-height: 32px; padding: 4px 12px 4px 10px; border: 1px solid var(--f-border-strong); border-radius: 999px; font-weight: 500; }
+.fin-asset-switch input { left: 10px; top: 50%; transform: translateY(-50%); }
+.fin-asset-switch.is-on { border-color: var(--f-accent); color: var(--f-accent-strong); }
+.fin-asset-switch:hover { border-color: var(--f-accent); }
+.fin-asset.is-sold { opacity: 0.75; }
+.fin-valuations-wrap { border-top: 1px solid var(--f-border); }
+.fin-valuations-wrap > summary { padding: 12px 20px; font-size: 13px; font-weight: 500; color: var(--f-muted); cursor: pointer; }
+.fin-valuations-wrap > summary:hover { color: var(--f-text); }
+/* An asset's valuations: date, a note (its purchase), value, remove. */
+.fin-valuations { margin: 0; padding: 0 20px 4px; list-style: none; }
+.fin-valuations li { display: grid; grid-template-columns: 7rem minmax(0, 1fr) auto 32px; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--f-border); font-size: 14px; }
+.fin-valuations li:last-child { border-bottom: 0; }
+.fin-valuations .fin-num { text-align: right; }
+.fin-valuation-form { padding: 14px 20px 18px; border-top: 1px solid var(--f-border); }

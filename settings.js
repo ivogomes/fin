@@ -208,7 +208,7 @@ export function deleteAllSection() {
   const alsoCats = h('input', { type: 'checkbox', id: 'del-cats' });
   const confirmIn = input({ type: 'text', autocomplete: 'off', spellcheck: 'false', 'aria-describedby': 'del-hint' });
   const go = button('Delete all data', async () => {
-    const tables = ['accounts', 'transactions', 'holdings', 'lots', 'schedules', 'people', 'ious', 'snapshots', ...(alsoCats.checked ? ['categories', 'rules'] : [])];
+    const tables = ['accounts', 'transactions', 'holdings', 'lots', 'schedules', 'people', 'ious', 'snapshots', 'assets', ...(alsoCats.checked ? ['categories', 'rules'] : [])];
     go.disabled = true;
     say('Deleting…');
     try {

@@ -2,6 +2,7 @@ import {
   SignedOut, completeSignIn, configured, currentUser, rpc, selectAll, sendSignInLink,
   signInWithGoogle, signOut,
 } from './cloud.js';
+import { assetsInEur, countedAssets, renderAssets } from './assets.js';
 import { driveConfigured, renderGoogleButton } from './drive.js';
 import {
   FUND_MIC, alphaVantageCovers, fetchHistory, fetchQuote, fetchQuoteAV, fetchRate, fetchRateRange,
@@ -39,7 +40,7 @@ export let state = null;
 // ?account= for the last account opened. Going to another section loads that page, so its data is
 // fresh; within a page (accounts, settings pages) it's instant.
 export const BASE_PATH = '/tools/finance/';
-export const PAGES = ['overview', 'search', 'scheduled', 'insights', 'ious', 'settings'];
+export const PAGES = ['overview', 'search', 'scheduled', 'insights', 'assets', 'ious', 'settings'];
 export const sectionOf = (v) => (v.name === 'account' ? 'accounts' : v.name);
 export function urlOf(v) {
   const q = new URLSearchParams();
@@ -283,6 +284,9 @@ export function netWorthNow() {
     if (rate == null) nw.unconverted += 1;
     else nw.total += convert(accountValue(a), rate);
   }
+  // Assets (a home, vehicles…) that count, at what they're worth today.
+  nw.assets = assetsInEur(countedAssets());
+  nw.total += nw.assets;
   return nw;
 }
 
@@ -511,7 +515,7 @@ export function render(focusKey) {
   });
   const inSettings = view.name === 'settings';
   // The More tab stands for the sections in its menu.
-  moreBtn.classList.toggle('is-on', ['scheduled', 'ious', 'settings'].includes(view.name));
+  moreBtn.classList.toggle('is-on', ['assets', 'scheduled', 'ious', 'settings'].includes(view.name));
   document.body.dataset.view = view.name; // phones show the side panel's button only in Settings
   // The panel's button is for the panel; on a phone it isn't used (Accounts and Settings are lists).
   sideToggle.hidden = isPhone();
@@ -532,6 +536,7 @@ export function render(focusKey) {
         : view.name === 'ious' ? renderIous()
           : view.name === 'search' ? renderSearch()
           : view.name === 'insights' ? renderInsights()
+          : view.name === 'assets' ? renderAssets()
         : view.name === 'account' && isPhone() && !view.id ? accountsPage()
         : current ? h('div', {}, backToAccounts(), renderAccount(current)) : renderWelcome());
   // The address follows what's shown (an account, a settings page…), so reloading stays there.

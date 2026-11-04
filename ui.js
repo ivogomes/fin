@@ -178,6 +178,10 @@ export const ICONS = {
   'type-credit': ['M3 6h18v12H3Z', 'M3 10h18', 'M7 14.5h4'],
   'type-investment': ['M3 17l6-6 4 4 8-8', 'M15 7h6v6'],
   'type-savings': ['M5 7.5c0-1.4 3.1-2.5 7-2.5s7 1.1 7 2.5-3.1 2.5-7 2.5-7-1.1-7-2.5Z', 'M5 7.5v4.5c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5V7.5', 'M5 12v4.5C5 17.9 8.1 19 12 19s7-1.1 7-2.5V12'],
+  // Assets, by kind
+  'asset-home': ['M4 10.5 12 4l8 6.5V20H4Z', 'M9.5 20v-5.5h5V20'],
+  'asset-vehicle': ['M5 16.5V12l1.8-4.2A2 2 0 0 1 8.6 6.5h6.8a2 2 0 0 1 1.8 1.3L19 12v4.5', 'M4 12h16v4.5H4Z', 'M7.5 16.5V19M16.5 16.5V19', 'M7.5 14.2h.01M16.5 14.2h.01'],
+  'asset-other': ['M4 8.5 12 4l8 4.5v7L12 20l-8-4.5Z', 'M4 8.5 12 13l8-4.5', 'M12 13v7'],
   'type-archived': ['M3 5h18v4H3Z', 'M5 9v10h14V9', 'M10 13h4'],
 };
 export function icon(name) {

@@ -7,7 +7,7 @@ import {
   crossConvert, batchRow, makeTransfer,
   parseCsv, toCsv, parseAmount, parseDate, guessDateFormat, guessDecimal, guessMapping, importRows,
   findTransferPairs, findDuplicates, detectBuxferFile, buxferImport, isFundMovements, fundMovementsToFt,
-  categoryPath, categoryResolver, categoriesOf, sortedCategories, searchCategories,
+  categoryPath, categoryResolver, categoriesOf, sortedCategories, searchCategories, assetValue, assetValuations,
   parseBuxferIou, iouSign, iouType, personBalances, personHistory,
   periodRange, granularity, insights, completeMonths, holdingHistory, accountRuns, historyPoints, incomeCategories, REFUNDS_UNMATCHED, netWorthHistory, isFtExport, ftImport, lotSummary, investedHistory,
   descriptionIndex, suggestDescriptions, filterTransactions, ruleSuggestion,
@@ -1068,4 +1068,48 @@ test('duplicates: same account, amount and description within a few days; the be
   // An IOU linked to a copy makes it the one to keep.
   assert.equal(findDuplicates(tx, { linked: new Set(['h']) })[1].items[0].id, 'g'); // the memo still counts for as much
   assert.equal(findDuplicates(tx, { linked: new Set(['f']) })[1].items[0].id, 'f');
+});
+
+test('assets: valued from the latest valuation (or the purchase), estimated at a yearly change', () => {
+  const home = { kind: 'home', currency: 'EUR', purchasePrice: 20000000, boughtOn: '2020-01-01', valuations: [] };
+  assert.equal(assetValue(home, '2019-12-31'), null); // not bought yet
+  assert.deepEqual(assetValue(home, '2020-01-01'), { value: 20000000, from: { date: '2020-01-01', value: 20000000, bought: true }, estimated: false });
+  // The kind's usual +2% a year, compounding.
+  assert.equal(assetValue(home, '2022-01-01').value, Math.round(20000000 * 1.02 ** (731 / 365.25)));
+  // A valuation takes over from its day; the estimate goes on from it.
+  const valued = { ...home, valueChange: 0, valuations: [{ date: '2024-06-01', value: 31000000 }] };
+  assert.equal(assetValue(valued, '2024-05-31').value, 20000000);
+  assert.equal(assetValue(valued, '2026-01-01').value, 31000000);
+  assert.equal(assetValue(valued, '2026-01-01').estimated, false);
+  // A vehicle loses 15% a year by default, down to its floor.
+  const car = { kind: 'vehicle', currency: 'EUR', valuations: [{ date: '2020-01-01', value: 3000000 }], valueFloor: 500000 };
+  assert.equal(assetValue(car, '2021-01-01').value, Math.round(3000000 * 0.85 ** (366 / 365.25)));
+  assert.equal(assetValue(car, '2035-01-01').value, 500000);
+  assert.equal(assetValue(car, '2021-01-01').estimated, true);
+  // Once sold, it's worth nothing to you.
+  assert.equal(assetValue({ ...car, soldOn: '2022-06-01' }, '2022-06-01'), null);
+  assert.ok(assetValue({ ...car, soldOn: '2022-06-01' }, '2022-05-31').value > 0);
+  // A valuation on the day of purchase wins over the purchase price.
+  assert.equal(assetValuations({ ...home, valuations: [{ date: '2020-01-01', value: 21000000 }] }).at(-1).value, 21000000);
+});
+
+test('assets in net worth over time: each one valued on each date, apart and in the total', () => {
+  const home = { id: 'h', kind: 'home', currency: 'EUR', valueChange: 0, valuations: [{ date: '2026-02-01', value: 10000000 }] };
+  const { points } = netWorthHistory({ accounts: [], assets: [home] }, { from: '2026-01-01', to: '2026-03-31', today: '2026-03-31', holdingsValue: () => null, runs: new Map() });
+  const at = (d) => points.find((p) => p.date >= d);
+  assert.equal(points[0].assets, 0); // before its first valuation
+  assert.equal(at('2026-03-01').assets, 10000000);
+  assert.equal(points.at(-1).total, 10000000);
+});
+
+test('net worth history keeps pensions and assets apart, each counted once in the total', () => {
+  const accounts = [{ id: 'bank', type: 'checking', currency: 'EUR' }, { id: 'ppr', type: 'investment', investmentKind: 'pension', currency: 'EUR' }];
+  const transactions = [
+    { id: 't1', accountId: 'bank', date: '2026-01-05', amount: 100000, rate: 1 },
+    { id: 't2', accountId: 'ppr', date: '2026-01-05', amount: 50000, rate: 1 },
+  ];
+  const home = { id: 'h', kind: 'home', currency: 'EUR', valueChange: 0, valuations: [{ date: '2026-01-01', value: 300000 }] };
+  const now = netWorthHistory({ accounts, transactions, assets: [home] }, { from: '2026-01-01', to: '2026-03-31', today: '2026-03-31', holdingsValue: () => null }).points.at(-1);
+  assert.deepEqual([now.total, now.locked, now.assets], [450000, 50000, 300000]);
+  assert.equal(now.total - now.locked - now.assets, 100000); // within reach: the bank account
 });

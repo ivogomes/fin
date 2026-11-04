@@ -10,6 +10,8 @@ import {
 import { missingTables, persist, transactionsComplete } from './store.js';
 import { counted } from './accounts.js';
 import { accountValue, latestClose, loadHistory, render, setView, state, totalsOf, view } from './app.js';
+import { assetsInEur, countedAssets } from './assets.js';
+import { pageLink } from './overview.js';
 import { chartTip, lotsOfHolding, timeChart } from './holdings.js';
 import { fetchTransactions, ratesArg, renderWhenIdle } from './transactions.js';
 import {
@@ -21,6 +23,8 @@ import {
 // ── insights ─────────────────────────────────────────────────────────────────
 
 export let insightsPeriod = readPref('finance:period', { preset: 'this-month' });
+// The Net worth tab counting everything, also what's left out of totals (renderNetWorth).
+let netWorthAll = readPref('finance:nw-all', false);
 export const compactEUR = (minor) => (hideAmounts ? '•••'
   : new Intl.NumberFormat(numLocale(), { style: 'currency', currency: 'EUR', notation: 'compact', maximumFractionDigits: 1 }).format(minor / 100));
 
@@ -708,28 +712,50 @@ export function renderNetWorth() {
   if (!runs) {
     return h('div', { class: 'fin-insights' }, periodControls(range), loader('Working out the history…'));
   }
-  const hist = netWorthHistory({ ...state, accounts: state.accounts.filter(counted) }, {
+  // Count everything (remembered in this browser): also the accounts and assets left out of totals,
+  // for a total worth. Offered only when something is left out.
+  const leftOut = state.accounts.some((a) => !a.archived && !counted(a)) || state.assets.some((x) => !x.soldOn && x.excludeTotals);
+  const everything = leftOut && netWorthAll;
+  const inTotals = (a) => everything || counted(a);
+  const hist = netWorthHistory({ ...state, accounts: state.accounts.filter(inTotals), assets: everything ? state.assets : countedAssets() }, {
     from: range.from, to, today: today(), holdingsValue: holdingsValueEUR, rateOf: (c) => latestRate(c) ?? 1, runs: runMap(runs), estimate: estimateOpts,
   });
+  // Net worth (or, counting everything, total worth) and what's within reach (without pensions and
+  // retirement savings, locked away until later, and without assets, which aren't money), both from
+  // the same point of the history.
   const pts = hist.points;
   const now = pts.at(-1);
   const start = pts[0];
   const change = now.total - start.total;
+  const reachOf = (p) => p.total - p.locked - (p.assets ?? 0);
+  const hasReach = pts.some((p) => p.locked || p.assets);
+  const allSwitch = leftOut && h('label', { class: 'fin-switch fin-nw-all' },
+    h('input', {
+      type: 'checkbox', role: 'switch', checked: everything, 'data-key': 'nw-all',
+      onchange: (e) => { netWorthAll = e.target.checked; writePref('finance:nw-all', netWorthAll); render('nw-all'); },
+    }),
+    h('span', { class: 'fin-switch-track', 'aria-hidden': 'true' }),
+    'Count everything, also what’s left out of totals');
 
   // Today's split by account type (archived accounts are closed, so they're not part of it).
   const byType = ACCOUNT_TYPES.map((type) => {
-    const value = state.accounts.filter((a) => a.type === type && !a.archived && counted(a))
+    const value = state.accounts.filter((a) => a.type === type && !a.archived && inTotals(a))
       .reduce((sum, a) => sum + convert(accountValue(a), latestRate(a.currency) ?? 1), 0);
     return { type, value };
   }).filter((x) => x.value !== 0);
+  // Assets that count, as one more line (by their own icon).
+  if (now.assets) byType.push({ type: 'assets', label: 'Assets', icon: 'asset-home', value: now.assets });
   const assets = byType.filter((x) => x.value > 0).reduce((s, x) => s + x.value, 0);
   const debts = byType.filter((x) => x.value < 0).reduce((s, x) => s - x.value, 0);
 
   return h('div', {},
     h('div', { class: 'fin-insights' },
       periodControls(range),
+      allSwitch,
       h('dl', { class: 'fin-stats' },
-        h('div', {}, h('dt', {}, 'Net worth today'), h('dd', {}, money(now.total, 'EUR'))),
+        h('div', {}, h('dt', {}, everything ? 'Total worth today' : 'Net worth today'), h('dd', {}, money(now.total, 'EUR')),
+          h('p', { class: 'fin-stat-note' }, everything ? 'everything, also what’s left out of totals'
+            : `what counts in totals${[now.locked && 'pensions', now.assets && 'assets'].filter(Boolean).length ? `, ${[now.locked && 'pensions', now.assets && 'assets'].filter(Boolean).join(' and ')} included` : ''}`)),
         h('div', {}, h('dt', {}, `Change since ${shortDate(start.date)}`),
           h('dd', { class: tone(change) }, signed(change, 'EUR')),
           start.total > 0 && h('p', { class: 'fin-stat-note' }, `${change >= 0 ? '+' : ''}${num((change / start.total) * 100)}%`)),
@@ -737,17 +763,22 @@ export function renderNetWorth() {
           now.total > 0 && h('p', { class: 'fin-stat-note' }, `${Math.round((now.investments / now.total) * 100)}% of net worth`)),
         h('div', {}, h('dt', {}, 'Debts'), h('dd', { class: debts ? 'fin-neg' : '' }, money(debts, 'EUR')),
           h('p', { class: 'fin-stat-note' }, 'credit cards and other negative balances')),
-        // Pensions and retirement savings (by their kind) are locked away until later.
+        // Assets (a home, vehicles…: the Assets page), those that count (each asset says, on its card).
         (() => {
-          const locked = state.accounts.filter((a) => !a.archived && counted(a) && a.type === 'investment' && LOCKED_KINDS.has(a.investmentKind))
-            .reduce((sum, a) => sum + convert(accountValue(a), latestRate(a.currency) ?? 1), 0);
-          return locked > 0 && h('div', {}, h('dt', {}, 'Within reach'), h('dd', {}, money(now.total - locked, 'EUR')),
-            h('p', { class: 'fin-stat-note' }, `without ${money(locked, 'EUR')} in pensions and retirement savings`));
-        })()),
+          const own = state.assets.filter((x) => !x.soldOn);
+          if (!own.length) return null;
+          const counting = everything ? own : own.filter((x) => !x.excludeTotals);
+          return h('div', {}, h('dt', {}, 'Assets'), h('dd', {}, money(assetsInEur(counting), 'EUR')),
+            h('p', { class: 'fin-stat-note' }, [counting.length === own.length ? 'in net worth · ' : `${counting.length} of ${own.length} in net worth · `,
+              pageLink('See them', { name: 'assets' }, 'fin-link fin-link-sm')]));
+        })(),
+        // Within reach: net worth less pensions and assets, from the same point of the history.
+        hasReach && h('div', {}, h('dt', {}, 'Within reach'), h('dd', {}, money(reachOf(now), 'EUR')),
+          h('p', { class: 'fin-stat-note' }, `without ${[now.locked > 0 && `${money(now.locked, 'EUR')} in pensions`, now.assets > 0 && `${money(now.assets, 'EUR')} in assets`].filter(Boolean).join(' and ')}`))),
       pts.length > 1
         ? [
           h('section', { class: 'fin-card fin-pad' },
-            timeChart(pts.map((p) => ({ date: p.date, v: p.total })), { id: 'nw', title: 'Net worth over time', unit: 'in EUR', format: (v) => money(v, 'EUR'), wide: true })),
+            timeChart(pts.map((p) => ({ date: p.date, v: p.total })), { id: 'nw', title: everything ? 'Total worth over time' : 'Net worth over time', unit: 'in EUR', format: (v) => money(v, 'EUR'), wide: true })),
           pts.some((p) => p.investments) && h('section', { class: 'fin-card fin-pad' },
             timeChart(pts.map((p) => ({ date: p.date, v: p.investments })), { id: 'nw-inv', title: 'Investments', unit: 'in EUR', format: (v) => money(v, 'EUR'), wide: true })),
         ]
@@ -762,10 +793,10 @@ export function renderNetWorth() {
         !hist.firstSnapshot && ' From today the app records market values once a day, so the history fills in.',
         ' Closed (archived) accounts count until their last transaction.'),
       h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'nw-type-h' },
-        h('h3', { id: 'nw-type-h', class: 'fin-label' }, 'By account type, today'),
-        h('ul', { class: 'fin-break' }, byType.map(({ type, value }) => h('li', {},
+        h('h3', { id: 'nw-type-h', class: 'fin-label' }, 'By account type, and assets, today'),
+        h('ul', { class: 'fin-break' }, byType.map(({ type, value, label, icon: ic }) => h('li', {},
           h('div', { class: `fin-break-row fin-type-row fin-group--${type}` },
-            h('span', { class: 'fin-break-name' }, h('span', { class: 'fin-group-icon' }, icon(`type-${type}`)), ACCOUNT_TYPE_LABELS[type]),
+            h('span', { class: 'fin-break-name' }, h('span', { class: 'fin-group-icon' }, icon(ic ?? `type-${type}`)), label ?? ACCOUNT_TYPE_LABELS[type]),
             (() => {
               const NS = 'http://www.w3.org/2000/svg';
               const svg = document.createElementNS(NS, 'svg');

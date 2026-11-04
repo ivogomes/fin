@@ -454,6 +454,36 @@ export function investmentValueFrom(account, holdings, invested, latestRate) {
   return { total, invested, missing, hasHoldings: true };
 }
 
+// ── Assets ───────────────────────────────────────────────────────────────────
+// An asset (a home, a vehicle, anything else of value, kept apart from the accounts): { id, name,
+// kind, currency, purchasePrice, boughtOn, valueChange, valueFloor, valuations, soldOn,
+// excludeTotals }. Its value comes from valuations ({ date, value } in minor units), the purchase
+// price on the day it was bought counting as the first. Between them the value is estimated from
+// the latest at a yearly change (`valueChange`, % a year, compounding: a home's grows, a vehicle's
+// falls), or the kind's usual one; a falling value stops at `valueFloor` when it has one. Once sold
+// (`soldOn`) it's worth nothing to you.
+export const ASSET_KINDS = { home: 'Home', vehicle: 'Vehicle', other: 'Other' };
+export const ASSET_CHANGE = { home: 2, vehicle: -15, other: 0 }; // the kind's usual % a year
+export const assetChange = (asset) => asset.valueChange ?? ASSET_CHANGE[asset.kind] ?? 0;
+// The asset's valuations, the purchase first on its day, oldest first.
+export function assetValuations(asset) {
+  const list = [...(asset.valuations ?? [])].map((v) => ({ ...v }));
+  if (asset.purchasePrice != null && asset.boughtOn) list.push({ date: asset.boughtOn, value: asset.purchasePrice, bought: true });
+  return list.sort((a, b) => a.date.localeCompare(b.date) || (a.bought ? -1 : b.bought ? 1 : 0));
+}
+// Its value on `date`: { value, from (the valuation it's worked out from), estimated }, or null
+// before anything is known or once it's sold.
+export function assetValue(asset, date) {
+  if (asset.soldOn && date >= asset.soldOn) return null;
+  const from = assetValuations(asset).filter((v) => v.date <= date).at(-1);
+  if (!from) return null;
+  const change = assetChange(asset);
+  const years = (utc(date) - utc(from.date)) / (365.25 * 864e5);
+  let value = Math.round(from.value * (1 + change / 100) ** years);
+  if (change < 0 && asset.valueFloor != null) value = Math.max(value, Math.min(asset.valueFloor, from.value));
+  return { value, from, estimated: value !== from.value };
+}
+
 // Net worth in the base currency. Archived accounts don't count; accounts still waiting for a rate
 // are counted separately. With `asOf`, transactions dated after it are left out.
 export function netWorth(state, latestRate, asOf = null) {
@@ -1468,8 +1498,9 @@ export function accountRuns(accounts, transactions, dates, rateOf = () => 1, { s
 // of its first transaction) fills in an investment account whose holdings lack buys and sells: before
 // its snapshots, instead of only what was put in (and a jump to market value on the last day), the
 // value is what was put in by then plus a gain growing evenly from the first transaction to today's.
-// `estimated` in the answer says whether any point was worked out that way.
-export function netWorthHistory({ accounts, transactions = [], snapshots = [], holdings = [], lots = [] }, { from, to, today, holdingsValue, rateOf = () => 1, runs = null, estimate = null }) {
+// `estimated` in the answer says whether any point was worked out that way. `assets` (the ones that
+// count) add their value at each point, in `assets` and in the total.
+export function netWorthHistory({ accounts, transactions = [], snapshots = [], holdings = [], lots = [], assets = [] }, { from, to, today, holdingsValue, rateOf = () => 1, runs = null, estimate = null }) {
   const { unit, ends } = historyPoints(from, to);
   const accountRun = runs ?? accountRuns(accounts, transactions, ends.map((e) => e.date), rateOf);
   const snaps = [...snapshots].sort((a, b) => a.date.localeCompare(b.date));
@@ -1517,7 +1548,7 @@ export function netWorthHistory({ accounts, transactions = [], snapshots = [], h
     return (date) => 1 + gain * Math.min(1, Math.max(0, (utc(date) - utc(first)) / span));
   };
   let estimated = false;
-  const points = ends.map(({ key, date }) => ({ key, date, total: 0, investments: 0, byType: {} }));
+  const points = ends.map(({ key, date }) => ({ key, date, total: 0, investments: 0, locked: 0, byType: {} }));
   for (const a of accounts) {
     const run = accountRun.get(a.id) ?? { last: null, values: [] };
     const lastDate = run.last;
@@ -1544,7 +1575,15 @@ export function netWorthHistory({ accounts, transactions = [], snapshots = [], h
       p.total += value;
       p.byType[a.type] = (p.byType[a.type] ?? 0) + value;
       if (a.type === 'investment') p.investments += value;
+      // Pensions and retirement savings, locked away until later (in the total too).
+      if (a.type === 'investment' && LOCKED_KINDS.has(a.investmentKind)) p.locked += value;
     }
+  }
+  // Assets (those that count): each one's value on each date (assetValue), in EUR, apart and in the total.
+  for (const p of points) {
+    p.assets = 0;
+    for (const x of assets) p.assets += Math.round((assetValue(x, p.date)?.value ?? 0) * (rateOf(x.currency) ?? 1));
+    p.total += p.assets;
   }
   return { unit, points, firstSnapshot, estimated };
 }
@@ -1809,6 +1848,7 @@ export function defaultState() {
     ious: [],
     snapshots: [],
     lots: [],
+    assets: [],
     categories: ids.map((id, i) => ({ id, name: names[i], parentId: null })),
     rules: [
       { id: 'r-lunch', pattern: 'lunch', match: 'contains', categoryId: 'meals' },

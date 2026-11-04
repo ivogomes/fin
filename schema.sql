@@ -130,6 +130,26 @@ create table if not exists snapshots (
   primary key (user_id, id)
 );
 
+-- Assets: a home, a vehicle, anything else of value, apart from the accounts. Valued from
+-- valuations ([{ date, value }] in minor units, the purchase counting as the first), estimated in
+-- between at value_change % a year (down to value_floor); worth nothing from sold_on.
+create table if not exists assets (
+  user_id uuid not null default auth.uid() references auth.users on delete cascade,
+  id text not null,
+  name text not null,
+  kind text not null default 'other' check (kind in ('home', 'vehicle', 'other')),
+  currency text not null default 'EUR',
+  purchase_price bigint,
+  bought_on date,
+  value_change numeric,
+  value_floor bigint,
+  valuations jsonb not null default '[]',
+  sold_on date,
+  exclude_totals boolean not null default false,
+  position int not null default 0,
+  primary key (user_id, id)
+);
+
 -- One row per user: API keys for market data and the last account viewed.
 create table if not exists settings (
   user_id uuid primary key default auth.uid() references auth.users on delete cascade,
@@ -586,7 +606,7 @@ $$;
 do $$
 declare t text;
 begin
-  foreach t in array array['accounts', 'categories', 'rules', 'transactions', 'holdings', 'schedules', 'people', 'ious', 'snapshots', 'lots', 'settings'] loop
+  foreach t in array array['accounts', 'categories', 'rules', 'transactions', 'holdings', 'schedules', 'people', 'ious', 'snapshots', 'lots', 'assets', 'settings'] loop
     execute format('alter table %I enable row level security', t);
     execute format('drop policy if exists own_rows on %I', t);
     execute format(
