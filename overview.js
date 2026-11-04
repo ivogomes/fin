@@ -58,7 +58,7 @@ export function renderOverview() {
     state.accounts.length === 0 ? renderWelcome() : [
       alertsBox(overviewAlerts()),
       h('dl', { class: 'fin-stats' },
-        h('div', {}, h('dt', {}, 'Net worth'), h('dd', { class: tone(nw.total) }, money(nw.total, 'EUR')),
+        h('div', { class: `fin-stat-key${nw.total < 0 ? ' is-neg' : ''}` }, h('dt', {}, 'Net worth'), h('dd', { class: tone(nw.total) }, money(nw.total, 'EUR')),
           h('p', { class: 'fin-stat-note' }, nw.unconverted ? `${nw.unconverted} account(s) waiting for exchange rates` : 'across your open accounts, in EUR')),
         h('div', {}, h('dt', {}, 'Spent this month'), h('dd', { class: 'fin-neg' }, r ? money(r.expenses, 'EUR') : '…'),
           h('p', { class: 'fin-stat-note' }, r && p ? vsLast(r.expenses, p.expenses) : 'working it out…')),

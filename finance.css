@@ -17,7 +17,7 @@
   --f-accent-ink: #FFFFFF;
   --f-pos: #0F7A54;
   --f-neg: #C0392B;
-  --f-danger-soft: #FBEBE9;
+  --f-danger-soft: #FBEBE9; --f-warn-soft: #FBF3E2;
   --f-warn: #B7791F;
   --f-radius: 12px;
   --f-radius-sm: 8px;
@@ -29,9 +29,9 @@
 }
 
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) { --f-bg: #0E1312; --f-surface: #161C1B; --f-surface-2: #1B2321; --f-hover: #1F2826; --f-border: #26302E; --f-border-strong: #384542; --f-text: #E6EEEB; --f-muted: #9AA8A3; --f-accent: #5BBFB5; --f-accent-strong: #7FD2C9; --f-accent-soft: rgb(91 191 181 / 0.14); --f-accent-ink: #0E1312; --f-pos: #4CC594; --f-neg: #F0897C; --f-danger-soft: rgb(240 137 124 / 0.12); --f-warn: #E3B05A; --f-shadow: 0 1px 2px rgb(0 0 0 / 0.3); --f-shadow-lg: 0 16px 48px rgb(0 0 0 / 0.5); --f-ring: 0 0 0 3px rgb(91 191 181 / 0.3); --f-hero: linear-gradient(135deg, #1D4B48 0%, #163634 100%); --f-hero-ink: #E6F3F1; }
+  :root:not([data-theme="light"]) { --f-bg: #0E1312; --f-surface: #161C1B; --f-surface-2: #1B2321; --f-hover: #1F2826; --f-border: #26302E; --f-border-strong: #384542; --f-text: #E6EEEB; --f-muted: #9AA8A3; --f-accent: #5BBFB5; --f-accent-strong: #7FD2C9; --f-accent-soft: rgb(91 191 181 / 0.14); --f-accent-ink: #0E1312; --f-pos: #4CC594; --f-neg: #F0897C; --f-danger-soft: rgb(240 137 124 / 0.12); --f-warn-soft: rgb(227 176 90 / 0.14); --f-warn: #E3B05A; --f-shadow: 0 1px 2px rgb(0 0 0 / 0.3); --f-shadow-lg: 0 16px 48px rgb(0 0 0 / 0.5); --f-ring: 0 0 0 3px rgb(91 191 181 / 0.3); --f-hero: linear-gradient(135deg, #1D4B48 0%, #163634 100%); --f-hero-ink: #E6F3F1; }
 }
-:root[data-theme="dark"] { --f-bg: #0E1312; --f-surface: #161C1B; --f-surface-2: #1B2321; --f-hover: #1F2826; --f-border: #26302E; --f-border-strong: #384542; --f-text: #E6EEEB; --f-muted: #9AA8A3; --f-accent: #5BBFB5; --f-accent-strong: #7FD2C9; --f-accent-soft: rgb(91 191 181 / 0.14); --f-accent-ink: #0E1312; --f-pos: #4CC594; --f-neg: #F0897C; --f-danger-soft: rgb(240 137 124 / 0.12); --f-warn: #E3B05A; --f-shadow: 0 1px 2px rgb(0 0 0 / 0.3); --f-shadow-lg: 0 16px 48px rgb(0 0 0 / 0.5); --f-ring: 0 0 0 3px rgb(91 191 181 / 0.3); --f-hero: linear-gradient(135deg, #1D4B48 0%, #163634 100%); --f-hero-ink: #E6F3F1; }
+:root[data-theme="dark"] { --f-bg: #0E1312; --f-surface: #161C1B; --f-surface-2: #1B2321; --f-hover: #1F2826; --f-border: #26302E; --f-border-strong: #384542; --f-text: #E6EEEB; --f-muted: #9AA8A3; --f-accent: #5BBFB5; --f-accent-strong: #7FD2C9; --f-accent-soft: rgb(91 191 181 / 0.14); --f-accent-ink: #0E1312; --f-pos: #4CC594; --f-neg: #F0897C; --f-danger-soft: rgb(240 137 124 / 0.12); --f-warn-soft: rgb(227 176 90 / 0.14); --f-warn: #E3B05A; --f-shadow: 0 1px 2px rgb(0 0 0 / 0.3); --f-shadow-lg: 0 16px 48px rgb(0 0 0 / 0.5); --f-ring: 0 0 0 3px rgb(91 191 181 / 0.3); --f-hero: linear-gradient(135deg, #1D4B48 0%, #163634 100%); --f-hero-ink: #E6F3F1; }
 
 /* Appearance (Settings → Display): Fin follows the system unless a theme is picked, which sets
    data-theme="light" or "dark" on <html> (theme.js, before the page is drawn). Every dark block in
@@ -483,6 +483,17 @@ nav .fin-account { padding-left: 12px; }
   box-shadow: var(--f-shadow);
 }
 .fin-stats > div:first-child { border-color: color-mix(in srgb, var(--f-accent) 35%, var(--f-border)); }
+/* A page's most important figure (net worth, an account's balance, what assets are worth): on a light
+   accent tint, bigger. */
+.fin-stat-key { background: var(--f-accent-soft); border-color: color-mix(in srgb, var(--f-accent) 35%, var(--f-border)); }
+.fin-stats > .fin-stat-key { background: var(--f-accent-soft); }
+/* An account's balance: red below zero, warning yellow below the account's "Warn below". */
+.fin-stat-key.is-neg { background: var(--f-danger-soft); border-color: color-mix(in srgb, var(--f-neg) 40%, var(--f-border)); }
+.fin-stats > .fin-stat-key.is-neg { background: var(--f-danger-soft); }
+.fin-stat-key.is-low { background: var(--f-warn-soft); border-color: color-mix(in srgb, var(--f-warn) 45%, var(--f-border)); }
+.fin-stats > .fin-stat-key.is-low { background: var(--f-warn-soft); }
+.fin-stat-key.is-low dd { color: var(--f-warn); }
+.fin-stats > .fin-stat-key dd { font-size: 30px; }
 .fin-stats dt { font-size: 13px; color: var(--f-muted); }
 .fin-stats dd { margin: 4px 0 0; font-size: 26px; font-weight: 650; letter-spacing: -0.02em; }
 
@@ -1744,6 +1755,8 @@ input.fin-cat-add:focus { width: 10rem; border-style: solid; border-color: var(-
   .fin-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
   .fin-stats > div { padding: 12px 14px; }
   .fin-stats dd { font-size: 20px; }
+  .fin-stats > .fin-stat-key { grid-column: 1 / -1; }
+  .fin-stats > .fin-stat-key dd, .fin-asset-main dd { font-size: 24px; }
   .fin-bulk { top: 0; }
 
   /* Floating add button: quick entry for the account on screen. */

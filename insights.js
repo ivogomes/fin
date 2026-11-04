@@ -641,7 +641,7 @@ export function investmentInsights(account) {
   return h('div', { class: 'fin-insights' },
     periodControls(range),
     h('dl', { class: 'fin-stats' },
-      h('div', {}, h('dt', {}, 'Value today'), h('dd', {}, money(now.total, 'EUR'))),
+      h('div', { class: 'fin-stat-key' }, h('dt', {}, 'Value today'), h('dd', {}, money(now.total, 'EUR'))),
       h('div', {}, h('dt', {}, 'Invested'), h('dd', {}, money(now.investments, 'EUR')),
         h('p', { class: 'fin-stat-note' }, byLots ? 'cost of the units held' : 'money moved into the account')),
       h('div', {}, h('dt', {}, 'Gain'), h('dd', { class: tone(gain) }, signed(gain, 'EUR')),

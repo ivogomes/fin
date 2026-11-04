@@ -400,10 +400,20 @@ export function renderAccount(account) {
       'This account is archived. It is hidden from the account groups and left out of net worth. Its transactions are kept.'),
     !account.archived && alertsBox(accountAlerts(account)),
     // Each card: a label, the figure, and a short note under it (as on the Insights tabs).
+    // The balance card says how it's doing by its colour (the figure taking the card's): red below
+    // zero, warning yellow below the account's Warn below. A card, where owing is the norm, goes red
+    // over its limit and yellow from 90% of it used.
     h('dl', { class: 'fin-stats' },
-      h('div', {}, h('dt', {}, inv?.hasHoldings ? 'Value' : 'Balance'), h('dd', { class: `fin-num ${tone(value)}` }, signed(value, account.currency)),
-        h('p', { class: 'fin-stat-note' }, inv?.hasHoldings ? 'holdings at today’s prices'
-          : account.type === 'credit' ? (value < 0 ? 'owed on the card' : 'in your favour') : 'up to today')),
+      (() => {
+        const use = limitUse(account, value);
+        const neg = account.type === 'credit' ? Boolean(use && use.left < 0) : value < 0;
+        const low = !neg && (account.type === 'credit' ? use?.level === 'high' : account.lowBalance != null && value < account.lowBalance);
+        return h('div', { class: `fin-stat-key${neg ? ' is-neg' : low ? ' is-low' : ''}` },
+          h('dt', {}, inv?.hasHoldings ? 'Value' : 'Balance'), h('dd', { class: `fin-num${neg ? ' fin-neg' : ''}` }, signed(value, account.currency)),
+          h('p', { class: 'fin-stat-note' }, inv?.hasHoldings ? 'holdings at today’s prices'
+            : account.type === 'credit' ? (neg ? `owed on the card, over its ${money(account.creditLimit, account.currency)} limit` : low ? `owed on the card, ${use.used}% of its limit` : value < 0 ? 'owed on the card' : 'in your favour')
+              : low ? `up to today, below your ${money(account.lowBalance, account.currency)} warning` : neg ? 'up to today, overdrawn' : 'up to today'));
+      })(),
       // A credit card with a limit: what's left to spend (the limit, less what's owed) and how much is used.
       limitUse(account, value) && (() => {
         const { used, left } = limitUse(account, value);
