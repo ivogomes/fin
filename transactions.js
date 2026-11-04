@@ -24,7 +24,7 @@ import { personName } from './ious.js';
 import { FORECAST_DAYS, daysFromToday, openScheduleDialog, subscriptionChip, upcomingRows } from './schedules.js';
 import {
   button, catLabel, catOptions, category, field, h, hueOf, icon, iconButton, input, latestRate,
-  flag, loader, money, monthLabel, num, say, select, shortDate, signed, status, tone,
+  flag, isPhone, loader, money, monthLabel, num, say, select, shortDate, signed, status, tone,
   typeSwitch,
 } from './ui.js';
 
@@ -70,6 +70,17 @@ export const EMPTY_FILTER = { text: '', categoryIds: [], types: [], from: '', to
 export const filterOf = (scope) => txFilters.get(scope) ?? EMPTY_FILTER;
 export const filterActive = (f) => Boolean(f.text || f.categoryIds.length || f.types.length || f.from || f.to || f.min || f.max || f.accountIds.length);
 export let filterTimer = null;
+// When a filter's text box was last typed in, and whether a word is being composed (a phone's
+// keyboard suggestions): the results wait for a pause, so a redraw doesn't eat keystrokes.
+let typedAt = 0;
+let composing = false;
+const TYPING_PAUSE = () => (isPhone() ? 1000 : 500);
+const stillTyping = () => composing || Date.now() - typedAt < TYPING_PAUSE();
+const typed = (el) => {
+  el.addEventListener('compositionstart', () => { composing = true; });
+  el.addEventListener('compositionend', () => { composing = false; typedAt = Date.now(); });
+  el.addEventListener('blur', () => { composing = false; });
+};
 
 // A filter menu for picking several values: a button saying what's picked ("All categories",
 // "Groceries", "3 categories") that opens a list of checkboxes, with a search box when `searchable`.
@@ -171,10 +182,15 @@ export function filterBar(scope, { showAccount = false } = {}) {
     setTxPage(0);
     selected.clear();
     clearTimeout(filterTimer);
-    filterTimer = setTimeout(() => render(focusKey), wait);
+    // Typing: wait for a pause (and for the word to be done), then show the results.
+    const draw = () => { if (wait && stillTyping()) filterTimer = setTimeout(draw, 150); else render(focusKey); };
+    filterTimer = setTimeout(draw, wait);
   };
   const text = input({ type: 'search', value: f.text, placeholder: 'Search description, memo or amount', 'data-key': `${scope}-q`, 'aria-label': 'Search transactions' });
-  text.addEventListener('input', () => set({ text: text.value }, `${scope}-q`, 250));
+  typed(text);
+  text.addEventListener('input', () => { typedAt = Date.now(); set({ text: text.value }, `${scope}-q`, TYPING_PAUSE()); });
+  // Enter searches at once.
+  text.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); composing = false; typedAt = 0; set({ text: text.value }, `${scope}-q`); } });
   const cat = multiFilter({
     key: `${scope}-cat`, label: 'Categories', all: 'All categories', many: 'categories', searchable: true,
     picked: f.categoryIds, onChange: (ids, focus) => set({ categoryIds: ids }, focus),
@@ -205,7 +221,8 @@ export function filterBar(scope, { showAccount = false } = {}) {
   };
   const amountIn = (k, label) => {
     const el = input({ type: 'number', step: 'any', min: '0', inputmode: 'decimal', value: f[k], placeholder: label, 'data-key': `${scope}-${k}`, 'aria-label': `${label} amount` });
-    el.addEventListener('input', () => set({ [k]: el.value }, `${scope}-${k}`, 400));
+    typed(el);
+    el.addEventListener('input', () => { typedAt = Date.now(); set({ [k]: el.value }, `${scope}-${k}`, TYPING_PAUSE()); });
     return el;
   };
   const acc = showAccount && multiFilter({
@@ -538,8 +555,11 @@ export const ratesArg = () => Object.fromEntries(CURRENCIES.map((c) => [c, lates
 // next redraw shows it.
 export function renderWhenIdle() {
   if (editingTxId || quickEdit || hasUnsavedInput()) return;
+  // Results that arrive mid-word wait for the pause, so the box isn't redrawn under the fingers.
+  if (stillTyping()) { clearTimeout(idleTimer); idleTimer = setTimeout(renderWhenIdle, 200); return; }
   render();
 }
+let idleTimer = null;
 
 export function transactionsSection(account) {
   const scope = `acc:${account.id}`;
