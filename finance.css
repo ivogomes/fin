@@ -1364,8 +1364,12 @@ a.fin-break-link:focus-visible { outline: none; box-shadow: var(--f-ring); borde
   text-align: center;
 }
 .fin-batch { width: 100%; border-collapse: collapse; }
-.fin-batch th { padding: 6px; font-size: 12px; font-weight: 500; color: var(--f-muted); text-align: left; }
-.fin-batch td { padding: 4px 6px; }
+.fin-batch th { padding: 6px; font-size: 12px; font-weight: 500; color: var(--f-muted); text-align: left; border-bottom: 1px solid var(--f-border-strong); }
+.fin-batch td { padding: 8px 6px; }
+/* A line between rows, and the row being filled in on a light tint, so each one reads as one. */
+.fin-batch tbody tr { border-bottom: 1px solid var(--f-border); }
+.fin-batch tbody tr:last-child { border-bottom: 0; }
+.fin-batch tbody tr:focus-within { background: color-mix(in srgb, var(--f-accent) 5%, transparent); }
 .fin-batch td:first-child { min-width: 14rem; }
 .fin-batch .fin-input { min-width: 7rem; }
 
@@ -1847,7 +1851,11 @@ a.fin-break-link:focus-visible { outline: none; box-shadow: var(--f-ring); borde
   /* Quick entry: each row stacks its fields. */
   .fin-batch thead { display: none; }
   .fin-batch, .fin-batch tbody { display: block; }
-  .fin-batch tr { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 10px 0; border-bottom: 1px solid var(--f-border); }
+  .fin-batch tr { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 10px; border-radius: var(--f-radius-sm); }
+  /* Every other row on a light background, telling them apart without lines. */
+  .fin-batch tbody tr, .fin-batch tbody tr:last-child { border-bottom: 0; }
+  .fin-batch tbody tr:nth-child(even) { background: var(--f-surface-2); }
+  .fin-batch tbody tr:focus-within { background: color-mix(in srgb, var(--f-accent) 7%, var(--f-surface)); }
   .fin-batch td { padding: 0; }
   .fin-batch td:first-child { grid-column: 1 / -1; min-width: 0; }
   /* Each field's name above it, in place of the hidden headers (the fields carry it for screen
