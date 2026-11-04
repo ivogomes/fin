@@ -149,7 +149,7 @@ export function renderPerson(personId) {
         }, 'danger'))),
     h('section', { class: 'fin-card' },
       rows.length === 0 ? h('p', { class: 'fin-empty fin-pad' }, 'No entries.') :
-        h('div', { class: 'fin-scroll' }, h('table', { class: 'fin-table' },
+        h('div', { class: 'fin-scroll' }, h('table', { class: 'fin-table fin-stack fin-stack--tight' },
           h('caption', { class: 'fin-sr' }, `IOU entries with ${p.name}, newest first`),
           h('thead', {}, h('tr', {},
             h('th', { scope: 'col' }, 'Date'), h('th', { scope: 'col', class: 'fin-r' }, 'Amount'),
@@ -158,12 +158,13 @@ export function renderPerson(personId) {
           h('tbody', {}, rows.map((e) => {
             const t = e.transactionId && state.transactions.find((x) => x.id === e.transactionId);
             return h('tr', {},
-              h('td', { class: 'fin-nowrap' }, h('time', { datetime: e.date }, shortDate(e.date))),
-              h('td', { class: `fin-r fin-num ${tone(e.amount)}` }, signed(e.amount, 'EUR')),
-              h('td', { class: 'fin-r fin-num fin-muted' }, money(e.balance, 'EUR')),
-              h('td', {}, e.description),
-              h('td', {}, t ? accountName(t.accountId) : h('span', { class: 'fin-muted' }, '—')),
-              h('td', { class: 'fin-r' }, h('div', { class: 'fin-row-actions' }, iconButton('trash', `Delete ${e.description}, ${shortDate(e.date)}`, () => deleteIou(e), { danger: true }))));
+              h('td', { class: 'fin-nowrap s-date' }, h('time', { datetime: e.date }, shortDate(e.date))),
+              h('td', { class: `fin-r fin-num s-amt ${tone(e.amount)}` }, signed(e.amount, 'EUR')),
+              // (On a phone, stacked, the balance says what it is.)
+              h('td', { class: 'fin-r fin-num fin-muted s-rep' }, h('span', { class: 'fin-stack-label' }, 'balance '), money(e.balance, 'EUR')),
+              h('td', { class: 's-desc' }, e.description),
+              h('td', { class: 's-acc' }, t ? accountName(t.accountId) : h('span', { class: 'fin-muted' }, '—')),
+              h('td', { class: 'fin-r s-act' }, h('div', { class: 'fin-row-actions' }, iconButton('trash', `Delete ${e.description}, ${shortDate(e.date)}`, () => deleteIou(e), { danger: true }))));
           }))))),
     h('p', { class: 'fin-hint fin-mt' }, 'Positive amounts mean they owe you more; negative, less (or that you owe them).'));
 }

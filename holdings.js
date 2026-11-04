@@ -425,7 +425,7 @@ export function holdingsSection(account) {
     })(),
     list.length === 0
       ? h('p', { class: 'fin-empty fin-pad' }, 'No holdings yet.')
-      : h('div', { class: 'fin-scroll' }, h('table', { class: 'fin-table' },
+      : h('div', { class: 'fin-scroll' }, h('table', { class: 'fin-table fin-holdings' },
         h('caption', { class: 'fin-sr' }, 'Holdings'),
         h('thead', {}, h('tr', {},
           ['Symbol', 'Name', 'Exchange', 'Currency', 'Units', 'Price', 'Value', 'Cost', 'Gain'].map((t, i) => h('th', { scope: 'col', class: i > 3 ? 'fin-r' : null }, t)),
@@ -440,21 +440,24 @@ export function holdingsSection(account) {
           // In another currency than the account's: its value there too, as the account's total counts it.
           const rates = x.currency !== account.currency && latestRate(x.currency) && latestRate(account.currency);
           const inAccount = rates && v != null ? Math.round(v * (latestRate(x.currency) / latestRate(account.currency))) : null;
-          const row = h('tr', {},
-            h('td', {}, x.symbol),
-            h('td', {}, x.name ?? '', x.priceError && h('span', { class: 'fin-sub fin-row-error' },
+          // On a phone the row stacks as a card (fin-holdings in finance.css), each cell in its place
+          // (h-…), and the few figures without their header say what they are (fin-stack-label).
+          const label = (text) => h('span', { class: 'fin-stack-label' }, `${text} `);
+          const row = h('tr', { class: 'fin-holding' },
+            h('td', { class: 'h-sym' }, x.symbol),
+            h('td', { class: 'h-name' }, x.name ?? '', x.priceError && h('span', { class: 'fin-sub fin-row-error' },
               `No live price: ${x.priceError.replace(/\s*Consider upgrading.*$/i, '')} Enter the price by hand for now.`)),
-            h('td', { class: 'fin-muted' }, x.exchange ?? (x.mic ? '' : 'not set')),
-            h('td', { class: x.currency === account.currency ? 'fin-muted' : null }, x.currency),
-            h('td', { class: 'fin-r fin-num' }, shownQty(x.quantity)),
-            h('td', { class: 'fin-r fin-num' }, priceCell(x)),
-            h('td', { class: 'fin-r fin-num' }, v == null ? '—' : money(v, x.currency),
+            h('td', { class: 'fin-muted h-exch' }, x.exchange ?? (x.mic ? '' : 'not set')),
+            h('td', { class: `h-cur${x.currency === account.currency ? ' fin-muted' : ''}` }, x.currency),
+            h('td', { class: 'fin-r fin-num h-units' }, shownQty(x.quantity), h('span', { class: 'fin-stack-label' }, ' units')),
+            h('td', { class: 'fin-r fin-num h-price' }, label('Price'), priceCell(x)),
+            h('td', { class: 'fin-r fin-num h-val' }, v == null ? '—' : money(v, x.currency),
               inAccount != null && h('span', { class: 'fin-sub' }, `≈ ${money(inAccount, account.currency)}`)),
-            h('td', { class: 'fin-r fin-num fin-muted' }, sum ? money(sum.cost, x.currency) : '—',
+            h('td', { class: 'fin-r fin-num fin-muted h-cost' }, label('cost'), sum ? money(sum.cost, x.currency) : '—',
               sum?.avgPrice != null && h('span', { class: 'fin-sub' }, `avg ${money(Math.round(sum.avgPrice * 100), x.currency)}`)),
-            h('td', { class: `fin-r fin-num ${gain == null ? '' : tone(gain)}` }, gain == null ? '—' : signed(gain, x.currency),
+            h('td', { class: `fin-r fin-num h-gain ${gain == null ? '' : tone(gain)}` }, gain == null ? '—' : signed(gain, x.currency),
               gain != null && sum.cost > 0 && h('span', { class: 'fin-sub' }, `${gain >= 0 ? '+' : ''}${num((gain / sum.cost) * 100)}%`)),
-            h('td', { class: 'fin-r' }, h('div', { class: 'fin-row-actions fin-row-actions--keep' },
+            h('td', { class: 'fin-r h-act' }, h('div', { class: 'fin-row-actions fin-row-actions--keep' },
               iconButton('edit', `Edit ${x.symbol}`, () => openHoldingDialog(x), { 'data-key': `hold-edit-${x.id}` }),
               button('Chart', () => { openChartId = charted ? null : x.id; render(`chart-${x.id}`); },
                 'secondary fin-btn-sm', { 'aria-expanded': String(charted), 'data-key': `chart-${x.id}`, 'aria-label': `Chart of ${x.symbol}` }),

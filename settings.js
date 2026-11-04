@@ -13,7 +13,7 @@ import { backupSection, exportSection } from './backups.js';
 import { decimal2, importKind, importPage, importTabs, setBuxferDraft, setImportDraft } from './imports.js';
 import { accountName, catChips, needEverything } from './transactions.js';
 import {
-  NUMBER_FORMATS, button, catLabel, catOptions, category, field, h, hideAmounts, input,
+  NUMBER_FORMATS, button, isPhone, catLabel, catOptions, category, field, h, hideAmounts, input,
   numberFormat, say, select, setNumberFormat, shortDate, signed, writePref,
 } from './ui.js';
 
@@ -40,9 +40,19 @@ export function settingsPageOf() {
   return SETTINGS_PAGES.find((p) => p.key === (view.section ?? settingsPage)) ?? SETTINGS_PAGES[0];
 }
 
+// On a phone, Settings opens on its list of pages (like Accounts), and a page has a way back to it.
 export function renderSettings() {
+  if (isPhone() && !view.section) {
+    return h('div', {},
+      h('div', { class: 'fin-account-head' }, h('h2', { class: 'fin-title', id: 'settings-h', tabindex: '-1', 'data-key': 'settings-h' }, 'Settings')),
+      h('div', { class: 'fin-side-list' }, renderSettingsNav({ list: true })));
+  }
   const page = settingsPageOf();
   return h('div', { class: 'fin-settings-page' },
+    h('button', {
+      type: 'button', class: 'fin-back', 'data-key': 'back-settings',
+      onclick: () => { setView({ name: 'settings' }); render('settings-h'); window.scrollTo(0, 0); },
+    }, h('span', { 'aria-hidden': 'true' }, '‹ '), 'Settings'),
     h('p', { class: 'fin-meta' }, `Settings · ${page.group}`),
     h('h2', { class: 'fin-title', id: 'settings-h', tabindex: '-1', 'data-key': 'settings-h' }, page.label),
     // Pages that work on every transaction load them the first time they're opened.
@@ -50,11 +60,12 @@ export function renderSettings() {
       ? [page.key === 'import' && importTabs(), needEverything()] : page.render());
 }
 
-export function renderSettingsNav() {
-  const current = settingsPageOf().key;
+// `list`: as the phone's Settings page (its own heading above, no page marked as open).
+export function renderSettingsNav({ list = false } = {}) {
+  const current = list ? null : settingsPageOf().key;
   const groups = [...new Set(SETTINGS_PAGES.map((p) => p.group))];
   return [
-    h('div', { class: 'fin-side-head' }, h('h2', { class: 'fin-side-title' }, 'Settings')),
+    !list && h('div', { class: 'fin-side-head' }, h('h2', { class: 'fin-side-title' }, 'Settings')),
     h('nav', { 'aria-label': 'Settings pages' }, groups.map((g) => h('div', { class: 'fin-group' },
       h('h3', { class: 'fin-group-head fin-group-static' }, g),
       h('ul', { class: 'fin-accounts' }, SETTINGS_PAGES.filter((p) => p.group === g).map((p) => h('li', {},
@@ -70,6 +81,7 @@ export function openSettings(key, focusKey) {
   settingsPage = key;
   setView({ name: 'settings', section: key });
   render(focusKey);
+  if (isPhone()) window.scrollTo(0, 0); // from the list: start at the top of the page
   say(`${settingsPageOf().label} settings.`);
 }
 

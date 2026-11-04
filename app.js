@@ -513,11 +513,14 @@ export function render(focusKey) {
   // The More tab stands for the sections in its menu.
   moreBtn.classList.toggle('is-on', ['scheduled', 'ious', 'settings'].includes(view.name));
   document.body.dataset.view = view.name; // phones show the side panel's button only in Settings
+  // The panel's button is for the panel; on a phone it isn't used (Accounts and Settings are lists).
+  sideToggle.hidden = isPhone();
+  if (isPhone()) side.classList.remove('is-open');
   if (!side.classList.contains('is-open')) sideToggle.textContent = inSettings ? 'Settings menu' : 'Accounts';
   side.setAttribute('aria-label', inSettings ? 'Settings' : 'Accounts');
-  // On a phone the accounts are a page (accountsPage), so the hidden panel stays empty: no second
-  // copy of its buttons for focus to land on.
-  side.replaceChildren(...(inSettings ? renderSettingsNav() : isPhone() ? [] : renderSide()).flat().filter(Boolean));
+  // On a phone the accounts and the settings pages are pages of their own (accountsPage, and
+  // renderSettings' list), so the hidden panel stays empty: no second copy of its buttons for focus.
+  side.replaceChildren(...(isPhone() ? [] : inSettings ? renderSettingsNav() : renderSide()).flat().filter(Boolean));
   main.replaceChildren(
     needsSchemaUpdate() ? h('p', { class: 'fin-notice fin-legacy', role: 'alert' },
       'This version needs a database update: run tools/finance/schema.sql again in the Supabase SQL editor (it keeps your data), then reload. Until then, changes aren’t saved.') : '',

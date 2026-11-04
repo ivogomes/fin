@@ -159,6 +159,10 @@ export const closeMenuOutside = (ev) => {
 document.addEventListener('mousedown', closeMenuOutside);
 document.addEventListener('focusin', closeMenuOutside);
 
+// On a phone an account's filters fold behind a Filters button (CSS shows it on phones only),
+// saying how many are on; these scopes are open, while the app is.
+const filtersOpen = new Set();
+const filtersOn = (f) => [f.text, f.categoryIds.length, f.types.length, f.from || f.to, f.min || f.max, f.accountIds.length].filter(Boolean).length;
 export function filterBar(scope, { showAccount = false } = {}) {
   const f = filterOf(scope);
   const set = (patch, focusKey, wait = 0) => {
@@ -209,7 +213,15 @@ export function filterBar(scope, { showAccount = false } = {}) {
     picked: f.accountIds, onChange: (ids, focus) => set({ accountIds: ids }, focus),
     options: [...state.accounts].sort(byName).map((a) => ({ value: a.id, label: accountLabel(a), sub: a.archived ? 'archived' : undefined })),
   });
-  return h('div', { class: 'fin-filters', role: 'search', 'aria-label': 'Filter transactions' },
+  const fold = scope.startsWith('acc:');
+  const open = filtersOpen.has(scope);
+  const on = filtersOn(f);
+  const toggle = fold && h('button', {
+    type: 'button', class: 'fin-btn secondary fin-btn-sm fin-filter-toggle', 'aria-expanded': String(open), 'data-key': `${scope}-fold`,
+    onclick: () => { if (open) filtersOpen.delete(scope); else filtersOpen.add(scope); render(`${scope}-fold`); }, // (not the search box: that would bring up the keyboard)
+  }, on ? `Filters (${on})` : 'Filters');
+  return h('div', { class: `fin-filters${fold ? ' fin-filters--fold' : ''}${open ? ' is-open' : ''}`, role: 'search', 'aria-label': 'Filter transactions' },
+    toggle,
     h('div', { class: 'fin-filter-q' }, text),
     acc, cat, type,
     h('div', { class: 'fin-filter-pair' }, dateIn('from', 'From date'), h('span', { class: 'fin-muted' }, '–'), dateIn('to', 'To date')),

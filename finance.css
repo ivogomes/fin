@@ -1625,9 +1625,9 @@ input.fin-cat-add:focus { width: 10rem; border-style: solid; border-color: var(-
 .fin-ov-card .fin-usage, .fin-ov-card .fin-sub { grid-column: 1 / -1; }
 
 /* ── Phone and small screens ──────────────────────────── */
-.fin-side-toggle, .fin-fab, .fin-tabbar, .fin-back, .fin-me-phone { display: none; }
+.fin-side-toggle, .fin-fab, .fin-tabbar, .fin-back, .fin-me-phone, .fin-filter-toggle, .fin-stack-label { display: none; }
 /* The accounts list as a page (phones): the side panel's content in a card. */
-.fin-side-list { padding: 12px 6px; background: var(--f-surface); border: 1px solid var(--f-border); border-radius: var(--f-radius); }
+.fin-side-list { margin-top: 20px; padding: 12px 6px; background: var(--f-surface); border: 1px solid var(--f-border); border-radius: var(--f-radius); }
 .fin-cat-time-pick .fin-input { width: auto; max-width: 16rem; }
 
 @media (max-width: 52rem) {
@@ -1712,8 +1712,8 @@ input.fin-cat-add:focus { width: 10rem; border-style: solid; border-color: var(-
 
   /* The account panel folds away behind a button and opens over the page. */
   .fin-side-toggle[hidden] { display: none; }
-  /* Only Settings keeps the panel (its pages) behind a button; the accounts are the Accounts tab. */
-  body:not([data-view="settings"]) .fin-side-toggle:not([hidden]) { display: none; }
+  /* The panel isn't used on a phone: Accounts and Settings open on lists of their own. */
+  body .fin-side-toggle:not([hidden]) { display: none; }
   .fin-side-toggle:not([hidden]) {
     display: flex;
     align-items: center;
@@ -1815,10 +1815,95 @@ input.fin-cat-add:focus { width: 10rem; border-style: solid; border-color: var(-
   .fin-batch tr { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 10px 0; border-bottom: 1px solid var(--f-border); }
   .fin-batch td { padding: 0; }
   .fin-batch td:first-child { grid-column: 1 / -1; min-width: 0; }
+  /* Each field's name above it, in place of the hidden headers (the fields carry it for screen
+     readers already). */
+  .fin-batch td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    margin: 0 0 3px 2px;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--f-muted);
+  }
   .fin-batch .fin-input { min-width: 0; }
   .fin-keys { display: none; } /* keyboard shortcuts don't apply on a touch screen */
 
   .fin-filters { padding: 10px 12px; }
+  /* An account's filters fold behind their button until it's opened. */
+  .fin-filter-toggle { display: inline-flex; }
+  .fin-filters--fold:not(.is-open) > :not(.fin-filter-toggle) { display: none; }
+  .fin-filters--fold.is-open .fin-filter-toggle { flex: 1 1 100%; justify-content: center; }
+
+  /* Upcoming rows stack like the others, shaded as a whole: each cell's own shade would show the
+     gaps between them. */
+  .fin-tx-table tbody tr.fin-upcoming { background: var(--f-surface-2); }
+  .fin-tx-table tbody tr.fin-upcoming.fin-due { background: color-mix(in srgb, var(--f-accent) 6%, var(--f-surface-2)); }
+  .fin-tx-table tbody tr.fin-upcoming > td { background: none; }
+  /* Its buttons (Enter, Skip, Change this one, edit) take their own line across the row, wrapping
+     when they must: in the amounts' column they'd widen it and squeeze the description. */
+  .fin-tx-table tbody tr.fin-upcoming > .c-act { grid-column: 2 / -1; }
+  .fin-tx-table tbody tr.fin-upcoming .fin-upcoming-actions { flex-wrap: wrap; justify-content: flex-end; }
+
+  /* Stacked tables (fin-stack: the Scheduled page's, IOU entries): each row a small card, like a
+     transaction: what it is and its amount, then a date and a second figure, the account, and the
+     buttons on a line of their own. Nothing is wider than the screen, so nothing scrolls sideways.
+     Cells say where they go: s-desc, s-amt, s-date, s-rep, s-acc, s-act. */
+  .fin-stack thead { display: none; }
+  .fin-stack, .fin-stack tbody { display: block; }
+  .fin-stack tbody tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: "desc amt" "date rep" "acc acc" "act act";
+    gap: 2px 12px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--f-border);
+  }
+  .fin-stack td { padding: 0; border: 0; }
+  .fin-stack .s-desc { grid-area: desc; font-weight: 500; min-width: 0; }
+  .fin-stack .s-amt { grid-area: amt; }
+  .fin-stack .s-date { grid-area: date; font-size: 12px; color: var(--f-muted); }
+  .fin-stack .s-rep { grid-area: rep; font-size: 12px; color: var(--f-muted); text-align: right; white-space: normal; }
+  .fin-stack .s-acc { grid-area: acc; font-size: 12px; color: var(--f-muted); }
+  .fin-stack .s-act { grid-area: act; padding-top: 6px; }
+  .fin-stack .s-act .fin-row-actions { flex-wrap: wrap; justify-content: flex-end; }
+  .fin-stack .s-desc .fin-cats { margin-top: 4px; }
+  .fin-stack tbody tr.fin-due { background: color-mix(in srgb, var(--f-accent) 6%, var(--f-surface-2)); }
+  .fin-stack tbody tr.fin-due > td { background: none; }
+  /* With one small action (IOU entries' delete), it shares the last line with the account. */
+  .fin-stack--tight tbody tr { grid-template-areas: "desc amt" "date rep" "acc act"; }
+  .fin-stack--tight .s-act { padding-top: 0; align-self: center; }
+  /* Holdings: a card each. Symbol and value, name and gain, units and cost, the price (a box when
+     it's entered by hand), exchange and currency, then the buttons. A holding's chart and lots
+     stay full width under it. */
+  .fin-holdings thead { display: none; }
+  .fin-holdings, .fin-holdings tbody { display: block; }
+  .fin-holdings tbody tr.fin-holding {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: "sym val" "name gain" "units cost" "price price" "exch cur" "act act";
+    gap: 2px 12px;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--f-border);
+  }
+  .fin-holdings tbody tr.fin-edit-row, .fin-holdings tbody tr.fin-edit-row > td { display: block; }
+  .fin-holdings td { padding: 0; border: 0; }
+  .fin-holdings .h-sym { grid-area: sym; font-weight: 600; }
+  .fin-holdings .h-name { grid-area: name; min-width: 0; font-size: 13px; }
+  .fin-holdings .h-val { grid-area: val; font-weight: 600; }
+  .fin-holdings .h-gain { grid-area: gain; }
+  .fin-holdings .h-units { grid-area: units; text-align: left; font-size: 12px; color: var(--f-muted); }
+  .fin-holdings .h-cost { grid-area: cost; font-size: 12px; }
+  .fin-holdings .h-price { grid-area: price; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-top: 4px; font-size: 13px; }
+  .fin-holdings .h-exch { grid-area: exch; font-size: 12px; }
+  .fin-holdings .h-cur { grid-area: cur; font-size: 12px; text-align: right; }
+  .fin-holdings .h-act { grid-area: act; padding-top: 6px; }
+  .fin-holdings .h-act .fin-row-actions { flex-wrap: wrap; justify-content: flex-end; }
+  .fin-holdings .fin-stack-label { display: inline; color: var(--f-muted); }
+  .fin-holdings .h-val .fin-sub, .fin-holdings .h-gain .fin-sub, .fin-holdings .h-cost .fin-sub { display: block; }
+  /* The few words standing in for a stacked table's hidden headers ("Next", "a month"). */
+  .fin-stack .fin-stack-label { display: inline; }
+  .fin-stack .s-rep, .fin-stack .s-date, .fin-stack .s-acc { white-space: normal; }
+  .fin-stack .s-rep .fin-sub, .fin-stack .s-date .fin-sub, .fin-stack .s-acc .fin-sub { display: inline; margin-left: 4px; }
   .fin-filters .fin-input { flex: 1 1 8rem; }
   .fin-ms { flex: 1 1 8rem; }
   .fin-filters .fin-ms-btn { width: 100%; max-width: none; }

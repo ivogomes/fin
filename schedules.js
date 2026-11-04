@@ -272,7 +272,7 @@ export function suggestionsCard() {
     h('div', { class: 'fin-card-head' },
       h('h3', { id: 'suggest-h', class: 'fin-label' }, 'Looks recurring ', h('span', { class: 'fin-count' }, String(list.length)))),
     h('p', { class: 'fin-hint fin-pad-x' }, 'These came round regularly for about the same amount and have no schedule yet. Schedule one to see it coming, or say it isn’t recurring.'),
-    h('div', { class: 'fin-scroll' }, h('table', { class: 'fin-table' },
+    h('div', { class: 'fin-scroll' }, h('table', { class: 'fin-table fin-stack' },
       h('caption', { class: 'fin-sr' }, 'Payments that look recurring'),
       h('thead', {}, h('tr', {}, ['Description', 'Account', 'Amount', 'Repeats', 'Next date'].map((t, i) =>
         h('th', { scope: 'col', class: i === 2 ? 'fin-r' : null }, t)), h('th', { scope: 'col' }, h('span', { class: 'fin-sr' }, 'Actions')))),
@@ -280,13 +280,13 @@ export function suggestionsCard() {
         const cur = state.accounts.find((a) => a.id === x.accountId)?.currency ?? 'EUR';
         const shown = x.kind === 'expense' ? -x.amount : x.amount;
         return h('tr', {},
-          h('td', {}, x.description, catChips(categoriesOf(x))),
-          h('td', {}, accountName(x.accountId)),
-          h('td', { class: `fin-r fin-num ${tone(shown)}` }, signed(shown, cur),
+          h('td', { class: 's-desc' }, x.description, catChips(categoriesOf(x))),
+          h('td', { class: 's-acc' }, accountName(x.accountId)),
+          h('td', { class: `fin-r fin-num s-amt ${tone(shown)}` }, signed(shown, cur),
             x.typical !== x.amount && h('span', { class: 'fin-sub' }, `usually ${money(x.typical, cur)}`)),
-          h('td', {}, frequencyLabel(x), h('span', { class: 'fin-sub' }, `${x.count} times, last on ${shortDate(x.lastDate)}`)),
-          h('td', { class: 'fin-nowrap' }, h('time', { datetime: x.nextDate }, shortDate(x.nextDate))),
-          h('td', { class: 'fin-r' }, h('div', { class: 'fin-actions fin-row-actions' },
+          h('td', { class: 's-rep' }, frequencyLabel(x), h('span', { class: 'fin-sub' }, `${x.count} times, last on ${shortDate(x.lastDate)}`)),
+          h('td', { class: 'fin-nowrap s-date' }, h('time', { datetime: x.nextDate }, shortDate(x.nextDate))),
+          h('td', { class: 'fin-r s-act' }, h('div', { class: 'fin-actions fin-row-actions' },
             button('Schedule…', () => openScheduleDialog(null, x), 'secondary fin-btn-sm', { 'aria-label': `Schedule ${x.description}`, 'aria-haspopup': 'dialog' }),
             button('Not recurring', () => hide(x), 'secondary fin-btn-sm', { 'aria-label': `${x.description} isn’t recurring` }))));
       })))));
@@ -361,7 +361,9 @@ export function subscriptionsPanel() {
     persist(); render('sched-add');
     say(`“${x.description}” isn’t treated as a subscription any more.`);
   };
-  const name = (x) => h('td', {}, x.description,
+  // Stacked on a phone (fin-stack), the columns lose their headers, so these few say what they are.
+  const label = (text) => h('span', { class: 'fin-stack-label' }, `${text} `);
+  const name = (x) => h('td', { class: 's-desc' }, x.description,
     h('span', { class: 'fin-sub' }, [...categoriesOf(x).map(catLabel), accountName(x.accountId)].filter(Boolean).join(' · ')));
   const find = (x) => pageLink('Find', { name: 'search', q: x.description }, 'fin-link fin-link-sm');
   return h('div', {},
@@ -379,7 +381,7 @@ export function subscriptionsPanel() {
       h('div', { class: 'fin-card-head' }, h('h3', { id: 'subs-h', class: 'fin-label' }, 'Active ', h('span', { class: 'fin-count' }, String(active.length)))),
       active.length === 0
         ? h('p', { class: 'fin-empty fin-pad' }, 'No subscriptions found. They show here once one has been charged three times for the same price.')
-        : h('div', { class: 'fin-scroll' }, h('table', { class: 'fin-table fin-subs' },
+        : h('div', { class: 'fin-scroll' }, h('table', { class: 'fin-table fin-subs fin-stack' },
           h('caption', { class: 'fin-sr' }, 'Active subscriptions, dearest first'),
           h('thead', {}, h('tr', {}, ['Subscription', 'Price', 'A month', 'Last charged', 'Next'].map((t, i) =>
             h('th', { scope: 'col', class: i === 1 || i === 2 ? 'fin-r' : null }, t)), h('th', { scope: 'col' }, h('span', { class: 'fin-sr' }, 'Actions')))),
@@ -388,17 +390,17 @@ export function subscriptionsPanel() {
             const up = x.priceChange && x.priceChange.to > x.priceChange.from;
             return h('tr', {},
               name(x),
-              h('td', { class: 'fin-r fin-num' }, money(x.amount, cur), h('span', { class: 'fin-sub' }, frequencyLabel(x).toLowerCase()),
+              h('td', { class: 'fin-r fin-num s-amt' }, money(x.amount, cur), h('span', { class: 'fin-sub' }, frequencyLabel(x).toLowerCase()),
                 x.priceChange && h('span', { class: `fin-chip fin-chip-inline ${up ? 'fin-chip-up' : 'fin-chip-down'}` },
                   `${up ? '↑' : '↓'} from ${money(x.priceChange.from, cur)} in ${new Date(`${x.priceChange.date}T00:00:00`).toLocaleDateString(undefined, { month: 'short', year: 'numeric' })}`)),
-              h('td', { class: 'fin-r fin-num' }, money(subEur(x, x.monthly), 'EUR')),
+              h('td', { class: 'fin-r fin-num s-rep' }, money(subEur(x, x.monthly), 'EUR'), h('span', { class: 'fin-stack-label' }, ' a month')),
               x.lastDate
-                ? h('td', { class: 'fin-nowrap' }, h('time', { datetime: x.lastDate }, shortDate(x.lastDate)),
+                ? h('td', { class: 'fin-nowrap s-acc' }, label('Last charged'), h('time', { datetime: x.lastDate }, shortDate(x.lastDate)),
                   h('span', { class: 'fin-sub' }, `${x.count} charges since ${shortDate(x.firstDate)}`))
-                : h('td', { class: 'fin-muted' }, 'Not seen yet'),
-              h('td', { class: 'fin-nowrap' }, h('time', { datetime: x.nextDate }, shortDate(x.nextDate)),
+                : h('td', { class: 'fin-muted s-acc' }, 'Not seen yet'),
+              h('td', { class: 'fin-nowrap s-date' }, label('Next'), h('time', { datetime: x.nextDate }, shortDate(x.nextDate)),
                 x.scheduleId && h('span', { class: 'fin-sub' }, x.marked ? 'marked in its schedule' : 'scheduled')),
-              h('td', { class: 'fin-r' }, h('div', { class: 'fin-actions fin-row-actions' },
+              h('td', { class: 'fin-r s-act' }, h('div', { class: 'fin-actions fin-row-actions' },
                 !x.scheduleId && button('Schedule…', () => openScheduleDialog(null, { ...x, kind: 'expense', subscription: true }), 'secondary fin-btn-sm', { 'aria-label': `Schedule ${x.description}`, 'aria-haspopup': 'dialog' }),
                 x.scheduleId && button('Edit schedule', () => openScheduleDialog(state.schedules.find((y) => y.id === x.scheduleId)), 'secondary fin-btn-sm', { 'aria-label': `Edit the schedule of ${x.description}`, 'aria-haspopup': 'dialog' }),
                 find(x),
@@ -407,17 +409,17 @@ export function subscriptionsPanel() {
     stopped.length > 0 && h('section', { class: 'fin-card', 'aria-labelledby': 'subs-stop-h' },
       h('div', { class: 'fin-card-head' }, h('h3', { id: 'subs-stop-h', class: 'fin-label' }, 'Looks cancelled ', h('span', { class: 'fin-count' }, String(stopped.length)))),
       h('p', { class: 'fin-hint fin-pad-x' }, 'These were charged regularly but the last one is well overdue. If you didn’t cancel one, check it’s still being paid.'),
-      h('div', { class: 'fin-scroll' }, h('table', { class: 'fin-table' },
+      h('div', { class: 'fin-scroll' }, h('table', { class: 'fin-table fin-stack' },
         h('caption', { class: 'fin-sr' }, 'Subscriptions that look cancelled'),
         h('thead', {}, h('tr', {}, ['Subscription', 'Price', 'Last charged', 'Was due'].map((t, i) =>
           h('th', { scope: 'col', class: i === 1 ? 'fin-r' : null }, t)), h('th', { scope: 'col' }, h('span', { class: 'fin-sr' }, 'Actions')))),
         h('tbody', {}, stopped.map((x) => h('tr', {},
           name(x),
-          h('td', { class: 'fin-r fin-num' }, money(x.amount, subCurrency(x)), h('span', { class: 'fin-sub' }, frequencyLabel(x).toLowerCase())),
-          h('td', { class: 'fin-nowrap' }, x.lastDate ? [h('time', { datetime: x.lastDate }, shortDate(x.lastDate))] : '—'),
-          h('td', { class: 'fin-nowrap' }, h('time', { datetime: x.nextDate }, shortDate(x.nextDate)),
+          h('td', { class: 'fin-r fin-num s-amt' }, money(x.amount, subCurrency(x)), h('span', { class: 'fin-sub' }, frequencyLabel(x).toLowerCase())),
+          h('td', { class: 'fin-nowrap s-acc' }, x.lastDate ? [label('Last charged'), h('time', { datetime: x.lastDate }, shortDate(x.lastDate))] : '—'),
+          h('td', { class: 'fin-nowrap s-date' }, label('Was due'), h('time', { datetime: x.nextDate }, shortDate(x.nextDate)),
             x.marked && h('span', { class: 'fin-sub' }, 'its schedule has ended')),
-          h('td', { class: 'fin-r' }, h('div', { class: 'fin-actions fin-row-actions' },
+          h('td', { class: 'fin-r s-act' }, h('div', { class: 'fin-actions fin-row-actions' },
             find(x),
             button('Not a subscription', () => hide(x), 'secondary fin-btn-sm', { 'aria-label': `${x.description} isn’t a subscription` }))))))))),
     h('p', { class: 'fin-hint fin-mt' }, 'Found in the last three years of payments: something charged at a steady rhythm (weekly, monthly, quarterly or yearly; a yearly one after two charges) for the same price each time, give or take 5% for foreign-currency charges, or with one price change. You can also tick “This is a subscription” on any schedule. Rent or a loan can look like one too; say “Not a subscription” and it won’t show again.',
@@ -456,7 +458,7 @@ export function renderSchedules() {
     h('section', { class: 'fin-card' },
       list.length === 0
         ? h('p', { class: 'fin-empty fin-pad' }, 'Nothing scheduled yet. Add one here, use Repeat when adding a single transaction, or import Buxfer’s reminders.csv.')
-        : h('div', { class: 'fin-scroll' }, h('table', { class: 'fin-table' },
+        : h('div', { class: 'fin-scroll' }, h('table', { class: 'fin-table fin-stack' },
           h('caption', { class: 'fin-sr' }, 'Scheduled transactions'),
           h('thead', {}, h('tr', {}, ['Next date', 'Description', 'Account', 'Amount', 'Repeats'].map((t, i) =>
             h('th', { scope: 'col', class: i === 3 ? 'fin-r' : null }, t)), h('th', { scope: 'col' }, h('span', { class: 'fin-sr' }, 'Actions')))),
@@ -465,14 +467,14 @@ export function renderSchedules() {
             const cur = state.accounts.find((a) => a.id === s.accountId)?.currency ?? 'EUR';
             const shown = s.kind === 'expense' ? -s.amount : s.amount;
             return h('tr', { class: due ? 'fin-due' : null },
-              h('td', { class: 'fin-nowrap' }, h('time', { datetime: s.nextDate }, shortDate(s.nextDate)),
+              h('td', { class: 'fin-nowrap s-date' }, h('time', { datetime: s.nextDate }, shortDate(s.nextDate)),
                 due && h('span', { class: 'fin-chip fin-chip-inline fin-chip-due' }, due)),
-              h('td', {}, s.description, s.subscription && h('span', { class: 'fin-chip fin-chip-inline' }, 'Subscription'),
+              h('td', { class: 's-desc' }, s.description, s.subscription && h('span', { class: 'fin-chip fin-chip-inline' }, 'Subscription'),
                 catChips(categoriesOf(s))),
-              h('td', {}, scheduleAccounts(s)),
-              h('td', { class: `fin-r fin-num ${s.kind === 'transfer' ? '' : tone(shown)}` }, s.kind === 'transfer' ? money(s.amount, cur) : signed(shown, cur)),
-              h('td', { class: 'fin-nowrap' }, frequencyLabel(s), s.endDate && h('span', { class: 'fin-sub' }, `until ${shortDate(s.endDate)}`)),
-              h('td', { class: 'fin-r' }, h('div', { class: 'fin-actions fin-row-actions' },
+              h('td', { class: 's-acc' }, scheduleAccounts(s)),
+              h('td', { class: `fin-r fin-num s-amt ${s.kind === 'transfer' ? '' : tone(shown)}` }, s.kind === 'transfer' ? money(s.amount, cur) : signed(shown, cur)),
+              h('td', { class: 'fin-nowrap s-rep' }, frequencyLabel(s), s.endDate && h('span', { class: 'fin-sub' }, `until ${shortDate(s.endDate)}`)),
+              h('td', { class: 'fin-r s-act' }, h('div', { class: 'fin-actions fin-row-actions' },
                 due && button('Enter', () => enterScheduled(s, `sched-edit-${s.id}`), 'secondary fin-btn-sm', { 'aria-label': `Enter ${s.description}` }),
                 button('Edit', () => openScheduleDialog(s), 'secondary fin-btn-sm', { 'aria-label': `Edit ${s.description}`, 'data-key': `sched-edit-${s.id}` }),
                 button('Stop', () => deleteScheduled(s), 'danger fin-btn-sm', { 'aria-label': `Stop ${s.description}` }))));

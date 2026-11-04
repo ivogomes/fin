@@ -154,7 +154,7 @@ export function multiTxForm(account, close, swap) {
       type: typeSwitch(['expense', 'income', 'refund', 'transfer'], 'expense', { label: `Type, row ${n}`, compact: true, onChange: () => syncType() }),
       // For a transfer, the category cell shows where the money goes instead.
       to: select([['', 'To account…'], ...accounts.map((a) => [a.id, accountLabel(a)])], '', { 'aria-label': `Transfer to, row ${n}`, hidden: true }),
-      amount: input({ type: 'number', step: '0.01', min: '0.01', inputmode: 'decimal', 'aria-label': `Amount, row ${n}` }),
+      amount: input({ type: 'number', step: '0.01', min: '0.01', inputmode: 'decimal', placeholder: '0.00', 'aria-label': `Amount, row ${n}` }),
       date: input({ type: 'date', value: rows.at(-1)?.date.value || today(), 'aria-label': `Date, row ${n}` }),
       acc: select(accounts.map((a) => [a.id, accountLabel(a)]), rows.at(-1)?.acc.value ?? account.id, { 'aria-label': `Account, row ${n}` }),
     });
@@ -202,9 +202,13 @@ export function multiTxForm(account, close, swap) {
       r.to.hidden = !transfer;
     };
     rows.push(r);
+    // data-label: each field's name above it on a phone, where the column headers are hidden (CSS).
+    r.desc.placeholder = 'Description';
     r.tr = h('tr', {},
-      h('td', {}, combo.el), h('td', {}, r.type.el), h('td', {}, r.cat.el, r.to),
-      h('td', {}, r.amount), h('td', {}, r.date), h('td', {}, r.acc));
+      h('td', { 'data-label': 'Description' }, combo.el), h('td', { 'data-label': 'Type' }, r.type.el),
+      h('td', { 'data-label': 'Category or To' }, r.cat.el, r.to),
+      h('td', { 'data-label': 'Amount' }, r.amount), h('td', { 'data-label': 'Date' }, r.date),
+      h('td', { 'data-label': 'Account (from)' }, r.acc));
     body.append(r.tr);
     return r;
   };
