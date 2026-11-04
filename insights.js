@@ -15,7 +15,7 @@ import { pageLink } from './overview.js';
 import { chartTip, lotsOfHolding, timeChart } from './holdings.js';
 import { fetchTransactions, ratesArg, renderWhenIdle } from './transactions.js';
 import {
-  button, catLabel, catOptions, category, field, h, hideAmounts, icon, input, isPhone, latestRate, loader,
+  button, catLabel, category, field, h, hideAmounts, icon, input, isPhone, latestRate, loader,
   money, monthLabel, num, numLocale, readPref, say, select, fullDate, shortDate, shownQty, signed,
   tone, writePref,
 } from './ui.js';
@@ -401,7 +401,6 @@ export function insightsPanel(accountIds, { spendingOnly = false, balanceOf = nu
           // uncategorised ones only of the card's own kind.
           categoryBreakdown('Spending by category', r.spending, r.expenses, (ids, types) => searchFor(ids, types ?? (ids[0] === '' ? ['expense', 'refund'] : []))),
           !spendingOnly && categoryBreakdown('Income by category', r.earning, r.income, (ids, types) => searchFor(ids, types ?? (ids[0] === '' ? ['income'] : [])))),
-        categoryOverTime(range, prevRange, accountIds, r),
       ],
     h('p', { class: 'fin-hint fin-mt' }, 'Transfers between your accounts and opening balances aren’t counted. Loans and repayments count only what isn’t owed back, refunds lower spending (in their first category that isn’t an income one, like a salary), and a transaction with several categories counts under its first one.'));
 }
@@ -432,28 +431,6 @@ export function versus(now, before, prevRange) {
   if (!before) return now ? `nothing in ${prevLabel(prevRange)}` : '';
   const pct = Math.round(((now - before) / Math.abs(before)) * 100);
   return pct === 0 ? `same as ${prevLabel(prevRange)}` : `${pct > 0 ? '+' : ''}${pct}% vs ${prevLabel(prevRange)}`;
-}
-
-// One category's spending over the period (and its total against the previous period). Defaults to
-// the biggest spending category; the choice is kept while the page is open.
-export let insightsCategory = null;
-export function categoryOverTime(range, prevRange, accountIds, r) {
-  const options = catOptions();
-  const id = options.some(([x]) => x === insightsCategory) ? insightsCategory : r.spending.find((c) => c.id)?.id ?? options[0]?.[0];
-  if (!id) return null;
-  const now = insightsFor(range, accountIds, id);
-  const before = insightsFor(prevRange, accountIds, id);
-  if (!now || !before) return h('section', { class: 'fin-card' }, loader('Working out the category over time…'));
-  const pick = select(options, id, { 'data-key': 'cat-time', 'aria-label': 'Category' });
-  pick.addEventListener('change', () => { insightsCategory = pick.value; render('cat-time'); });
-  return h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'cat-time-h' },
-    h('div', { class: 'fin-chart-head' },
-      h('h3', { id: 'cat-time-h', class: 'fin-label' }, `Spending on a category, by ${now.unit}`),
-      h('div', { class: 'fin-cat-time-pick' }, pick)),
-    h('p', { class: 'fin-readout' },
-      h('strong', { class: 'fin-num' }, money(now.expenses, 'EUR')), ` on ${catLabel(id)} · `,
-      h('span', { class: 'fin-muted' }, versus(now.expenses, before.expenses, prevRange))),
-    singleColumns(now.series.map((b) => ({ key: b.key, value: b.expenses })), now.unit, range, `Spending on ${catLabel(id)}`));
 }
 
 // One series as columns from a zero baseline (no legend: the heading names it). Hover or focus a

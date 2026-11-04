@@ -166,7 +166,7 @@ An investment account's Insights tab (its value, what was invested and the gain 
 
 **Price history:** an investment account's Insights has **Load price history**: weekly closing prices per holding (Alpha Vantage for non-US exchanges, Twelve Data for US ones; one lookup each), kept in `holdings.price_history` and refreshed weekly after that. With it, past values use each week's close instead of the last trade price.
 
-**Insights comparisons:** income and spending are compared with the period of the same length just before (this year against last year), and the **Spending on a category** card shows one category (with its children) over the period against the previous one.
+**Insights comparisons:** income and spending are compared with the period of the same length just before (this year against last year).
 
 ## Assets
 

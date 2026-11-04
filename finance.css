@@ -1655,7 +1655,6 @@ a.fin-break-link:focus-visible { outline: none; box-shadow: var(--f-ring); borde
 .fin-side-toggle, .fin-fab, .fin-tabbar, .fin-back, .fin-me-phone, .fin-filter-toggle, .fin-stack-label { display: none; }
 /* The accounts list as a page (phones): the side panel's content in a card. */
 .fin-side-list { margin-top: 20px; padding: 12px 6px; background: var(--f-surface); border: 1px solid var(--f-border); border-radius: var(--f-radius); }
-.fin-cat-time-pick .fin-input { width: auto; max-width: 16rem; }
 
 @media (max-width: 52rem) {
   /* The header: logo, save status and your avatar on one line, clear of the notch. The sections
