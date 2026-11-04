@@ -605,7 +605,6 @@ export function investmentInsights(account) {
   const invested = investedHistory(account, state, dates, rateOf, runMap(paidIn).get(account.id) ?? { values: [] });
   const pts = hist.points.map((p, i) => ({ key: p.key, date: p.date, total: p.total, investments: invested[i] }));
   const now = pts.at(-1);
-  const gain = now.total - now.investments;
   const change = now.total - pts[0].total;
 
   // Dividends: paid by its holdings (wherever they landed) or into this account.
@@ -641,12 +640,9 @@ export function investmentInsights(account) {
 
   return h('div', { class: 'fin-insights' },
     periodControls(range),
+    // Value, invested and gain are at the top of the account's page; here, what's about the period
+    // and the return.
     h('dl', { class: 'fin-stats' },
-      h('div', { class: 'fin-stat-key' }, h('dt', {}, 'Value today'), h('dd', {}, money(now.total, 'EUR'))),
-      h('div', {}, h('dt', {}, 'Invested'), h('dd', {}, money(now.investments, 'EUR')),
-        h('p', { class: 'fin-stat-note' }, byLots ? 'cost of the units held' : 'money moved into the account')),
-      h('div', {}, h('dt', {}, 'Gain'), h('dd', { class: tone(gain) }, signed(gain, 'EUR')),
-        now.investments > 0 && h('p', { class: 'fin-stat-note' }, `${gain >= 0 ? '+' : ''}${num((gain / now.investments) * 100)}%`)),
       h('div', {}, h('dt', {}, `Change since ${shortDate(pts[0].date)}`),
         h('dd', { class: tone(change) }, signed(change, 'EUR')),
         h('p', { class: 'fin-stat-note' }, 'value, including new money')),

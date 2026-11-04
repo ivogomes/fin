@@ -158,7 +158,7 @@ Each holding has a **Chart** button: its price over time (weekly closes once its
 
 ## Insights for investment accounts
 
-An investment account's Insights tab shows its value against the money invested over the period (same presets), the gain, the change in value, its annual return, the dividends in the period, and each holding's units, value, cost, gain, dividends, return and share today. "Invested" is the cost of the units held when every holding has buys and sells, otherwise the money moved into the account. Past values follow the same rules as net worth below.
+An investment account's Insights tab (its value, what was invested and the gain are at the top of the account's page) shows its value against the money invested over the period (same presets) as a chart, the change in value, its annual return, the dividends in the period, and each holding's units, value, cost, gain, dividends, return and share today. "Invested" is the cost of the units held when every holding has buys and sells, otherwise the money moved into the account. Past values follow the same rules as net worth below.
 
 **Annual return** is money-weighted (XIRR, `xirr` in `model.js`): the yearly rate that makes the money paid in, the money back (sells, dividends) and today's value balance out, so money added late counts for less time. It covers everything from the first buy (or the first transaction), not just the period. With buys and sells for every holding it uses those; otherwise the money moved in and out of the account. Under a year it shows the plain return instead, since a yearly rate would stretch a few weeks' move into a misleading number.
 
