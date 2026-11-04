@@ -1411,6 +1411,9 @@ a.fin-break-link:focus-visible { outline: none; box-shadow: var(--f-ring); borde
 .fin-cat-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--chip-ink); align-self: center; }
 
 /* ── Holdings ─────────────────────────────────────────── */
+/* A holding's symbol stands out in the holdings tables (its name, under it on Insights, stays regular). */
+.h-sym, .hi-sym { font-weight: 600; }
+.hi-sym .fin-sub { font-weight: 400; }
 .fin-chip-buy { background: var(--f-accent-soft); border-color: transparent; color: var(--f-accent-strong); }
 .fin-chip-sell { background: var(--f-danger-soft); border-color: transparent; color: var(--f-neg); }
 .fin-lots { background: var(--f-surface); border: 1px solid var(--f-border); border-radius: var(--f-radius-sm); }
