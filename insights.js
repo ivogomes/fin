@@ -674,22 +674,26 @@ export function investmentInsights(account) {
       h('span', { class: 'fin-hint' }, 'One lookup per holding, with your Market data keys. It then updates itself weekly.')),
     rows.length > 0 && h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'inv-h' },
       h('h3', { id: 'inv-h', class: 'fin-label' }, 'Holdings today'),
-      h('div', { class: 'fin-scroll' }, h('table', { class: 'fin-table' },
+      h('div', { class: 'fin-scroll' }, h('table', { class: 'fin-table fin-hold-ins' },
         h('caption', { class: 'fin-sr' }, `Holdings of ${account.name}`),
         h('thead', {}, h('tr', {}, ['Holding', 'Units', 'Value', 'Cost', 'Gain', 'Dividends', 'Return', 'Share'].map((t, i) => h('th', { scope: 'col', class: i ? 'fin-r' : null }, t)))),
+        // On a phone each row stacks as a card (fin-hold-ins in finance.css), each cell in its place
+        // (hi-…), the figures without their header saying what they are (fin-stack-label).
         h('tbody', {}, rows.map(({ x, value, cost, gain: g, dividends: d, ret }) => {
           const r = ret && returnText(ret);
+          const label = (text) => h('span', { class: 'fin-stack-label' }, `${text} `);
           return h('tr', {},
-            h('td', {}, x.symbol, h('span', { class: 'fin-sub' }, x.name ?? '')),
-            h('td', { class: 'fin-r fin-num' }, shownQty(x.quantity)),
-            h('td', { class: 'fin-r fin-num' }, money(value, 'EUR')),
-            h('td', { class: 'fin-r fin-num fin-muted' }, cost == null ? '—' : money(cost, 'EUR')),
-            h('td', { class: `fin-r fin-num ${g == null ? '' : tone(g)}` }, g == null ? '—' : signed(g, 'EUR'),
+            h('td', { class: 'hi-sym' }, x.symbol, h('span', { class: 'fin-sub' }, x.name ?? '')),
+            h('td', { class: 'fin-r fin-num hi-units' }, shownQty(x.quantity), h('span', { class: 'fin-stack-label' }, ' units')),
+            h('td', { class: 'fin-r fin-num hi-val' }, money(value, 'EUR')),
+            h('td', { class: 'fin-r fin-num fin-muted hi-cost' }, label('cost'), cost == null ? '—' : money(cost, 'EUR')),
+            h('td', { class: `fin-r fin-num hi-gain ${g == null ? '' : tone(g)}` }, g == null ? '—' : signed(g, 'EUR'),
               g != null && cost > 0 && h('span', { class: 'fin-sub' }, `${g >= 0 ? '+' : ''}${num((g / cost) * 100)}%`)),
-            h('td', { class: 'fin-r fin-num' }, d ? money(d, 'EUR') : '—'),
-            h('td', { class: `fin-r fin-num ${r ? (r.value > 0 ? 'fin-pos' : r.value < 0 ? 'fin-neg' : '') : ''}` }, r ? r.text : '—',
+            h('td', { class: 'fin-r fin-num hi-div' }, label('Dividends'), d ? money(d, 'EUR') : '—'),
+            h('td', { class: `fin-r fin-num hi-ret ${r ? (r.value > 0 ? 'fin-pos' : r.value < 0 ? 'fin-neg' : '') : ''}` }, label('Return'), r ? r.text : '—',
               r?.short && h('span', { class: 'fin-sub' }, 'under a year')),
-            h('td', { class: 'fin-r fin-num fin-muted' }, totalValue ? `${Math.round((value / totalValue) * 100)}%` : ''));
+            h('td', { class: 'fin-r fin-num fin-muted hi-share' }, totalValue ? `${Math.round((value / totalValue) * 100)}%` : '',
+              totalValue > 0 && h('span', { class: 'fin-stack-label' }, ' of the account')));
         })))),
       h('p', { class: 'fin-hint' }, 'Return is money-weighted (XIRR) over each holding’s buys, sells and dividends, with today’s value as if sold today. It needs the holding’s buys and sells.')),
     allocationCard(own, account.id));

@@ -1921,6 +1921,33 @@ input.fin-cat-add:focus { width: 10rem; border-style: solid; border-color: var(-
   .fin-holdings .h-act .fin-row-actions { flex-wrap: wrap; justify-content: flex-end; }
   .fin-holdings .fin-stack-label { display: inline; color: var(--f-muted); }
   .fin-holdings .h-val .fin-sub, .fin-holdings .h-gain .fin-sub, .fin-holdings .h-cost .fin-sub { display: block; }
+  /* An investment account's Insights holdings: a card each. Symbol (and name) and value, units and
+     gain, cost and dividends, its share and return. */
+  .fin-hold-ins thead { display: none; }
+  .fin-hold-ins, .fin-hold-ins tbody { display: block; }
+  .fin-hold-ins tbody tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: "sym val" "units gain" "cost div" "share ret";
+    gap: 2px 12px;
+    padding: 12px 0; /* the card around it has its own padding */
+    border-bottom: 1px solid var(--f-border);
+  }
+  .fin-hold-ins tbody tr:last-child { border-bottom: 0; }
+  .fin-hold-ins td { padding: 0; border: 0; white-space: normal; }
+  .fin-hold-ins .hi-sym { grid-area: sym; min-width: 0; font-weight: 600; text-align: left; }
+  .fin-hold-ins .hi-sym .fin-sub { display: block; font-weight: 400; }
+  .fin-hold-ins .hi-val { grid-area: val; font-weight: 600; }
+  .fin-hold-ins .hi-gain { grid-area: gain; }
+  .fin-hold-ins .hi-gain .fin-sub { display: inline; margin-left: 4px; }
+  .fin-hold-ins .hi-units, .fin-hold-ins .hi-cost, .fin-hold-ins .hi-share { text-align: left; font-size: 12px; color: var(--f-muted); }
+  .fin-hold-ins .hi-units { grid-area: units; }
+  .fin-hold-ins .hi-cost { grid-area: cost; }
+  .fin-hold-ins .hi-share { grid-area: share; }
+  .fin-hold-ins .hi-div { grid-area: div; font-size: 12px; }
+  .fin-hold-ins .hi-ret { grid-area: ret; font-size: 12px; }
+  .fin-hold-ins .hi-ret .fin-sub { display: inline; margin-left: 4px; }
+  .fin-hold-ins .fin-stack-label { display: inline; color: var(--f-muted); font-weight: 400; }
   /* The few words standing in for a stacked table's hidden headers ("Next", "a month"). */
   .fin-stack .fin-stack-label { display: inline; }
   .fin-stack .s-rep, .fin-stack .s-date, .fin-stack .s-acc { white-space: normal; }
