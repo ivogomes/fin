@@ -13,7 +13,7 @@ import {
   selectAccount, setView, state, totalsOf, undoable, usageBar, view,
 } from './app.js';
 import { holdingsGain, holdingsSection } from './holdings.js';
-import { ask, insightsPanel, investmentInsights, runMap, transactionsLoaded } from './insights.js';
+import { accountSinceYesterday, ask, insightsPanel, investmentInsights, runMap, transactionsLoaded } from './insights.js';
 import { FORECAST_DAYS, daysFromToday, openScheduleDialog } from './schedules.js';
 import { fetchTransactions, transactionsSection } from './transactions.js';
 import {
@@ -408,8 +408,12 @@ export function renderAccount(account) {
         const use = limitUse(account, value);
         const neg = account.type === 'credit' ? Boolean(use && use.left < 0) : value < 0;
         const low = !neg && (account.type === 'credit' ? use?.level === 'high' : account.lowBalance != null && value < account.lowBalance);
+        // With holdings: the gain or loss since yesterday, as net worth's on the Overview.
+        const since = inv?.hasHoldings ? accountSinceYesterday(account) : null;
         return h('div', { class: `fin-stat-key${neg ? ' is-neg' : low ? ' is-low' : ''}` },
           h('dt', {}, inv?.hasHoldings ? 'Value' : 'Balance'), h('dd', { class: `fin-num${neg ? ' fin-neg' : ''}` }, signed(value, account.currency)),
+          since && h('p', { class: `fin-stat-note fin-stat-day ${tone(since.day)}` },
+            since.day !== 0 && h('span', { 'aria-hidden': 'true' }, since.day > 0 ? '▲ ' : '▼ '), since.text),
           h('p', { class: 'fin-stat-note' }, inv?.hasHoldings ? 'holdings at today’s prices'
             : account.type === 'credit' ? (neg ? `owed on the card, over its ${money(account.creditLimit, account.currency)} limit` : low ? `owed on the card, ${use.used}% of its limit` : value < 0 ? 'owed on the card' : 'in your favour')
               : low ? `up to today, below your ${money(account.lowBalance, account.currency)} warning` : neg ? 'up to today, overdrawn' : 'up to today'));

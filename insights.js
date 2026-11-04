@@ -713,6 +713,23 @@ export function netWorthSinceYesterday() {
   }).points;
   return now.total - before.total;
 }
+// An investment account's gain or loss since yesterday, in its currency: the change in its value less
+// the money moved in or out since (so a deposit isn't a gain). { day, text }, or null while it's
+// worked out.
+export function accountSinceYesterday(account) {
+  const to = today();
+  const from = new Date(Date.parse(`${to}T00:00:00Z`) - 864e5).toISOString().slice(0, 10);
+  const runs = ask('balances_at', { p_dates: [from, to], p_rates: ratesArg(), p_accounts: [account.id] });
+  if (!runs) return null;
+  const map = runMap(runs);
+  const [before, now] = netWorthHistory({ ...state, accounts: [account], assets: [] }, {
+    from, to, today: to, holdingsValue: holdingsValueEUR, rateOf: (c) => latestRate(c) ?? 1, runs: map, estimate: estimateOpts,
+  }).points;
+  const moved = map.get(account.id)?.values ?? [];
+  const eur = now.total - before.total - (Number(moved[1] ?? 0) - Number(moved[0] ?? 0));
+  const day = Math.round(eur / (latestRate(account.currency) ?? 1));
+  return { day, text: day === 0 ? 'no change since yesterday' : `${signed(day, account.currency)} since yesterday` };
+}
 // The same, said: { day, text }, or null while it's worked out (or with no accounts).
 export function sinceYesterday() {
   const day = state.accounts.length ? netWorthSinceYesterday() : undefined;
