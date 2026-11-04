@@ -110,6 +110,8 @@ export const shortDate = (iso) => {
     ? { day: 'numeric', month: 'short' }
     : { day: 'numeric', month: 'short', year: 'numeric' });
 };
+// The same, always with its year (shortDate leaves this year's out; adding it by hand doubled it).
+export const fullDate = (iso) => new Date(`${iso}T00:00:00`).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
 
 export function field(label, control, hint) {
   const id = `f-${newId().slice(0, 8)}`;

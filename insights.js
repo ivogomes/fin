@@ -16,7 +16,7 @@ import { chartTip, lotsOfHolding, timeChart } from './holdings.js';
 import { fetchTransactions, ratesArg, renderWhenIdle } from './transactions.js';
 import {
   button, catLabel, catOptions, category, field, h, hideAmounts, icon, input, isPhone, latestRate, loader,
-  money, monthLabel, num, numLocale, readPref, say, select, shortDate, shownQty, signed,
+  money, monthLabel, num, numLocale, readPref, say, select, fullDate, shortDate, shownQty, signed,
   tone, writePref,
 } from './ui.js';
 
@@ -426,7 +426,7 @@ export function previousRange({ from, to }) {
   const days = Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 864e5) + 1;
   return { from: day(from, -days), to: day(from, -1) };
 }
-export const prevLabel = ({ from, to }) => `${shortDate(from)} ${from.slice(0, 4)} – ${shortDate(to)} ${to.slice(0, 4)}`;
+export const prevLabel = ({ from, to }) => `${fullDate(from)} – ${fullDate(to)}`;
 // "+12% vs 1 Jan 2025 – 31 Dec 2025", "new", or "same as …".
 export function versus(now, before, prevRange) {
   if (!before) return now ? `nothing in ${prevLabel(prevRange)}` : '';
@@ -673,7 +673,7 @@ export function investmentInsights(account) {
         h('dd', { class: yearly.value > 0 ? 'fin-pos' : yearly.value < 0 ? 'fin-neg' : '' }, yearly.text),
         h('p', { class: 'fin-stat-note' }, yearly.short
           ? `since ${shortDate(since)}; under a year, so not made yearly`
-          : `money-weighted, since ${shortDate(since)} ${since.slice(0, 4)}${dividends.length ? ', with dividends' : ''}`)),
+          : `money-weighted, since ${fullDate(since)}${dividends.length ? ', with dividends' : ''}`)),
       dividends.length > 0 && h('div', {}, h('dt', {}, 'Dividends'), h('dd', { class: 'fin-pos' }, money(divInRange, 'EUR')),
         h('p', { class: 'fin-stat-note' }, `in this period · ${money(divAll, 'EUR')} in all`))),
     pts.length > 1
@@ -822,7 +822,7 @@ export function renderNetWorth() {
         : h('p', { class: 'fin-notice' }, 'Pick a longer period to see net worth over time.'),
       h('p', { class: 'fin-hint' },
         hist.firstSnapshot
-          ? `Investments are at market value from ${shortDate(hist.firstSnapshot)} ${hist.firstSnapshot.slice(0, 4)}, recorded once a day when you open the app. Before that, holdings with buys and sells are valued as the units held times the latest trade price`
+          ? `Investments are at market value from ${fullDate(hist.firstSnapshot)}, recorded once a day when you open the app. Before that, holdings with buys and sells are valued as the units held times the latest trade price`
           : 'Investments are at market value today. Earlier, holdings with buys and sells are valued as the units held times the latest trade price',
         hist.estimated
           ? '; accounts without them are estimated as what was put in by then plus today’s gain growing evenly from their first transaction.'

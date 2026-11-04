@@ -7,7 +7,7 @@ import { byName, loadHistory, refreshPrices, render, setView, state, undoable, v
 import { priceCell, symbolPicker } from './entry.js';
 import {
   button, dialog, field, h, hideAmounts, iconButton, input, isPhone, latestRate, money, num, say, select,
-  shortDate, shownQty, signed, tone,
+  fullDate, shortDate, shownQty, signed, tone,
 } from './ui.js';
 
 // ── editing a holding ────────────────────────────────────────────────────────
@@ -180,7 +180,7 @@ export function timeChart(points, { id, title, unit, format, kind = 'change', re
   const span = Math.max(1, Date.parse(points.at(-1).date) - t0);
   const x = (p) => L + ((Date.parse(p.date) - t0) / span) * plotW;
   const y = (v) => T + plotH - ((v - bottom) / (top - bottom)) * plotH;
-  const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, class: 'fin-chart fin-time-chart', role: 'img', 'aria-label': `${title}${unit ? `, ${unit}` : ''}, from ${shortDate(points[0].date)} ${points[0].date.slice(0, 4)} to ${shortDate(points.at(-1).date)} ${points.at(-1).date.slice(0, 4)}` });
+  const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, class: 'fin-chart fin-time-chart', role: 'img', 'aria-label': `${title}${unit ? `, ${unit}` : ''}, from ${fullDate(points[0].date)} to ${fullDate(points.at(-1).date)}` });
   const short = (v) => (hideAmounts ? '•••' : format(Math.round(v)).replace(/[.,]00(?=\D*$)/, ''));
   for (let v = bottom; v <= top + step / 2; v += step) {
     svg.append(el('line', { x1: L, x2: W - R, y1: y(v), y2: y(v), class: v === 0 && kind === 'gain' ? 'fin-axis-line' : 'fin-grid-line' }));
@@ -246,7 +246,7 @@ export function timeChart(points, { id, title, unit, format, kind = 'change', re
   const info = (p, i) => {
     const d = p.v - base;
     const r = refAt(p.date);
-    return [h('strong', {}, `${shortDate(p.date)} ${p.date.slice(0, 4)}`), ' ',
+    return [h('strong', {}, `${fullDate(p.date)}`), ' ',
       h('strong', { class: `fin-num ${kind === 'gain' ? tone(p.v) : ''}` }, format(p.v)),
       change && i > 0 && [' · ', h('span', { class: `fin-num ${tone(d)}` }, signedOf(d)),
         !hideAmounts && base > 0 ? ` (${d >= 0 ? '+' : ''}${num((d / base) * 100)}%)` : '', ' since the start'],
@@ -294,7 +294,7 @@ export function timeChart(points, { id, title, unit, format, kind = 'change', re
         change && h('th', { scope: 'col', class: 'fin-r' }, 'Since the start'),
         ref && h('th', { scope: 'col', class: 'fin-r' }, refLabel))),
       h('tbody', {}, [...points].reverse().map((p) => h('tr', {},
-        h('th', { scope: 'row' }, `${shortDate(p.date)} ${p.date.slice(0, 4)}`),
+        h('th', { scope: 'row' }, `${fullDate(p.date)}`),
         h('td', { class: `fin-r fin-num ${kind === 'gain' ? tone(p.v) : ''}` }, format(p.v)),
         change && h('td', { class: `fin-r fin-num ${tone(p.v - base)}` }, signedOf(p.v - base)),
         ref && h('td', { class: 'fin-r fin-num' }, refAt(p.date) == null ? '—' : format(refAt(p.date)))))))));

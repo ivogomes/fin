@@ -18,7 +18,7 @@ import { FORECAST_DAYS, daysFromToday, openScheduleDialog } from './schedules.js
 import { fetchTransactions, transactionsSection } from './transactions.js';
 import {
   button, dialog, field, flag, h, icon, input, latestRate, money, monthLabel, num, say, select,
-  shortDate, signed, tone,
+  fullDate, shortDate, signed, tone,
 } from './ui.js';
 
 // ── account dialog ───────────────────────────────────────────────────────────
@@ -367,7 +367,7 @@ export function renderAccount(account) {
           [account.institution, account.lastFour && `••${account.lastFour}`].filter(Boolean).join(' '),
           account.isMain && 'Main account',
           account.openedOn && `Opened ${monthLabel(account.openedOn.slice(0, 7))}`,
-          account.closedOn && `Closed ${shortDate(account.closedOn)} ${account.closedOn.slice(0, 4)}`,
+          account.closedOn && `Closed ${fullDate(account.closedOn)}`,
           account.excludeTotals && 'Not in totals',
           account.archived && 'Archived',
         ].filter(Boolean).join(' · '))),
