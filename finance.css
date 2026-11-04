@@ -1051,6 +1051,11 @@ input.fin-cat-add:focus { width: 10rem; border-style: solid; border-color: var(-
 .fin-break details > summary .fin-break-name::after { content: ' ▸'; color: var(--f-muted); font-size: 11px; }
 .fin-break details[open] > summary .fin-break-name::after { content: ' ▾'; }
 .fin-break-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+/* A category's name opens its transactions in the period (Search). */
+a.fin-break-link { color: inherit; text-decoration: underline; text-decoration-color: var(--f-border-strong); text-underline-offset: 3px; }
+a.fin-break-link:hover { color: var(--f-accent-strong); text-decoration-color: currentColor; }
+a.fin-break-link:focus-visible { outline: none; box-shadow: var(--f-ring); border-radius: 4px; }
+.fin-break-all { margin: 6px 0 4px 14px; }
 .fin-break-child { padding-left: 18px; }
 .fin-break-child .fin-break-name { font-weight: 400; color: var(--f-muted); }
 .fin-break-children { padding-bottom: 6px; }

@@ -56,7 +56,15 @@ export function urlOf(v) {
     if (v.name === 'insights' && v.tab === 'networth') q.set('tab', 'networth');
     if (v.name === 'scheduled' && v.tab === 'subscriptions') q.set('tab', 'subscriptions');
     if (v.name === 'ious' && v.personId) q.set('person', v.personId);
-    if (v.name === 'search' && v.q) q.set('q', v.q);
+    if (v.name === 'search') {
+      if (v.q) q.set('q', v.q);
+      // Its filters, when opened with some (a category's transactions, from Insights).
+      if (v.cats?.length) q.set('cats', v.cats.join(','));
+      if (v.types?.length) q.set('types', v.types.join(','));
+      if (v.accounts?.length) q.set('accounts', v.accounts.join(','));
+      if (v.from) q.set('from', v.from);
+      if (v.to) q.set('to', v.to);
+    }
   }
   const s = q.toString();
   return s ? `${BASE_PATH}?${s}` : BASE_PATH;
@@ -75,6 +83,12 @@ export function viewFromUrl() {
       ...(page === 'scheduled' && q.get('tab') === 'subscriptions' && { tab: 'subscriptions' }),
       name: page, ...(q.get('section') && { section: q.get('section') }), ...(q.get('person') && { personId: q.get('person') }),
       ...(page === 'search' && q.get('q') && { q: q.get('q') }),
+      ...(page === 'search' && ['cats', 'types', 'accounts'].some((k) => q.has(k)) && {
+        cats: q.get('cats')?.split(',') ?? [], types: q.get('types')?.split(',').filter(Boolean) ?? [],
+        accounts: q.get('accounts')?.split(',').filter(Boolean) ?? [],
+      }),
+      ...(page === 'search' && q.get('from') && { from: q.get('from') }),
+      ...(page === 'search' && q.get('to') && { to: q.get('to') }),
     };
   }
   if (q.has('account')) {

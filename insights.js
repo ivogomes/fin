@@ -230,7 +230,8 @@ export function donutChart(title, slices, total, { share }) {
 // middle, over the list of every category with its amount and share; a category with subcategories
 // opens to show them. Slice colours go by rank (validated categorical palette); each list row
 // carries the same colour as a dot.
-export function categoryBreakdown(title, rows, total) {
+// `search(ids, types)` gives the search showing a row's transactions in the period (null: none).
+export function categoryBreakdown(title, rows, total, search = null) {
   const name = (id) => (id === REFUNDS_UNMATCHED ? 'Refunds with no expense category'
     : id === DIVIDENDS ? 'Dividends'
       : id ? catLabel(id) || 'Deleted category' : 'Uncategorised');
@@ -244,9 +245,21 @@ export function categoryBreakdown(title, rows, total) {
     return i < 0 ? null : i < DONUT_SLOTS ? String(i) : 'other';
   };
   const dot = (slot) => h('span', { class: 'fin-dot', 'data-slot': slot ?? 'none', 'aria-hidden': 'true' });
-  const line = (id, amount, child = false) => h('div', { class: `fin-break-row fin-break-row--dot${child ? ' fin-break-child' : ''}` },
+  // A row's name opens its transactions (not the row of an opening list, whose name opens it, nor a
+  // parent's own part, without a category of its own to search for).
+  const searchOf = (id) => {
+    if (!search || id === REFUNDS_UNMATCHED) return null;
+    return id === DIVIDENDS ? search([], ['dividend']) : search([id ?? '']);
+  };
+  const line = (id, amount, child = false, { linked = true } = {}) => h('div', { class: `fin-break-row fin-break-row--dot${child ? ' fin-break-child' : ''}` },
     child ? h('span', { 'aria-hidden': 'true' }) : dot(slotOf(id)),
-    h('span', { class: 'fin-break-name' }, child ? (category(id)?.name ?? name(id)) : name(id)),
+    (() => {
+      const label = child ? (category(id)?.name ?? name(id)) : name(id);
+      const to = linked && searchOf(id);
+      return to
+        ? pageLink(label, to, 'fin-break-name fin-break-link')
+        : h('span', { class: 'fin-break-name' }, label);
+    })(),
     h('span', { class: 'fin-num fin-break-amt' }, money(amount, 'EUR')),
     h('span', { class: 'fin-num fin-break-pct fin-muted' }, share(amount)));
   return h('section', { class: 'fin-card fin-pad', 'aria-label': title },
@@ -256,10 +269,11 @@ export function categoryBreakdown(title, rows, total) {
       h('ul', { class: 'fin-break' }, rows.map((c) => h('li', {},
         c.children.length
           ? h('details', {},
-            h('summary', {}, line(c.id, c.amount)),
+            h('summary', {}, line(c.id, c.amount, false, { linked: false })),
             h('div', { class: 'fin-break-children' }, c.children.map((k) => line(k.id, k.amount, true)),
               c.amount - c.children.reduce((x, k) => x + k.amount, 0) !== 0 &&
-                line(null, c.amount - c.children.reduce((x, k) => x + k.amount, 0), true)))
+                line(null, c.amount - c.children.reduce((x, k) => x + k.amount, 0), true, { linked: false }),
+              searchOf(c.id) && h('p', { class: 'fin-break-all' }, pageLink(`See all of ${name(c.id)}`, searchOf(c.id), 'fin-link fin-link-sm'))))
           : line(c.id, c.amount)))),
     ]);
 }
@@ -345,6 +359,9 @@ export function insightsPanel(accountIds, { spendingOnly = false, balanceOf = nu
     return h('div', { class: 'fin-insights' }, periodControls(range), loader('Working out Insights…'));
   }
   const rate = r.savingsRate == null ? '—' : `${Math.round(r.savingsRate * 100)}%`;
+  const searchFor = (cats, types) => ({
+    name: 'search', cats, types, accounts: accountIds ? [...accountIds] : [], from: range.from, to: range.to, // the same period as the totals
+  });
   const vs = (now, before) => h('p', { class: 'fin-stat-note' }, versus(now, before, prevRange));
   const avg = avgR ? {
     months: whole.months,
@@ -380,8 +397,10 @@ export function insightsPanel(accountIds, { spendingOnly = false, balanceOf = nu
             singleColumns(r.series.map((b) => ({ key: b.key, value: b.expenses })), r.unit, range, 'Spending'))
           : incomeSpendChart(r),
         h('div', { class: 'fin-break-grid' },
-          categoryBreakdown('Spending by category', r.spending, r.expenses),
-          !spendingOnly && categoryBreakdown('Income by category', r.earning, r.income)),
+          // Each category opens its transactions in the period (in these accounts) as search results;
+          // uncategorised ones only of the card's own kind.
+          categoryBreakdown('Spending by category', r.spending, r.expenses, (ids, types) => searchFor(ids, types ?? (ids[0] === '' ? ['expense', 'refund'] : []))),
+          !spendingOnly && categoryBreakdown('Income by category', r.earning, r.income, (ids, types) => searchFor(ids, types ?? (ids[0] === '' ? ['income'] : [])))),
         categoryOverTime(range, prevRange, accountIds, r),
       ],
     h('p', { class: 'fin-hint fin-mt' }, 'Transfers between your accounts and opening balances aren’t counted. Loans and repayments count only what isn’t owed back, refunds lower spending (in their first category that isn’t an income one, like a salary), and a transaction with several categories counts under its first one.'));

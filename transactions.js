@@ -654,9 +654,13 @@ export function descIndex() {
 
 // Search across every account (archived ones too).
 export function renderSearch() {
-  // Arriving with something to search for (…?page=search&q=…, from Go to): start with it.
-  if (view.q) {
-    txFilters.set('search', { ...EMPTY_FILTER, text: view.q });
+  // Arriving with something to search for (…?page=search&q=…, from Go to, or a category's
+  // transactions in a period from Insights): start with it. ('' among the categories is uncategorised.)
+  if (view.q || view.cats || view.types || view.accounts || view.from || view.to) {
+    txFilters.set('search', {
+      ...EMPTY_FILTER, text: view.q ?? '', categoryIds: view.cats ?? [], types: view.types ?? [],
+      accountIds: view.accounts ?? [], from: view.from ?? '', to: view.to ?? '',
+    });
     setView({ name: 'search' });
   }
   const f = filterOf('search');
