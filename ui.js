@@ -173,6 +173,8 @@ export const ICONS = {
   warn: ['M12 4 2.8 19.5h18.4Z', 'M12 10v4.5', 'M12 17.2h.01'],
   pause: ['M9.5 6v12', 'M14.5 6v12'],
   cloud: ['M7 18.5h10.5a4 4 0 0 0 .4-7.98A6 6 0 0 0 6.3 9.7 4.4 4.4 0 0 0 7 18.5Z', 'M12 11v4.5', 'M12 18h.01'],
+  // A subscription: a calendar page (it comes back every month or year), unlike a transfer's arrows.
+  subscription: ['M4 6.5h16V20H4Z', 'M4 10.5h16', 'M8.5 4v4.5M15.5 4v4.5', 'M8.5 14.5h2M13.5 14.5h2M8.5 17h2'],
   repeat: ['M17 3.5 20.5 7 17 10.5', 'M3.5 11V10a3 3 0 0 1 3-3h14', 'M7 20.5 3.5 17 7 13.5', 'M20.5 13v1a3 3 0 0 1-3 3h-14'],
   // Account types
   'type-cash': ['M3 7h18v10H3Z', 'M12 9.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5Z', 'M6.5 10v4M17.5 10v4'],

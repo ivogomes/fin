@@ -841,11 +841,15 @@ textarea.fin-input { resize: vertical; }
   font-weight: 500;
 }
 .fin-chip-inline { margin-left: 8px; font-size: 11px; vertical-align: 1px; }
+/* A subscription's chip: a small calendar icon before the word. */
+.fin-chip-sub { display: inline-flex; align-items: center; gap: 4px; }
+.fin-chip-sub .fin-icon { width: 11px; height: 11px; flex: none; }
 .fin-chip-due { background: var(--f-accent-soft); border-color: transparent; color: var(--f-accent-strong); }
 /* A subscription's price change: up is money out (red), down is money saved (green); the arrow says it too. */
 .fin-chip-up { background: var(--f-danger-soft); border-color: transparent; color: var(--f-neg); }
 .fin-chip-down { background: var(--f-accent-soft); border-color: transparent; color: var(--f-pos); }
 .fin-subs .fin-chip-inline { display: table; margin: 4px 0 0 auto; }
+.fin-subs .fin-chip-sub { display: flex; width: fit-content; }
 .fin-chips { display: flex; flex-wrap: wrap; gap: 8px; list-style: none; margin: 0 0 14px; padding: 0; }
 
 /* Transfers and IOUs shown in place of categories. */

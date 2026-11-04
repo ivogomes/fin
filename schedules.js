@@ -330,11 +330,11 @@ export function subscriptionChip(t, s = null) {
   if (!x) return null;
   const what = (t ?? s).description;
   return h('button', {
-    type: 'button', class: 'fin-chip fin-chip-inline fin-chip-link', 'aria-haspopup': 'dialog',
+    type: 'button', class: 'fin-chip fin-chip-inline fin-chip-link fin-chip-sub', 'aria-haspopup': 'dialog',
     'aria-label': `Subscription: ${x.scheduleId ? 'edit its schedule' : 'schedule it'} (${what})`,
     title: x.scheduleId ? 'Edit the schedule' : 'Schedule it',
     onclick: () => openSubscriptionSchedule(x),
-  }, 'Subscription');
+  }, icon('subscription'), 'Subscription');
 }
 // Its schedule, to change it; one that isn't scheduled yet opens a new schedule filled in from it.
 export function openSubscriptionSchedule(x) {
@@ -469,7 +469,7 @@ export function renderSchedules() {
             return h('tr', { class: due ? 'fin-due' : null },
               h('td', { class: 'fin-nowrap s-date' }, h('time', { datetime: s.nextDate }, shortDate(s.nextDate)),
                 due && h('span', { class: 'fin-chip fin-chip-inline fin-chip-due' }, due)),
-              h('td', { class: 's-desc' }, s.description, s.subscription && h('span', { class: 'fin-chip fin-chip-inline' }, 'Subscription'),
+              h('td', { class: 's-desc' }, s.description, s.subscription && h('span', { class: 'fin-chip fin-chip-inline fin-chip-sub' }, icon('subscription'), 'Subscription'),
                 catChips(categoriesOf(s))),
               h('td', { class: 's-acc' }, scheduleAccounts(s)),
               h('td', { class: `fin-r fin-num s-amt ${s.kind === 'transfer' ? '' : tone(shown)}` }, s.kind === 'transfer' ? money(s.amount, cur) : signed(shown, cur)),
