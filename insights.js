@@ -15,7 +15,7 @@ import { pageLink } from './overview.js';
 import { chartTip, lotsOfHolding, timeChart } from './holdings.js';
 import { fetchTransactions, ratesArg, renderWhenIdle } from './transactions.js';
 import {
-  button, catLabel, catOptions, category, field, h, hideAmounts, icon, input, latestRate, loader,
+  button, catLabel, catOptions, category, field, h, hideAmounts, icon, input, isPhone, latestRate, loader,
   money, monthLabel, num, numLocale, readPref, say, select, shortDate, shownQty, signed,
   tone, writePref,
 } from './ui.js';
@@ -73,7 +73,9 @@ export function incomeSpendChart(r) {
     for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
     return n;
   };
-  const W = 760; const H = 230; const L = 52; const R = 8; const T = 10; const B = 26;
+  // On a phone, drawn for its narrow width (so it fits without scrolling), with fewer date labels.
+  const narrow = isPhone();
+  const W = narrow ? 380 : 760; const H = 230; const L = 52; const R = 8; const T = 10; const B = 26;
   const plotW = W - L - R; const plotH = H - T - B;
   const series = r.series;
   const top = Math.max(1, ...series.map((b) => Math.max(b.income, b.expenses)));
@@ -93,7 +95,7 @@ export function incomeSpendChart(r) {
 
   const slot = plotW / series.length;
   const barW = Math.max(2, Math.min(24, (slot - 8) / 2 - 1));
-  const every = Math.ceil(series.length / 12); // at most ~12 x labels
+  const every = Math.ceil(series.length / (narrow ? 6 : 12)); // at most ~12 x labels (6 on a phone)
   const chartWrap = h('div', { class: 'fin-chart-wrap' }, svg);
   const tip = chartTip(chartWrap, svg);
   const multiYear = r.from.slice(0, 4) !== r.to.slice(0, 4);
@@ -444,7 +446,8 @@ export function singleColumns(series, unit, range, label) {
     for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
     return n;
   };
-  const W = 760; const H = 200; const L = 52; const R = 8; const T = 10; const B = 26;
+  const narrow = isPhone(); // drawn for a phone's width there, as incomeSpendChart
+  const W = narrow ? 380 : 760; const H = 200; const L = 52; const R = 8; const T = 10; const B = 26;
   const plotW = W - L - R; const plotH = H - T - B;
   const top = Math.max(1, ...series.map((b) => b.value));
   const mag = 10 ** Math.floor(Math.log10(top));
@@ -460,7 +463,7 @@ export function singleColumns(series, unit, range, label) {
   }
   const slot = plotW / series.length;
   const barW = Math.max(2, Math.min(24, slot - 6));
-  const every = Math.ceil(series.length / 12);
+  const every = Math.ceil(series.length / (narrow ? 6 : 12));
   const multiYear = range.from.slice(0, 4) !== range.to.slice(0, 4);
   const readout = h('p', { class: 'fin-readout fin-muted', 'aria-live': 'polite' }, 'Hover or focus a column for its value.');
   const chartWrap = h('div', { class: 'fin-chart-wrap' }, svg);

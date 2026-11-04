@@ -6,7 +6,7 @@ import { persist } from './store.js';
 import { byName, loadHistory, refreshPrices, render, setView, state, undoable, view } from './app.js';
 import { priceCell, symbolPicker } from './entry.js';
 import {
-  button, dialog, field, h, hideAmounts, iconButton, input, latestRate, money, num, say, select,
+  button, dialog, field, h, hideAmounts, iconButton, input, isPhone, latestRate, money, num, say, select,
   shortDate, shownQty, signed, tone,
 } from './ui.js';
 
@@ -151,7 +151,7 @@ export function chartTip(wrap, svg) {
 //   red below, with that level marked. `ref` adds a dashed line to compare with (e.g. money invested).
 // - 'gain': a line around zero, gains shaded green and losses red.
 // One tab stop: ←/→ step through the points (Home/End jump), the readout says the values; a table
-// has them all. `wide` for a full-width chart.
+// has them all. `wide` for a full-width chart (a phone gets its own narrow one either way).
 export function timeChart(points, { id, title, unit, format, kind = 'change', ref = null, refLabel = '', wide = false }) {
   const NS = 'http://www.w3.org/2000/svg';
   const el = (tag, attrs = {}) => {
@@ -160,7 +160,10 @@ export function timeChart(points, { id, title, unit, format, kind = 'change', re
     return n;
   };
   const change = kind === 'change';
-  const W = wide ? 860 : 560; const H = wide ? 260 : 220; const L = 76; const R = change ? 76 : 12; const T = 12; const B = 26;
+  // On a phone, drawn for its narrow width (so it fits without scrolling, its labels still readable).
+  const narrow = isPhone();
+  const W = narrow ? 380 : wide ? 860 : 560; const H = narrow ? 240 : wide ? 260 : 220;
+  const L = narrow ? 60 : 76; const R = change ? L : 12; const T = 12; const B = 26;
   const plotW = W - L - R; const plotH = H - T - B;
   const base = points[0].v;
   const vals = [...points.map((p) => p.v), ...(ref ?? []).map((p) => p.v)];
@@ -225,7 +228,7 @@ export function timeChart(points, { id, title, unit, format, kind = 'change', re
     svg.append(el('path', { d: line, class: 'fin-line fin-line-down', 'clip-path': clip.down }));
   }
   // Dates along the bottom: about five, evenly spread.
-  const ticks = Math.min(wide ? 7 : 5, points.length);
+  const ticks = Math.min(narrow ? 3 : wide ? 7 : 5, points.length);
   for (let k = 0; k < ticks; k += 1) {
     const d = new Date(t0 + (span * k) / Math.max(1, ticks - 1)).toISOString().slice(0, 10);
     const t = el('text', { x: L + (plotW * k) / Math.max(1, ticks - 1), y: H - 8, class: 'fin-tick', 'text-anchor': k === 0 ? 'start' : k === ticks - 1 ? 'end' : 'middle' });

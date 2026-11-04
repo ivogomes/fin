@@ -1017,6 +1017,9 @@ input.fin-cat-add:focus { width: 10rem; border-style: solid; border-color: var(-
 
 .fin-chart-wrap { overflow-x: auto; }
 .fin-chart { display: block; width: 100%; min-width: 520px; height: auto; }
+/* Charts are drawn for a phone's width there (isPhone in timeChart and the column charts): no
+   sideways scrolling. */
+@media (max-width: 52rem) { .fin-chart { min-width: 0; } }
 .fin-grid-line { stroke: var(--f-border); stroke-width: 1; }
 .fin-axis-line { stroke: var(--f-border-strong); stroke-width: 1; }
 .fin-tick { fill: var(--f-muted); font: 11px var(--font-sans); font-variant-numeric: tabular-nums; }
