@@ -10,13 +10,12 @@ import {
 import { persist } from './store.js';
 import { render, state, undoable } from './app.js';
 import { timeChart } from './holdings.js';
+import { pageLink } from './overview.js';
 import {
   button, dialog, field, h, icon, iconButton, input, latestRate, money, num, say, select, shortDate,
   signed, tone,
 } from './ui.js';
 
-// The assets that count in net worth: each one does unless it's left out (the checkbox on its card).
-export const countedAssets = () => state.assets.filter((x) => !x.excludeTotals);
 // What `list` is worth on `date`, in EUR at today's rates.
 export const assetsInEur = (list, date = today()) =>
   list.reduce((sum, x) => sum + convert(assetValue(x, date)?.value ?? 0, latestRate(x.currency) ?? 1), 0);
@@ -33,26 +32,26 @@ export function renderAssets() {
   const total = assetsInEur(own);
   const cost = own.filter((x) => x.purchasePrice != null).reduce((sum, x) => sum + convert(x.purchasePrice, latestRate(x.currency) ?? 1), 0);
   const valuedCost = assetsInEur(own.filter((x) => x.purchasePrice != null));
-  const inNetWorth = own.filter((x) => !x.excludeTotals);
   return h('div', {},
     h('div', { class: 'fin-account-head' },
       h('div', {}, h('h2', { class: 'fin-title', id: 'assets-h', tabindex: '-1' }, 'Assets'),
         h('p', { class: 'fin-meta' }, 'Your home, vehicles and anything else of value, at what they’re worth: valued when you know, estimated in between.')),
       button('Add asset', () => openAssetDialog(), 'primary', { 'data-key': 'asset-add', 'aria-haspopup': 'dialog' })),
     own.length === 0 && sold.length === 0
-      ? h('section', { class: 'fin-card fin-pad' }, h('p', { class: 'fin-empty' }, 'No assets yet. Add a home, a car or anything else of value to follow what it’s worth and count it in net worth.'))
+      ? h('section', { class: 'fin-card fin-pad' }, h('p', { class: 'fin-empty' }, 'No assets yet. Add a home, a car or anything else of value to follow what it’s worth.'))
       : [
         h('dl', { class: 'fin-stats' },
-          h('div', {}, h('dt', {}, 'Worth'), h('dd', {}, money(total, 'EUR')),
+          h('div', { class: 'fin-stat-key' }, h('dt', {}, 'Worth'), h('dd', {}, money(total, 'EUR')),
             h('p', { class: 'fin-stat-note' }, `${own.length} asset${own.length === 1 ? '' : 's'}, in EUR`)),
           cost > 0 && h('div', {}, h('dt', {}, 'Bought for'), h('dd', {}, money(cost, 'EUR')),
-            h('p', { class: `fin-stat-note ${tone(valuedCost - cost)}` }, `${signed(valuedCost - cost, 'EUR')} since (${valuedCost >= cost ? '+' : ''}${num(((valuedCost - cost) / cost) * 100)}%)`)),
-          h('div', {}, h('dt', {}, 'In net worth'), h('dd', {}, money(assetsInEur(inNetWorth), 'EUR')),
-            h('p', { class: 'fin-stat-note' }, inNetWorth.length === own.length ? (own.length === 1 ? 'it counts' : 'all of them count')
-              : `${inNetWorth.length} of ${own.length} count; each card says`))),
-        ...own.map(assetCard),
+            h('p', { class: `fin-stat-note ${tone(valuedCost - cost)}` }, `${signed(valuedCost - cost, 'EUR')} since (${valuedCost >= cost ? '+' : ''}${num(((valuedCost - cost) / cost) * 100)}%)`))),
+        // Assets aren't money, so they stay out of net worth; Show total wealth, on Net worth, adds them.
+        h('p', { class: 'fin-hint' }, 'Assets aren’t calculated into net worth. On the ',
+          pageLink('Insights', { name: 'insights', tab: 'networth' }, 'fin-link'), ' page you can enable "Show total wealth", which adds them for a total worth.'),
+        // Two side by side on a wider screen.
+        own.length > 0 && h('div', { class: 'fin-asset-grid' }, own.map(assetCard)),
         sold.length > 0 && h('h3', { class: 'fin-label fin-mt' }, 'Sold'),
-        ...sold.map(assetCard),
+        sold.length > 0 && h('div', { class: 'fin-asset-grid' }, sold.map(assetCard)),
       ]);
 }
 
@@ -66,38 +65,32 @@ function assetCard(x) {
   const headId = `asset-${x.id}`;
   return h('section', { class: `fin-card fin-asset${x.soldOn ? ' is-sold' : ''}`, 'aria-labelledby': headId },
     h('div', { class: 'fin-card-head fin-asset-head' },
-      h('h3', { id: headId, class: 'fin-asset-title' }, h('span', { class: `fin-group-icon fin-asset-icon fin-asset-icon--${x.kind}` }, icon(KIND_ICONS[x.kind] ?? 'asset-other')), x.name),
-      h('p', { class: 'fin-meta' }, [ASSET_KINDS[x.kind], cur, x.boughtOn && `bought ${shortDate(x.boughtOn)}`, x.soldOn && `sold ${shortDate(x.soldOn)}`].filter(Boolean).join(' · ')),
+      // Its name, with what it is under it (a long name wraps without crowding it).
+      h('div', { class: 'fin-asset-name' },
+        h('h3', { id: headId, class: 'fin-asset-title' }, h('span', { class: `fin-group-icon fin-asset-icon fin-asset-icon--${x.kind}` }, icon(KIND_ICONS[x.kind] ?? 'asset-other')), x.name),
+        h('p', { class: 'fin-meta' }, [ASSET_KINDS[x.kind], cur, x.boughtOn && `bought ${shortDate(x.boughtOn)}`, x.soldOn && `sold ${shortDate(x.soldOn)}`].filter(Boolean).join(' · '))),
       h('div', { class: 'fin-actions' },
-        // Whether it counts in net worth: a switch among its actions, saved at once.
-        !x.soldOn && h('label', { class: `fin-switch fin-asset-switch${x.excludeTotals ? '' : ' is-on'}` },
-          h('input', {
-            type: 'checkbox', role: 'switch', checked: !x.excludeTotals, 'data-key': `asset-count-${x.id}`,
-            'aria-label': `Count ${x.name} in net worth`,
-            onchange: (e) => {
-              if (e.target.checked) delete x.excludeTotals; else x.excludeTotals = true;
-              persist(); render(`asset-count-${x.id}`);
-              say(e.target.checked ? `${x.name} counts in net worth.` : `${x.name} is left out of net worth.`);
-            },
-          }),
-          h('span', { class: 'fin-switch-track', 'aria-hidden': 'true' }),
-          h('span', { 'aria-hidden': 'true' }, 'In net worth')),
         button('Edit', () => openAssetDialog(x), 'secondary fin-btn-sm', { 'data-key': `asset-edit-${x.id}`, 'aria-label': `Edit ${x.name}`, 'aria-haspopup': 'dialog' }),
         iconButton('trash', `Delete ${x.name}`, () => {
           if (!confirm(`Delete “${x.name}” and its valuations?`)) return;
           undoable(`${x.name} deleted.`, ['assets'], () => { state.assets = state.assets.filter((y) => y.id !== x.id); });
         }, { danger: true }))),
-    h('dl', { class: 'fin-stats fin-asset-stats' },
-      h('div', {}, h('dt', {}, x.soldOn ? 'Worth when sold' : shownAt?.estimated ? 'Worth, estimated' : 'Worth'),
-        h('dd', { class: 'fin-num' }, shownAt ? money(shownAt.value, cur) : '—'),
-        h('p', { class: 'fin-stat-note' }, !shownAt ? 'add a valuation below'
-          : shownAt.estimated ? `from ${money(shownAt.from.value, cur)} ${shownAt.from.bought ? 'paid' : 'valued'} on ${shortDate(shownAt.from.date)}, at ${rateText(x)}`
-            : shownAt.from.bought ? `its purchase price; changes at ${rateText(x)}` : `valued on ${shortDate(shownAt.from.date)}; changes at ${rateText(x)}`)),
-      x.purchasePrice != null && h('div', {}, h('dt', {}, 'Bought for'), h('dd', { class: 'fin-num' }, money(x.purchasePrice, cur)),
-        gain != null && h('p', { class: `fin-stat-note ${tone(gain)}` },
-          `${signed(gain, cur)}${x.purchasePrice > 0 ? ` (${gain >= 0 ? '+' : ''}${num((gain / x.purchasePrice) * 100)}%)` : ''} since`)),
-      cur !== 'EUR' && shownAt && h('div', {}, h('dt', {}, 'In EUR'), h('dd', { class: 'fin-num' }, money(convert(shownAt.value, latestRate(cur) ?? 1), 'EUR')),
-        h('p', { class: 'fin-stat-note' }, 'at today’s rate'))),
+    // One highlight: what it's worth (with the gain or loss since it was bought), and beside it (under
+    // it in a narrow card) what it was bought for and its value in EUR.
+    h('div', { class: 'fin-stat-key fin-asset-sum' },
+      h('dl', { class: 'fin-asset-main' },
+        h('div', {}, h('dt', {}, x.soldOn ? 'Worth when sold' : shownAt?.estimated ? 'Worth, estimated' : 'Worth'),
+          h('dd', { class: 'fin-num' }, shownAt ? money(shownAt.value, cur) : '—',
+            gain != null && h('span', { class: `fin-asset-gain ${tone(gain)}` },
+              `${signed(gain, cur)}${x.purchasePrice > 0 ? ` (${gain >= 0 ? '+' : ''}${num((gain / x.purchasePrice) * 100)}%)` : ''} since bought`)),
+          h('p', { class: 'fin-stat-note' }, !shownAt ? 'add a valuation below'
+            : shownAt.estimated ? `from ${money(shownAt.from.value, cur)} ${shownAt.from.bought ? 'paid' : 'valued'} on ${shortDate(shownAt.from.date)}, at ${rateText(x)}`
+              : shownAt.from.bought ? `its purchase price; changes at ${rateText(x)}` : `valued on ${shortDate(shownAt.from.date)}; changes at ${rateText(x)}`))),
+      (x.purchasePrice != null || (cur !== 'EUR' && shownAt)) && h('dl', { class: 'fin-asset-side' },
+        x.purchasePrice != null && h('div', {}, h('dt', {}, 'Bought for'), h('dd', { class: 'fin-num' }, money(x.purchasePrice, cur)),
+          x.boughtOn && h('p', { class: 'fin-stat-note' }, `on ${shortDate(x.boughtOn)}`)),
+        cur !== 'EUR' && shownAt && h('div', {}, h('dt', {}, 'In EUR'), h('dd', { class: 'fin-num' }, money(convert(shownAt.value, latestRate(cur) ?? 1), 'EUR')),
+          h('p', { class: 'fin-stat-note' }, 'at today’s rate')))),
     valueChart(x),
     valuationsList(x));
 }
@@ -114,7 +107,7 @@ function valueChart(x) {
   const dates = [...new Set([first, ...ends.map((e) => e.date), end])].sort();
   const pts = dates.map((date) => ({ date, v: assetValue(x, date)?.value ?? 0 }));
   return h('div', { class: 'fin-pad fin-asset-chart' }, timeChart(pts, {
-    id: `asset-chart-${x.id}`, title: `${x.name}, worth over time`, unit: `in ${x.currency}`, format: (v) => money(v, x.currency),
+    id: `asset-chart-${x.id}`, title: `Worth over time`, unit: `in ${x.currency}`, format: (v) => money(v, x.currency),
     ...(x.purchasePrice != null && { ref: pts.map((p) => ({ date: p.date, v: x.purchasePrice })), refLabel: 'Bought for' }),
   }));
 }

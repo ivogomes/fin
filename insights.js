@@ -10,7 +10,7 @@ import {
 import { missingTables, persist, transactionsComplete } from './store.js';
 import { counted } from './accounts.js';
 import { accountValue, latestClose, loadHistory, render, setView, state, totalsOf, view } from './app.js';
-import { assetsInEur, countedAssets } from './assets.js';
+import { assetsInEur } from './assets.js';
 import { pageLink } from './overview.js';
 import { chartTip, lotsOfHolding, timeChart } from './holdings.js';
 import { fetchTransactions, ratesArg, renderWhenIdle } from './transactions.js';
@@ -725,17 +725,17 @@ export function renderNetWorth() {
   if (!runs) {
     return h('div', { class: 'fin-insights' }, periodControls(range), loader('Working out the history…'));
   }
-  // Count everything (remembered in this browser): also the accounts and assets left out of totals,
-  // for a total worth. Offered only when something is left out.
-  const leftOut = state.accounts.some((a) => !a.archived && !counted(a)) || state.assets.some((x) => !x.soldOn && x.excludeTotals);
+  // Show total wealth (remembered in this browser): also the assets (never in net worth: they aren't
+  // money) and the accounts left out of totals, for a total worth. Offered only when there's more.
+  const leftOut = state.accounts.some((a) => !a.archived && !counted(a)) || state.assets.length > 0;
   const everything = leftOut && netWorthAll;
   const inTotals = (a) => everything || counted(a);
-  const hist = netWorthHistory({ ...state, accounts: state.accounts.filter(inTotals), assets: everything ? state.assets : countedAssets() }, {
+  const hist = netWorthHistory({ ...state, accounts: state.accounts.filter(inTotals), assets: everything ? state.assets : [] }, {
     from: range.from, to, today: today(), holdingsValue: holdingsValueEUR, rateOf: (c) => latestRate(c) ?? 1, runs: runMap(runs), estimate: estimateOpts,
   });
   // Net worth (or, counting everything, total worth) and what's within reach (without pensions and
-  // retirement savings, locked away until later, and without assets, which aren't money), both from
-  // the same point of the history.
+  // retirement savings, locked away until later, and without any assets counted), both from the same
+  // point of the history.
   const pts = hist.points;
   const now = pts.at(-1);
   const start = pts[0];
@@ -748,7 +748,7 @@ export function renderNetWorth() {
       onchange: (e) => { netWorthAll = e.target.checked; writePref('finance:nw-all', netWorthAll); render('nw-all'); },
     }),
     h('span', { class: 'fin-switch-track', 'aria-hidden': 'true' }),
-    'Count everything, also what’s left out of totals');
+    `Show total wealth (includes ${[state.assets.length && 'assets', state.accounts.some((a) => !a.archived && !counted(a)) && 'what’s left out of totals'].filter(Boolean).join(' and ')})`);
 
   // Today's split by account type (archived accounts are closed, so they're not part of it).
   const byType = ACCOUNT_TYPES.map((type) => {
@@ -756,7 +756,7 @@ export function renderNetWorth() {
       .reduce((sum, a) => sum + convert(accountValue(a), latestRate(a.currency) ?? 1), 0);
     return { type, value };
   }).filter((x) => x.value !== 0);
-  // Assets that count, as one more line (by their own icon).
+  // Assets, when counting everything, as one more line (by their own icon).
   if (now.assets) byType.push({ type: 'assets', label: 'Assets', icon: 'asset-home', value: now.assets });
   const assets = byType.filter((x) => x.value > 0).reduce((s, x) => s + x.value, 0);
   const debts = byType.filter((x) => x.value < 0).reduce((s, x) => s - x.value, 0);
@@ -766,9 +766,9 @@ export function renderNetWorth() {
       periodControls(range),
       allSwitch,
       h('dl', { class: 'fin-stats' },
-        h('div', {}, h('dt', {}, everything ? 'Total worth today' : 'Net worth today'), h('dd', {}, money(now.total, 'EUR')),
-          h('p', { class: 'fin-stat-note' }, everything ? 'everything, also what’s left out of totals'
-            : `what counts in totals${[now.locked && 'pensions', now.assets && 'assets'].filter(Boolean).length ? `, ${[now.locked && 'pensions', now.assets && 'assets'].filter(Boolean).join(' and ')} included` : ''}`)),
+        h('div', { class: 'fin-stat-key' }, h('dt', {}, everything ? 'Total worth today' : 'Net worth today'), h('dd', {}, money(now.total, 'EUR')),
+          h('p', { class: 'fin-stat-note' }, everything ? 'everything, assets included'
+            : `what counts in totals${now.locked ? ', pensions included' : ''}`)),
         h('div', {}, h('dt', {}, `Change since ${shortDate(start.date)}`),
           h('dd', { class: tone(change) }, signed(change, 'EUR')),
           start.total > 0 && h('p', { class: 'fin-stat-note' }, `${change >= 0 ? '+' : ''}${num((change / start.total) * 100)}%`)),
@@ -776,15 +776,10 @@ export function renderNetWorth() {
           now.total > 0 && h('p', { class: 'fin-stat-note' }, `${Math.round((now.investments / now.total) * 100)}% of net worth`)),
         h('div', {}, h('dt', {}, 'Debts'), h('dd', { class: debts ? 'fin-neg' : '' }, money(debts, 'EUR')),
           h('p', { class: 'fin-stat-note' }, 'credit cards and other negative balances')),
-        // Assets (a home, vehicles…: the Assets page), those that count (each asset says, on its card).
-        (() => {
-          const own = state.assets.filter((x) => !x.soldOn);
-          if (!own.length) return null;
-          const counting = everything ? own : own.filter((x) => !x.excludeTotals);
-          return h('div', {}, h('dt', {}, 'Assets'), h('dd', {}, money(assetsInEur(counting), 'EUR')),
-            h('p', { class: 'fin-stat-note' }, [counting.length === own.length ? 'in net worth · ' : `${counting.length} of ${own.length} in net worth · `,
-              pageLink('See them', { name: 'assets' }, 'fin-link fin-link-sm')]));
-        })(),
+        // Assets (a home, vehicles…: the Assets page): never in net worth, only in a total worth.
+        state.assets.some((x) => !x.soldOn) && h('div', {}, h('dt', {}, 'Assets'), h('dd', {}, money(assetsInEur(state.assets.filter((x) => !x.soldOn)), 'EUR')),
+          h('p', { class: 'fin-stat-note' }, everything ? 'in total worth · ' : 'not in net worth · ',
+            pageLink('See them', { name: 'assets' }, 'fin-link fin-link-sm'))),
         // Within reach: net worth less pensions and assets, from the same point of the history.
         hasReach && h('div', {}, h('dt', {}, 'Within reach'), h('dd', {}, money(reachOf(now), 'EUR')),
           h('p', { class: 'fin-stat-note' }, `without ${[now.locked > 0 && `${money(now.locked, 'EUR')} in pensions`, now.assets > 0 && `${money(now.assets, 'EUR')} in assets`].filter(Boolean).join(' and ')}`))),

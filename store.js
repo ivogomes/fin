@@ -107,7 +107,7 @@ const TABLES = {
     to: (x, i) => ({
       id: x.id, name: x.name, kind: x.kind, currency: x.currency, purchase_price: x.purchasePrice ?? null, bought_on: x.boughtOn ?? null,
       value_change: x.valueChange ?? null, value_floor: x.valueFloor ?? null, valuations: x.valuations ?? [],
-      sold_on: x.soldOn ?? null, exclude_totals: Boolean(x.excludeTotals), position: i,
+      sold_on: x.soldOn ?? null, position: i,
     }),
     from: (r) => {
       const x = { id: r.id, name: r.name, kind: r.kind, currency: r.currency, valuations: (r.valuations ?? []).map((v) => ({ date: v.date, value: Number(v.value) })) };
@@ -116,7 +116,6 @@ const TABLES = {
       if (r.value_change != null) x.valueChange = Number(r.value_change);
       if (r.value_floor != null) x.valueFloor = Number(r.value_floor);
       if (r.sold_on) x.soldOn = r.sold_on;
-      if (r.exclude_totals) x.excludeTotals = true;
       return x;
     },
   },

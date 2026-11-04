@@ -2001,9 +2001,14 @@ label > .fin-flag { margin-right: 6px; }
 .fin-coming-card .fin-icon { width: 18px; height: 18px; }
 
 /* Assets page: a card per asset (its kind's icon and name, figures, value over time, valuations). */
-.fin-asset-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
-.fin-asset-title { display: flex; align-items: center; gap: 10px; margin: 0; font-size: 17px; font-weight: 600; }
-.fin-asset-head .fin-meta { margin: 0 auto 0 0; }
+.fin-asset-head { display: flex; flex-wrap: nowrap; align-items: flex-start; gap: 12px; }
+.fin-asset-name { flex: 1 1 auto; min-width: 0; }
+.fin-asset-title { display: flex; align-items: center; gap: 10px; margin: 0; font-size: 17px; font-weight: 600; overflow-wrap: anywhere; }
+/* What it is, under the name, lined up with the name past its icon. */
+.fin-asset-head .fin-meta { margin: 2px 0 0 38px; }
+.fin-asset-head .fin-actions { flex: none; }
+/* On a small phone the actions go under the name instead of squeezing it. */
+@media (max-width: 40rem) { .fin-asset-head { flex-wrap: wrap; } }
 .fin-asset-icon { --tint-bg: #FDECE1; --tint-ink: #9E4719; }
 .fin-asset-icon--vehicle { --tint-bg: #E6EEFB; --tint-ink: #2A4F9E; }
 .fin-asset-icon--other { --tint-bg: #ECEFF1; --tint-ink: #44535D; }
@@ -2015,14 +2020,29 @@ label > .fin-flag { margin-right: 6px; }
 :where(:root[data-theme="dark"]) .fin-asset-icon { --tint-bg: rgb(245 150 90 / 0.16); --tint-ink: #F5B78F; }
 :where(:root[data-theme="dark"]) .fin-asset-icon--vehicle { --tint-bg: rgb(110 150 240 / 0.18); --tint-ink: #A9C2F7; }
 :where(:root[data-theme="dark"]) .fin-asset-icon--other { --tint-bg: rgb(160 175 185 / 0.16); --tint-ink: #BAC6CD; }
-.fin-asset-stats { margin: 0; padding: 0 20px; }
+/* An asset's highlight: what it's worth, big, with what it was bought for and its EUR value beside it
+   when the card is wide enough, under it (past a line) when not. */
+.fin-asset { container-type: inline-size; }
+.fin-asset-sum { display: flex; flex-direction: column; gap: 14px; margin: 0 20px; padding: 16px 18px; border: 1px solid; border-radius: var(--f-radius); }
+.fin-asset-sum dl { margin: 0; }
+.fin-asset-sum dt { font-size: 13px; color: var(--f-muted); }
+.fin-asset-sum dd { margin: 4px 0 0; font-size: 18px; font-weight: 650; letter-spacing: -0.02em; }
+.fin-asset-main dd { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; font-size: 30px; }
+.fin-asset-gain { font-size: 14px; font-weight: 600; letter-spacing: 0; }
+.fin-asset-side { display: flex; flex-wrap: wrap; gap: 12px 28px; padding-top: 14px; border-top: 1px solid color-mix(in srgb, var(--f-accent) 25%, var(--f-border)); }
+@container (min-width: 34rem) {
+  .fin-asset-sum { flex-direction: row; align-items: flex-start; justify-content: space-between; }
+  .fin-asset-main { flex: 1 1 auto; min-width: 0; }
+  .fin-asset-side { flex: none; flex-direction: column; gap: 12px; padding: 0 0 0 24px; border-top: 0; border-left: 1px solid color-mix(in srgb, var(--f-accent) 25%, var(--f-border)); }
+}
 .fin-asset-chart { padding-top: 4px; }
-/* Its "In net worth" switch, among its actions: a pill the size of the buttons beside it. */
-.fin-asset-switch { min-height: 32px; padding: 4px 12px 4px 10px; border: 1px solid var(--f-border-strong); border-radius: 999px; font-weight: 500; }
-.fin-asset-switch input { left: 10px; top: 50%; transform: translateY(-50%); }
-.fin-asset-switch.is-on { border-color: var(--f-accent); color: var(--f-accent-strong); }
-.fin-asset-switch:hover { border-color: var(--f-accent); }
 .fin-asset.is-sold { opacity: 0.75; }
+/* Two cards side by side past phone width, each keeping its own height; their charts shrink to fit. */
+.fin-asset-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0 24px; align-items: start; }
+@media (min-width: 52.01rem) {
+  .fin-asset-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .fin-asset-grid .fin-chart { min-width: 0; }
+}
 .fin-valuations-wrap { border-top: 1px solid var(--f-border); }
 .fin-valuations-wrap > summary { padding: 12px 20px; font-size: 13px; font-weight: 500; color: var(--f-muted); cursor: pointer; }
 .fin-valuations-wrap > summary:hover { color: var(--f-text); }

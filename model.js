@@ -456,8 +456,8 @@ export function investmentValueFrom(account, holdings, invested, latestRate) {
 
 // ── Assets ───────────────────────────────────────────────────────────────────
 // An asset (a home, a vehicle, anything else of value, kept apart from the accounts): { id, name,
-// kind, currency, purchasePrice, boughtOn, valueChange, valueFloor, valuations, soldOn,
-// excludeTotals }. Its value comes from valuations ({ date, value } in minor units), the purchase
+// kind, currency, purchasePrice, boughtOn, valueChange, valueFloor, valuations, soldOn }. Assets
+// aren't money, so they're never in net worth, only in a total worth. Its value comes from valuations ({ date, value } in minor units), the purchase
 // price on the day it was bought counting as the first. Between them the value is estimated from
 // the latest at a yearly change (`valueChange`, % a year, compounding: a home's grows, a vehicle's
 // falls), or the kind's usual one; a falling value stops at `valueFloor` when it has one. Once sold
@@ -1498,8 +1498,8 @@ export function accountRuns(accounts, transactions, dates, rateOf = () => 1, { s
 // of its first transaction) fills in an investment account whose holdings lack buys and sells: before
 // its snapshots, instead of only what was put in (and a jump to market value on the last day), the
 // value is what was put in by then plus a gain growing evenly from the first transaction to today's.
-// `estimated` in the answer says whether any point was worked out that way. `assets` (the ones that
-// count) add their value at each point, in `assets` and in the total.
+// `estimated` in the answer says whether any point was worked out that way. `assets` (when counting
+// everything) add their value at each point, in `assets` and in the total.
 export function netWorthHistory({ accounts, transactions = [], snapshots = [], holdings = [], lots = [], assets = [] }, { from, to, today, holdingsValue, rateOf = () => 1, runs = null, estimate = null }) {
   const { unit, ends } = historyPoints(from, to);
   const accountRun = runs ?? accountRuns(accounts, transactions, ends.map((e) => e.date), rateOf);

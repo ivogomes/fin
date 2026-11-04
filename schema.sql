@@ -145,7 +145,6 @@ create table if not exists assets (
   value_floor bigint,
   valuations jsonb not null default '[]',
   sold_on date,
-  exclude_totals boolean not null default false,
   position int not null default 0,
   primary key (user_id, id)
 );

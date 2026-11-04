@@ -2,7 +2,7 @@ import {
   SignedOut, completeSignIn, configured, currentUser, rpc, selectAll, sendSignInLink,
   signInWithGoogle, signOut,
 } from './cloud.js';
-import { assetsInEur, countedAssets, renderAssets } from './assets.js';
+import { renderAssets } from './assets.js';
 import { driveConfigured, renderGoogleButton } from './drive.js';
 import {
   FUND_MIC, alphaVantageCovers, fetchHistory, fetchQuote, fetchQuoteAV, fetchRate, fetchRateRange,
@@ -284,9 +284,6 @@ export function netWorthNow() {
     if (rate == null) nw.unconverted += 1;
     else nw.total += convert(accountValue(a), rate);
   }
-  // Assets (a home, vehicles…) that count, at what they're worth today.
-  nw.assets = assetsInEur(countedAssets());
-  nw.total += nw.assets;
   return nw;
 }
 
