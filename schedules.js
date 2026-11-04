@@ -9,7 +9,7 @@ import {
 import { persist } from './store.js';
 import { cardPayments, inCurrency, payCard } from './accounts.js';
 import {
-  deleteTransactions, editingTxId, ensureRate, render, setEditingTxId, setView, state, undoable,
+  cardMark, deleteTransactions, editingTxId, ensureRate, render, setEditingTxId, setView, state, undoable,
   view,
 } from './app.js';
 import { ask, inEur } from './insights.js';
@@ -27,6 +27,14 @@ import {
 
 export const FORECAST_DAYS = 30;
 export const daysFromToday = (n) => new Date(Date.now() + n * 864e5).toISOString().slice(0, 10);
+// A credit card's mark (its network's, or a card icon) before a payment to or from it, as in Coming up.
+export const cardIcon = (card) => cardMark(card) ?? h('span', { class: 'fin-coming-card' }, icon('type-credit'));
+// A scheduled transfer to (or from) a credit card: that card's mark, or nothing.
+export function scheduleCardIcon(s) {
+  if (s.kind !== 'transfer') return null;
+  const card = [s.toAccountId, s.accountId].map((id) => state.accounts.find((a) => a.id === id)).find((a) => a?.type === 'credit');
+  return card ? cardIcon(card) : null;
+}
 export const scheduleAccounts = (s) => [accountName(s.accountId), s.kind === 'transfer' && accountName(s.toAccountId)].filter(Boolean).join(' → ');
 
 // Enter one due date: add its transaction(s) with that date and move the schedule on. `edit`: then
@@ -172,7 +180,7 @@ export function upcomingRows(account, { cols, inEur, balance }) {
       dateCell(date, h('span', { class: `fin-chip fin-chip-inline${due ? ' fin-chip-due' : ''}` }, due ?? 'Scheduled')),
       amountCell(amount),
       balanceCell(b),
-      h('td', { class: 'c-desc' }, s.description, subscriptionChip(null, s), h('span', { class: 'fin-sub' },
+      h('td', { class: 'c-desc' }, scheduleCardIcon(s), s.description, subscriptionChip(null, s), h('span', { class: 'fin-sub' },
         `${frequencyLabel(s)}${s.kind === 'transfer' ? ` · ${scheduleAccounts(s)}` : ''}`)),
       // A transfer shows where it goes (or comes from), like an entered one; anything else its
       // categories as chips (changed in the schedule, not here).
@@ -202,7 +210,7 @@ export function upcomingRows(account, { cols, inEur, balance }) {
       dateCell(date, h('span', { class: `fin-chip fin-chip-inline${due ? ' fin-chip-due' : ''}` }, due ?? 'Payment due')),
       amountCell(amount),
       balanceCell(b),
-      h('td', { class: 'c-desc' }, `${pay.card.name} payment`, h('span', { class: 'fin-sub' },
+      h('td', { class: 'c-desc' }, cardIcon(pay.card), `${pay.card.name} payment`, h('span', { class: 'fin-sub' },
         `Statement of ${shortDate(pay.st.close)}${toCard ? (pay.from ? ` · from ${pay.from.name}` : ' · paid from: not set') : ''}`)),
       h('td', { class: 'c-cat' }, h('span', { class: 'fin-tag fin-tag--transfer' }, ...(toCard ? ['From ', ...(pay.from ? accountBadge(pay.from.id) : ['…'])] : ['To ', ...accountBadge(pay.card.id)]))),
       inEur && h('td', { class: 'c-eur' }),
@@ -469,7 +477,7 @@ export function renderSchedules() {
             return h('tr', { class: due ? 'fin-due' : null },
               h('td', { class: 'fin-nowrap s-date' }, h('time', { datetime: s.nextDate }, shortDate(s.nextDate)),
                 due && h('span', { class: 'fin-chip fin-chip-inline fin-chip-due' }, due)),
-              h('td', { class: 's-desc' }, s.description, s.subscription && h('span', { class: 'fin-chip fin-chip-inline fin-chip-sub' }, icon('subscription'), 'Subscription'),
+              h('td', { class: 's-desc' }, scheduleCardIcon(s), s.description, s.subscription && h('span', { class: 'fin-chip fin-chip-inline fin-chip-sub' }, icon('subscription'), 'Subscription'),
                 catChips(categoriesOf(s))),
               h('td', { class: 's-acc' }, scheduleAccounts(s)),
               h('td', { class: `fin-r fin-num s-amt ${s.kind === 'transfer' ? '' : tone(shown)}` }, s.kind === 'transfer' ? money(s.amount, cur) : signed(shown, cur)),
