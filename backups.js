@@ -114,8 +114,9 @@ export async function backupToDrive({ interactive = false } = {}) {
 export let driveFiles = null;
 export function loadDriveFiles(interactive = false) {
   driveFiles = { loading: true };
-  Promise.all([listBackups({ interactive }), driveAccount()])
-    .then(([files, account]) => { driveFiles = { files, account }; renderWhenIdle(); })
+  // The list first (it gets Google's permission, asking if need be), then whose Drive it is.
+  listBackups({ interactive })
+    .then(async (files) => { driveFiles = { files, account: await driveAccount() }; renderWhenIdle(); })
     .catch((err) => { driveFiles = { error: err.message }; renderWhenIdle(); });
 }
 

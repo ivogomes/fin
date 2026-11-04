@@ -32,8 +32,20 @@ export function loadLibrary() {
 // A token for Drive. `interactive`: from a click, so Google may show its window (to pick the account
 // or give permission the first time). Without it, Google is asked not to show anything; that fails
 // when it would need to, and the caller offers a button instead.
+// One request at a time: callers asking together share it (two Google windows at once get in each
+// other's way, and one fails). A click (interactive) still gets its own try when a quiet one fails.
+let pending = null;
 async function getToken(interactive) {
   if (token && token.expires > Date.now() + 60_000) return token.value;
+  if (pending) {
+    try { return await pending; } catch (err) { if (!interactive) throw err; }
+  }
+  const request = askToken(interactive);
+  pending = request;
+  request.catch(() => {}).finally(() => { if (pending === request) pending = null; });
+  return request;
+}
+async function askToken(interactive) {
   const google = await loadLibrary();
   return new Promise((resolve, reject) => {
     const client = google.accounts.oauth2.initTokenClient({
