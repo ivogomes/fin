@@ -16,7 +16,7 @@ import {
 import { colorDot, counted, mainAccount, openAccountDialog, renderAccount, renderWelcome } from './accounts.js';
 import { adoptGoogleDrive, backupBanner, backupToDrive, driveBackupDue, driveOn } from './backups.js';
 import { openTxDialog } from './entry.js';
-import { answers, ask, recordSnapshot, renderInsights } from './insights.js';
+import { answers, ask, netWorthSinceYesterday, recordSnapshot, renderInsights } from './insights.js';
 import { renderIous } from './ious.js';
 import { renderOverview } from './overview.js';
 import { openPalette } from './palette.js';
@@ -28,7 +28,7 @@ import {
 } from './transactions.js';
 import {
   FIN_SHAPE, button, field, h, hideAmounts, icon, input, isPhone, latestRate, main, money,
-  pageLoader, readPref, say, setHideAmountsValue, setHueOrder, side, svgEl, tone, wavePath,
+  pageLoader, readPref, say, setHideAmountsValue, setHueOrder, side, signed, svgEl, tone, wavePath,
   writePref,
 } from './ui.js';
 
@@ -292,16 +292,21 @@ export function netWorthNow() {
 
 export function renderSide() {
   const nw = netWorthNow();
+  const day = state.accounts.length ? netWorthSinceYesterday() : undefined;
+  const dayText = day == null ? '' : day === 0 ? 'no change since yesterday' : `${signed(day, 'EUR')} since yesterday`;
   return [
-    // The net-worth card opens its own page: net worth over time and by account type.
+    // The net-worth card opens its own page (net worth over time and by account type), with how it
+    // changed since yesterday under the figure.
     h('button', {
       type: 'button', class: 'fin-side-head fin-side-head--link', 'data-key': 'networth',
       'aria-current': view.name === 'insights' && view.tab === 'networth' ? 'page' : null,
+      'aria-label': `Net worth ${money(nw.total, 'EUR')}${dayText ? `, ${dayText}` : ''}. See it over time`,
       onclick: () => { view = { name: 'insights', tab: 'networth' }; render('networth'); say('Net worth.'); },
     },
       h('span', { class: 'fin-side-title' }, 'Net worth'),
       h('span', { class: 'fin-num' }, money(nw.total, 'EUR')),
-      h('span', { class: 'fin-side-more' }, 'See over time ›')),
+      dayText && h('span', { class: `fin-side-day${day > 0 ? ' is-up' : day < 0 ? ' is-down' : ''}` },
+        day !== 0 && h('span', { 'aria-hidden': 'true' }, day > 0 ? '▲ ' : '▼ '), dayText)),
     nw.unconverted > 0 && h('p', { class: 'fin-side-note' }, `${nw.unconverted} account(s) left out until exchange rates load.`),
     state.accounts.length === 0 && h('p', { class: 'fin-side-note' }, 'No accounts yet.'),
     ACCOUNT_TYPES.map((type) => {

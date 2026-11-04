@@ -701,6 +701,19 @@ export function investmentInsights(account) {
 // balances_at's answer as accountRuns gives it: Map(accountId → { last, values }).
 export const runMap = (obj) => new Map(Object.entries(obj ?? {}));
 
+// How net worth changed since yesterday (EUR minor units), from the same history as the Net worth
+// page, or undefined while the database works it out.
+export function netWorthSinceYesterday() {
+  const to = today();
+  const from = new Date(Date.parse(`${to}T00:00:00Z`) - 864e5).toISOString().slice(0, 10);
+  const runs = ask('balances_at', { p_dates: [from, to], p_rates: ratesArg() });
+  if (!runs) return undefined;
+  const [before, now] = netWorthHistory({ ...state, accounts: state.accounts.filter(counted), assets: [] }, {
+    from, to, today: to, holdingsValue: holdingsValueEUR, rateOf: (c) => latestRate(c) ?? 1, runs: runMap(runs), estimate: estimateOpts,
+  }).points;
+  return now.total - before.total;
+}
+
 // The Net worth tab of Insights (without the page's heading).
 export function renderNetWorth() {
   const first = state.accounts.map((a) => totalsOf(a.id).first).filter(Boolean).reduce((min, d) => (d < min ? d : min), today());

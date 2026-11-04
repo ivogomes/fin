@@ -305,8 +305,10 @@ body {
 }
 .fin-side-head--link:hover { box-shadow: 0 4px 16px rgb(16 24 20 / 0.18); }
 .fin-side-head--link[aria-current="page"] { box-shadow: 0 0 0 2px var(--f-surface), 0 0 0 4px var(--f-accent); }
-.fin-side-more { margin-top: 4px; font-size: 12px; opacity: 0.8; }
-.fin-side-head--link:hover .fin-side-more { opacity: 1; text-decoration: underline; }
+/* How it changed since yesterday: a small line under the figure, on the card's own colours. */
+.fin-side-day { margin-top: 2px; font-size: 12px; font-variant-numeric: tabular-nums; opacity: 0.85; }
+.fin-side-day.is-up, .fin-side-day.is-down { opacity: 1; }
+.fin-side-day [aria-hidden] { font-size: 9px; vertical-align: 1px; }
 .fin-side-head:not(:has(.fin-num)) .fin-side-title { font-size: 18px; font-weight: 600; opacity: 1; letter-spacing: -0.01em; }
 .fin-side-head .fin-num { font-size: 24px; font-weight: 650; letter-spacing: -0.02em; color: inherit; }
 .fin-side-note { margin: 0 12px 12px; font-size: 12px; color: var(--f-muted); }
