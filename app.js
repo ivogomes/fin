@@ -192,12 +192,14 @@ export async function refreshRates() {
 }
 
 // Each holding keeps its own `priceError` (the provider's message) so a failure shows on its row
-// instead of disappearing.
-export async function refreshPrices(only) {
+// instead of disappearing. Asked for, the outcome also shows as a toast, naming what failed; `quiet`
+// (the refresh when the page opens) only announces it to screen readers.
+export async function refreshPrices(only, { quiet = false } = {}) {
   const targets = only ?? state.holdings;
   if (!targets.length) return;
   say('Fetching prices…');
-  let failed = 0;
+  if (!quiet) showToast(`Fetching ${targets.length === 1 ? 'the price' : `${targets.length} prices`}…`, [], { timeout: 60000 });
+  const failed = [];
   for (const x of targets) {
     try {
       // Funds go to EODHD (through the database); non-US listings to Alpha Vantage when a key is
@@ -213,15 +215,17 @@ export async function refreshPrices(only) {
       });
       delete x.priceError;
     } catch (err) {
-      failed += 1;
+      failed.push(x);
       x.priceError = err.message;
     }
   }
   persist();
   await refreshRates(); // a quote may be in a currency we have no rate for yet
-  say(failed
-    ? `${failed} of ${targets.length} price${targets.length === 1 ? '' : 's'} could not be fetched.`
-    : 'Prices updated.');
+  const updated = targets.length - failed.length;
+  const message = !failed.length ? `Prices updated for ${targets.length === 1 ? targets[0].symbol : `all ${targets.length} holdings`}.`
+    : `${updated ? `Prices updated for ${updated} of ${targets.length} holdings. ` : ''}No new price for ${failed.map((x) => `${x.symbol} (${x.priceError.replace(/\s*Consider upgrading.*$/i, '')})`).join(', ')}.`;
+  say(message);
+  if (!quiet) showToast(message, [], { timeout: failed.length ? 20000 : 6000 });
 }
 
 // Prices from an earlier day are refreshed when the page opens (needs the API key).
@@ -746,7 +750,7 @@ export async function boot() {
   // Opened from the app's "Add transactions" shortcut (…/?add): go straight to quick entry.
   if (add) quickAdd();
   await refreshRates();
-  await refreshPrices(stalePrices());
+  await refreshPrices(stalePrices(), { quiet: true });
   recordSnapshot();
   // Once a day a backup goes to Google Drive by itself, when it's connected in this browser (or,
   // signed in with Google, when that account already gave Drive the permission).

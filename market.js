@@ -51,15 +51,33 @@ const AV_SUFFIX = { XETR: 'DEX', XFRA: 'FRK', XLON: 'LON', XPAR: 'PAR', XAMS: 'A
 
 export const alphaVantageCovers = (mic) => mic in AV_SUFFIX;
 
+// The free key takes one request a second (and 25 a day), so requests are spaced out, and one turned
+// away for coming too soon is tried once more. Limits and key problems come back as 200 with an
+// Information, Note or Error Message field; the daily limit gets a shorter message.
+let avLast = 0;
+const pause = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
+async function avQuery(params) {
+  for (let attempt = 0; ; attempt += 1) {
+    const wait = avLast + 1200 - Date.now();
+    if (wait > 0) await pause(wait);
+    avLast = Date.now();
+    const data = await (await fetch(`${AV}?${params}`)).json();
+    const notice = data.Information || data.Note || data['Error Message'];
+    if (!notice) return data;
+    if (/1 request per second/i.test(notice)) {
+      if (attempt === 0) { await pause(1500); continue; }
+      throw new Error('Alpha Vantage turned the request away for coming too fast (the free key takes one a second). Try again in a moment.');
+    }
+    if (/per day/i.test(notice)) throw new Error('Alpha Vantage’s free limit of 25 requests a day is used up; it resets tomorrow.');
+    throw new Error(notice);
+  }
+}
+
 // Returns { price }. Alpha Vantage doesn't report a currency, so the listing's own is kept.
 export async function fetchQuoteAV(symbol, mic, apiKey) {
   if (!apiKey) throw new Error('Add an Alpha Vantage API key in Settings to price this listing');
   const ticker = `${symbol}.${AV_SUFFIX[mic]}`;
-  const res = await fetch(`${AV}?function=GLOBAL_QUOTE&symbol=${encodeURIComponent(ticker)}&apikey=${encodeURIComponent(apiKey)}`);
-  const data = await res.json();
-  // Limits and key problems come back as 200 with an Information, Note or Error Message field.
-  const notice = data.Information || data.Note || data['Error Message'];
-  if (notice) throw new Error(notice);
+  const data = await avQuery(`function=GLOBAL_QUOTE&symbol=${encodeURIComponent(ticker)}&apikey=${encodeURIComponent(apiKey)}`);
   const price = Number(data['Global Quote']?.['05. price']);
   if (!price) throw new Error(`Alpha Vantage has no price for ${ticker}`);
   return { price };
@@ -71,10 +89,7 @@ export async function fetchHistory(symbol, mic, { avKey, tdKey }) {
   if (alphaVantageCovers(mic)) {
     if (!avKey) throw new Error('Add an Alpha Vantage API key in Settings to load price history');
     const ticker = `${symbol}.${AV_SUFFIX[mic]}`;
-    const res = await fetch(`${AV}?function=TIME_SERIES_WEEKLY&symbol=${encodeURIComponent(ticker)}&apikey=${encodeURIComponent(avKey)}`);
-    const data = await res.json();
-    const notice = data.Information || data.Note || data['Error Message'];
-    if (notice) throw new Error(notice);
+    const data = await avQuery(`function=TIME_SERIES_WEEKLY&symbol=${encodeURIComponent(ticker)}&apikey=${encodeURIComponent(avKey)}`);
     const series = data['Weekly Time Series'];
     if (!series) throw new Error(`Alpha Vantage has no history for ${ticker}`);
     return Object.fromEntries(Object.entries(series).map(([date, v]) => [date, Number(v['4. close'])]).filter(([, v]) => v > 0));
