@@ -25,6 +25,7 @@ const TABLES = {
       interest_rate: a.interestRate ?? null, interest_every: a.interestEvery ?? null, interest_tax: a.interestTax ?? null, investment_kind: a.investmentKind ?? null,
       opened_on: a.openedOn ?? null, closed_on: a.closedOn ?? null, institution: a.institution ?? null, last_four: a.lastFour ?? null,
       exclude_totals: Boolean(a.excludeTotals), color: a.color ?? null,
+      loan_payments: a.loanPayments ?? null, loan_first: a.loanFirst ?? null, loan_changes: a.loanChanges ?? null,
     }),
     // Settings that aren't set are left off, so an account only carries what it uses.
     from: (r) => {
@@ -47,6 +48,9 @@ const TABLES = {
       set('lastFour', r.last_four);
       set('excludeTotals', r.exclude_totals);
       set('color', r.color);
+      set('loanPayments', r.loan_payments);
+      set('loanFirst', r.loan_first);
+      if (r.loan_changes?.length) a.loanChanges = r.loan_changes;
       return a;
     },
   },
@@ -147,7 +151,7 @@ export const missingTables = () => [...missing];
 // app, which asks for schema.sql to be run again.
 const NEW_COLUMNS = {
   accounts: ['credit_limit', 'card_network', 'statement_day', 'due_day', 'pay_from', 'low_balance', 'is_main', 'interest_rate',
-    'interest_every', 'interest_tax', 'investment_kind', 'opened_on', 'closed_on', 'institution', 'last_four', 'exclude_totals', 'color'], categories: ['parent_id'], transactions: ['category_ids', 'kind', 'splits', 'holding_id'], settings: ['fx', 'last_backup_at', 'backup_every', 'eodhd_api_key', 'hidden_suggestions'], holdings: ['price_history'], schedules: ['subscription', 'category_ids'] };
+    'interest_every', 'interest_tax', 'investment_kind', 'opened_on', 'closed_on', 'institution', 'last_four', 'exclude_totals', 'color', 'loan_payments', 'loan_first', 'loan_changes'], categories: ['parent_id'], transactions: ['category_ids', 'kind', 'splits', 'holding_id'], settings: ['fx', 'last_backup_at', 'backup_every', 'eodhd_api_key', 'hidden_suggestions'], holdings: ['price_history'], schedules: ['subscription', 'category_ids'] };
 let schemaOutdated = false;
 export const needsSchemaUpdate = () => schemaOutdated || missing.size > 0;
 // A database function the app calls doesn't take its arguments yet (schema.sql not run again).

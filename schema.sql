@@ -6,7 +6,7 @@ create table if not exists accounts (
   user_id uuid not null default auth.uid() references auth.users on delete cascade,
   id text not null,
   name text not null,
-  type text not null check (type in ('cash', 'checking', 'credit', 'investment', 'savings')),
+  type text not null check (type in ('cash', 'checking', 'credit', 'investment', 'loan', 'savings')),
   currency text not null default 'EUR',
   archived boolean not null default false,
   primary key (user_id, id)
@@ -182,6 +182,15 @@ alter table settings add column if not exists backup_every integer not null defa
 alter table transactions add column if not exists splits jsonb;
 -- A dividend (kind 'dividend'): the holding that paid it.
 alter table transactions add column if not exists holding_id text;
+-- Loans: one more account type.
+alter table accounts drop constraint if exists accounts_type_check;
+alter table accounts add constraint accounts_type_check
+  check (type in ('cash', 'checking', 'credit', 'investment', 'loan', 'savings'));
+-- A loan's agreed term: how many monthly payments, from which date; and its changes over time
+-- ([{ "date", "rate"?, "payments"?, "payment"? }]: a new rate, payments left, a new payment).
+alter table accounts add column if not exists loan_payments integer;
+alter table accounts add column if not exists loan_first date;
+alter table accounts add column if not exists loan_changes jsonb;
 -- When a transaction was added, so the newest of a day is listed first. The database sets it; rows
 -- from before this column have none and come after the dated ones of their day.
 alter table transactions add column if not exists created_at timestamptz;

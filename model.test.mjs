@@ -13,7 +13,7 @@ import {
   descriptionIndex, suggestDescriptions, filterTransactions, ruleSuggestion,
   parseFrequency, addInterval, occurrences, forecast, scheduledTransactions, advanceSchedule,
   splitsOf, scaleSplits, DIVIDENDS, recurringGroups, suggestSchedules, xirr, lotFlows, returnSummary, rulesFromHistory, findSubscriptions, withMarkedSchedules, timesAYear,
-  lastStatementDate, dueAfter, balanceDip, savingsInterest,
+  lastStatementDate, dueAfter, balanceDip, savingsInterest, loanPlan, annuityPayment, loanInterestSoFar, loanTerm, loanRateAt,
 } from './model.js';
 
 test('periods: presets relative to today, Monday weeks, granularity', () => {
@@ -1112,4 +1112,65 @@ test('net worth history keeps pensions and assets apart, each counted once in th
   const now = netWorthHistory({ accounts, transactions, assets: [home] }, { from: '2026-01-01', to: '2026-03-31', today: '2026-03-31', holdingsValue: () => null }).points.at(-1);
   assert.deepEqual([now.total, now.locked, now.assets], [450000, 50000, 300000]);
   assert.equal(now.total - now.locked - now.assets, 100000); // within reach: the bank account
+});
+
+test('loans: paid off month by month, sooner with extra payments, never when interest outgrows them', () => {
+  // No interest: 10,000.00 at 1,000.00 a month is ten payments, the last on 1 Oct.
+  const flat = loanPlan({ owed: 1000000, rate: 0, payment: 100000, first: '2027-01-01', start: '2026-12-15' });
+  assert.deepEqual([flat.months, flat.interest, flat.paid, flat.end], [10, 0, 1000000, '2027-10-01']);
+  assert.deepEqual(flat.points[0], { date: '2026-12-15', owed: 1000000 });
+  assert.equal(flat.points.at(-1).owed, 0);
+  // At 6% a year, the annuity payment for 12 months pays it off in 12 (the last a little smaller).
+  const pay = annuityPayment(1000000, 6, 12);
+  assert.ok(pay > 86000 && pay < 86100);
+  // (A cent more, so each month's interest rounding to the cent can't leave a 13th payment of cents.)
+  const plan = loanPlan({ owed: 1000000, rate: 6, payment: pay + 1, first: '2027-01-31' });
+  assert.equal(plan.months, 12);
+  assert.equal(plan.end, '2027-12-31'); // the 31st, or the month's last day
+  assert.equal(plan.paid, 1000000 + plan.interest);
+  assert.ok(plan.interest > 32000 && plan.interest < 33000);
+  // Paying 2,000.00 now, or 100.00 more a month: fewer payments and less interest.
+  const lump = loanPlan({ owed: 1000000, rate: 6, payment: pay, lump: 200000, first: '2027-01-31' });
+  assert.ok(lump.months < plan.months && lump.interest < plan.interest);
+  const extra = loanPlan({ owed: 1000000, rate: 6, payment: pay, extra: 10000, first: '2027-01-31' });
+  assert.ok(extra.months < plan.months && extra.interest < plan.interest);
+  // A payment below a month's interest (50.00 on 10,000.00 at 6%) never ends it.
+  assert.deepEqual(loanPlan({ owed: 1000000, rate: 6, payment: 4000, first: '2027-01-01' }), { never: true, due: 5000 });
+});
+
+test('loans: interest so far, from what was owed at the start of each whole month', () => {
+  const txs = [
+    { date: '2026-01-15', amount: -1200000 }, // borrowed
+    { date: '2026-02-01', amount: 100000 }, // payments, on the 1st (after the month's start)
+    { date: '2026-03-01', amount: 100000 },
+  ];
+  // February and March have ended by 10 April: 12,000.00 then 11,000.00 owed at their start (the
+  // payment on the 1st comes after it), at 12% a year.
+  assert.equal(loanInterestSoFar(txs, 12, '2026-04-10'), 12000 + 11000);
+  assert.equal(loanInterestSoFar(txs, 12, '2026-02-20'), 0); // February hasn't ended
+  assert.equal(loanInterestSoFar([], 12, '2026-04-10'), 0);
+});
+
+test('loans: the agreed term, payments made and left, reset by a change', () => {
+  const loan = { loanPayments: 60, loanFirst: '2026-01-05', interestRate: 3 };
+  // Five due by 10 May (Jan to May): 55 left, the next on 5 June, the last on 5 Dec 2030.
+  assert.deepEqual(loanTerm(loan, '2026-05-10'), { made: 5, left: 55, next: '2026-06-05', end: '2030-12-05' });
+  assert.deepEqual(loanTerm(loan, '2026-01-04'), { made: 0, left: 60, next: '2026-01-05', end: '2030-12-05' });
+  assert.equal(loanTerm({ interestRate: 3 }, '2026-05-10'), null);
+  // Paid early on 20 May and shortened: 40 left from then on, counting the June one.
+  const shorter = { ...loan, loanChanges: [{ date: '2026-05-20', payments: 40 }] };
+  assert.deepEqual(loanTerm(shorter, '2026-05-25'), { made: 5, left: 40, next: '2026-06-05', end: '2029-09-05' });
+  assert.deepEqual(loanTerm(shorter, '2026-07-10'), { made: 7, left: 38, next: '2026-08-05', end: '2029-09-05' });
+  assert.deepEqual(loanTerm({ ...loan, loanPayments: 2 }, '2026-05-10'), { made: 2, left: 0, next: null, end: null });
+});
+
+test('loans: the rate on a date follows the changes that set one', () => {
+  const loan = { interestRate: 3, loanChanges: [{ date: '2026-07-01', rate: 3.5 }, { date: '2026-03-01', payments: 40 }, { date: '2027-01-01', rate: 2.9 }] };
+  assert.equal(loanRateAt(loan, '2026-06-30'), 3);
+  assert.equal(loanRateAt(loan, '2026-07-01'), 3.5);
+  assert.equal(loanRateAt(loan, '2027-05-01'), 2.9);
+  // A plan with the rate changing on the way costs more than at the old rate throughout.
+  const flat = loanPlan({ owed: 1000000, rate: 3, payment: 50000, first: '2026-06-01' });
+  const rising = loanPlan({ owed: 1000000, rate: (d) => loanRateAt(loan, d), payment: 50000, first: '2026-06-01' });
+  assert.ok(rising.interest > flat.interest);
 });

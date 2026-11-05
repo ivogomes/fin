@@ -291,6 +291,7 @@ body {
 .fin-group--checking { --tint-bg: #E6EEFB; --tint-ink: #2A4F9E; }
 .fin-group--credit { --tint-bg: #FDECE1; --tint-ink: #9E4719; }
 .fin-group--investment { --tint-bg: #EFE9FB; --tint-ink: #5B3FA6; }
+.fin-group--loan { --tint-bg: #FBE7EA; --tint-ink: #9B2C3E; }
 .fin-group--savings { --tint-bg: #E2F0F1; --tint-ink: #0F5E6B; }
 .fin-group--assets { --tint-bg: #FDECE1; --tint-ink: #9E4719; }
 @media (prefers-color-scheme: dark) {
@@ -299,6 +300,7 @@ body {
   :where(:root:not([data-theme="light"])) .fin-group--checking { --tint-bg: rgb(110 150 240 / 0.18); --tint-ink: #A9C2F7; }
   :where(:root:not([data-theme="light"])) .fin-group--credit { --tint-bg: rgb(245 150 90 / 0.16); --tint-ink: #F5B78F; }
   :where(:root:not([data-theme="light"])) .fin-group--investment { --tint-bg: rgb(160 130 240 / 0.18); --tint-ink: #C7B5F6; }
+  :where(:root:not([data-theme="light"])) .fin-group--loan { --tint-bg: rgb(240 110 130 / 0.16); --tint-ink: #F4A6B3; }
   :where(:root:not([data-theme="light"])) .fin-group--savings { --tint-bg: rgb(91 191 181 / 0.16); --tint-ink: #8AD8CF; }
   :where(:root:not([data-theme="light"])) .fin-group--assets { --tint-bg: rgb(245 150 90 / 0.16); --tint-ink: #F5B78F; }
 }
@@ -307,6 +309,7 @@ body {
 :where(:root[data-theme="dark"]) .fin-group--checking { --tint-bg: rgb(110 150 240 / 0.18); --tint-ink: #A9C2F7; }
 :where(:root[data-theme="dark"]) .fin-group--credit { --tint-bg: rgb(245 150 90 / 0.16); --tint-ink: #F5B78F; }
 :where(:root[data-theme="dark"]) .fin-group--investment { --tint-bg: rgb(160 130 240 / 0.18); --tint-ink: #C7B5F6; }
+:where(:root[data-theme="dark"]) .fin-group--loan { --tint-bg: rgb(240 110 130 / 0.16); --tint-ink: #F4A6B3; }
 :where(:root[data-theme="dark"]) .fin-group--savings { --tint-bg: rgb(91 191 181 / 0.16); --tint-ink: #8AD8CF; }
 :where(:root[data-theme="dark"]) .fin-group--assets { --tint-bg: rgb(245 150 90 / 0.16); --tint-ink: #F5B78F; }
 
@@ -1168,6 +1171,10 @@ a.fin-break-link:focus-visible { outline: none; box-shadow: var(--f-ring); borde
 .fin-line-up { stroke: var(--f-pos); }
 .fin-line-down { stroke: var(--f-neg); }
 .fin-line-ref { stroke: var(--f-muted); stroke-width: 1.5; stroke-dasharray: 5 4; }
+/* What a loan still owes, going down to zero. */
+.fin-line-owed { stroke: var(--f-accent); }
+.fin-area-owed { fill: var(--f-accent); opacity: 0.12; }
+.fin-dot-owed { fill: var(--f-accent); }
 .fin-base-line { stroke: var(--f-border-strong); stroke-width: 1; stroke-dasharray: 2 3; }
 .fin-tick-up { fill: var(--f-pos); }
 .fin-tick-down { fill: var(--f-neg); }
@@ -2084,3 +2091,15 @@ label > .fin-flag { margin-right: 6px; }
 .fin-valuations li:last-child { border-bottom: 0; }
 .fin-valuations .fin-num { text-align: right; }
 .fin-valuation-form { padding: 14px 20px 18px; border-top: 1px solid var(--f-border); }
+
+/* A loan's Insights: what paying in advance would change, above its chart. */
+.fin-loan-outcome { margin: 16px 0 8px; font-size: 14px; }
+.fin-loan-outcome:empty { display: none; }
+.fin-loan-outcome p { margin: 0 0 6px; }
+/* A loan's rate and term changes, newest first, ending with how it started. */
+.fin-loan-changes { list-style: none; margin: 0; padding: 0; }
+.fin-loan-changes li { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-top: 1px solid var(--f-border); font-size: 14px; }
+.fin-loan-changes li:first-child { border-top: 0; }
+.fin-loan-changes li > span:nth-child(2) { flex: 1; }
+.fin-loan-change-date { min-width: 8.5em; color: var(--f-muted); font-size: 13px; }
+.fin-loan-change-start { color: var(--f-muted); }

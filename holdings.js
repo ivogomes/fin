@@ -150,6 +150,7 @@ export function chartTip(wrap, svg) {
 //   since the first point (one scale, two readings); the line is green above where it started and
 //   red below, with that level marked. `ref` adds a dashed line to compare with (e.g. money invested).
 // - 'gain': a line around zero, gains shaded green and losses red.
+// - 'owed': what's owed going down to zero (a loan), one line over a soft area, from zero up.
 // One tab stop: ←/→ step through the points (Home/End jump), the readout says the values; a table
 // has them all. `wide` for a full-width chart (a phone gets its own narrow one either way).
 export function timeChart(points, { id, title, unit, format, kind = 'change', ref = null, refLabel = '', wide = false }) {
@@ -170,6 +171,7 @@ export function timeChart(points, { id, title, unit, format, kind = 'change', re
   let lo = Math.min(...vals);
   let hi = Math.max(...vals);
   if (kind === 'gain') { lo = Math.min(0, lo); hi = Math.max(0, hi); }
+  if (kind === 'owed') lo = 0;
   if (hi === lo) { hi += 100; lo -= 100; }
   const raw = (hi - lo) / 4;
   const mag = 10 ** Math.floor(Math.log10(raw));
@@ -221,6 +223,10 @@ export function timeChart(points, { id, title, unit, format, kind = 'change', re
     svg.append(el('path', { d: area, class: 'fin-area-gain', 'clip-path': clip.up }));
     svg.append(el('path', { d: area, class: 'fin-area-loss', 'clip-path': clip.down }));
     svg.append(el('path', { d: line, class: 'fin-line fin-line-gain' }));
+  } else if (kind === 'owed') {
+    const floor = (T + plotH).toFixed(1);
+    svg.append(el('path', { d: `${line}L${x(points.at(-1)).toFixed(1)},${floor}L${x(points[0]).toFixed(1)},${floor}Z`, class: 'fin-area-owed' }));
+    svg.append(el('path', { d: line, class: 'fin-line fin-line-owed' }));
   } else {
     const clip = split(base);
     svg.append(el('line', { x1: L, x2: W - R, y1: clip.at, y2: clip.at, class: 'fin-base-line' }));
@@ -259,7 +265,7 @@ export function timeChart(points, { id, title, unit, format, kind = 'change', re
     const p = points[at];
     guide.setAttribute('x1', x(p)); guide.setAttribute('x2', x(p));
     dot.setAttribute('cx', x(p)); dot.setAttribute('cy', y(p.v));
-    dot.setAttribute('class', `fin-dot ${kind === 'gain' ? 'fin-dot-gain' : p.v >= base ? 'fin-dot-up' : 'fin-dot-down'}`);
+    dot.setAttribute('class', `fin-dot ${kind === 'gain' ? 'fin-dot-gain' : kind === 'owed' ? 'fin-dot-owed' : p.v >= base ? 'fin-dot-up' : 'fin-dot-down'}`);
     // replaceChildren doesn't flatten lists (it would print them as text): info() gives a flat one.
     readout.replaceChildren(...info(p, at));
     if (withTip) tip.show(info(p, at), x(p) / W, y(p.v) / H);

@@ -5,9 +5,9 @@
 export const BASE = 'EUR';
 export const CURRENCIES = ['EUR', 'USD'];
 // Order is the order of the groups in the side panel.
-export const ACCOUNT_TYPES = ['cash', 'checking', 'credit', 'investment', 'savings'];
+export const ACCOUNT_TYPES = ['cash', 'checking', 'credit', 'investment', 'loan', 'savings'];
 export const ACCOUNT_TYPE_LABELS = {
-  cash: 'Cash', checking: 'Checking', credit: 'Credit card', investment: 'Investment', savings: 'Savings',
+  cash: 'Cash', checking: 'Checking', credit: 'Credit card', investment: 'Investment', loan: 'Loan', savings: 'Savings',
 };
 
 export const toMinor = (value) => Math.round(Number(value) * 100);
@@ -173,6 +173,110 @@ export function savingsInterest(balance, rate, months = 1, tax = 0) {
   const net = gross * (1 - (tax || 0) / 100);
   const amounts = (m) => ({ monthly: Math.round(m), perPayment: Math.round(m * months), yearly: Math.round(m * 12) });
   return { ...amounts(net), gross: amounts(gross) };
+}
+
+// The interest a loan charges in a month on what's owed (a negative balance), at `rate` % a year.
+export const loanInterest = (balance, rate) => (balance < 0 ? Math.round((-balance * rate) / 100 / 12) : 0);
+
+// A loan paid off month by month, as banks work it out: each month interest is added on what's owed
+// (`rate` % a year, a twelfth of it; or a function of the payment's date, for rates that change), then
+// the payment comes off. `owed` and payments in minor units;
+// `lump` is paid at once today, `extra` on top of every payment; `first` is the first payment's date.
+// Returns { months, interest, paid, end, points: [{ date, owed }] }, or { never: true, due } when the
+// payment doesn't cover a month's interest (`due`), so the loan would never end.
+export function loanPlan({ owed, rate, payment, extra = 0, lump = 0, first, start = first }) {
+  const rateOn = typeof rate === 'function' ? rate : () => rate;
+  const pay = payment + extra;
+  let left = Math.max(0, owed - lump);
+  const points = [{ date: start, owed: left }];
+  const anchor = Number(first.slice(8, 10));
+  let date = first;
+  let interest = 0;
+  let paid = 0;
+  let months = 0;
+  while (left > 0) {
+    const due = Math.round((left * rateOn(date)) / 1200);
+    if (pay <= due || months >= 1200) return { never: true, due };
+    const p = Math.min(pay, left + due);
+    interest += due;
+    paid += p;
+    left = left + due - p;
+    months += 1;
+    points.push({ date, owed: left });
+    if (left > 0) date = addInterval(date, { every: 1, unit: 'month' }, anchor);
+  }
+  return { months, interest, paid, end: months ? date : null, points };
+}
+
+// A loan's interest rate on a date: the latest change dated by then that sets one (`loanChanges`,
+// [{ date, rate?, payments?, payment? }]), else the rate it was added with.
+export function loanRateAt(account, date) {
+  const set = (account.loanChanges ?? []).filter((c) => c.rate != null && c.date <= date)
+    .sort((a, b) => a.date.localeCompare(b.date)).at(-1);
+  return set ? set.rate : account.interestRate ?? 0;
+}
+
+// Where a loan stands on `today` against what was agreed: `loanPayments` monthly payments from
+// `loanFirst`, the term reset by any change that sets the payments left (`payments`: how many from
+// its date on, after an early repayment that shortened it, say). Returns { made, left, next, end }:
+// payments due by today, payments still to make, the next one's date and the last one's; null
+// without an agreed term.
+export function loanTerm(account, today) {
+  const { loanPayments: total, loanFirst: first } = account;
+  if (!total || !first) return null;
+  const resets = (account.loanChanges ?? []).filter((c) => c.payments != null)
+    .sort((a, b) => a.date.localeCompare(b.date));
+  const anchor = Number(first.slice(8, 10));
+  const step = (d) => addInterval(d, { every: 1, unit: 'month' }, anchor);
+  let left = total;
+  let made = 0;
+  let date = first;
+  let r = 0;
+  for (;;) {
+    // Changes dated up to this payment set how many are left from it on.
+    while (r < resets.length && resets[r].date <= date) left = resets[r++].payments;
+    if (left <= 0 || date > today) break;
+    made += 1;
+    left -= 1;
+    date = step(date);
+  }
+  // Resets dated after the last payment due (but by today) still count.
+  while (r < resets.length && resets[r].date <= today) left = resets[r++].payments;
+  if (left <= 0) return { made, left: 0, next: null, end: null };
+  let end = date;
+  for (let k = 1; k < left; k += 1) end = step(end);
+  return { made, left, next: date, end };
+}
+
+// The monthly payment that pays `owed` off in `months` at `rate` % a year (rounded up to the cent,
+// so the last payment is never more than the others).
+export function annuityPayment(owed, rate, months) {
+  if (months <= 0 || owed <= 0) return 0;
+  const i = rate / 1200;
+  return Math.ceil(i === 0 ? owed / months : (owed * i) / (1 - (1 + i) ** -months));
+}
+
+// Interest a loan has cost so far, estimated from its balance: what was owed at the start of each
+// whole month since its first transaction, at `rate` % a year (or a function of the month's first
+// day). `transactions` are the loan's own.
+export function loanInterestSoFar(transactions, rate, today) {
+  const rateOn = typeof rate === 'function' ? rate : () => rate;
+  if (!transactions.length) return 0;
+  const sorted = [...transactions].sort((a, b) => a.date.localeCompare(b.date));
+  let month = `${sorted[0].date.slice(0, 7)}-01`;
+  const thisMonth = `${today.slice(0, 7)}-01`;
+  let k = 0;
+  let balance = 0;
+  let total = 0;
+  // Months that started after the first transaction and have ended by today.
+  month = addInterval(month, { every: 1, unit: 'month' }, 1);
+  while (month < thisMonth) {
+    while (k < sorted.length && sorted[k].date < month) balance += sorted[k++].amount;
+    // What was owed through the month: at its start, before that month's payments.
+    if (balance < 0) total += Math.round((-balance * rateOn(month)) / 1200);
+    month = addInterval(month, { every: 1, unit: 'month' }, 1);
+  }
+  return total;
 }
 
 // Moves an amount between two currencies through the base currency.
@@ -1716,7 +1820,7 @@ function buxferReminders(rows, accountByName, resolver, existing, id) {
 const buxferType = (t) => {
   const s = normalize(t);
   if (s.startsWith('investment')) return 'investment'; // also "Investment - 401K"
-  return { 'credit card': 'credit', checking: 'checking', cash: 'cash', savings: 'savings' }[s] ?? 'checking';
+  return { 'credit card': 'credit', checking: 'checking', cash: 'cash', savings: 'savings', loan: 'loan' }[s] ?? 'checking';
 };
 
 const dayBefore = (iso) => new Date(Date.parse(iso) - 864e5).toISOString().slice(0, 10);

@@ -5,7 +5,7 @@ import { today } from './market.js';
 import {
   ACCOUNT_TYPES, ACCOUNT_TYPE_LABELS, CURRENCIES, INVESTMENT_KINDS, balanceDip, convert,
   crossConvert, dueAfter, investmentValueFrom, lastStatementDate, makeTransfer, newId, occurrences,
-  savingsInterest, scheduledEffect, toMinor,
+  addInterval, annuityPayment, loanInterest, loanRateAt, loanTerm, savingsInterest, scheduledEffect, toMinor,
 } from './model.js';
 import { persist, transactionsComplete } from './store.js';
 import {
@@ -15,7 +15,8 @@ import {
 import { holdingsGain, holdingsSection } from './holdings.js';
 import { accountSinceYesterday, ask, insightsPanel, investmentInsights, runMap, transactionsLoaded } from './insights.js';
 import { FORECAST_DAYS, daysFromToday, openScheduleDialog } from './schedules.js';
-import { fetchTransactions, transactionsSection } from './transactions.js';
+import { loanInsights, nextPaymentCard, openAdvanceDialog, openChangeDialog } from './loans.js';
+import { accountName, fetchTransactions, transactionsSection } from './transactions.js';
 import {
   button, dialog, field, flag, h, icon, input, latestRate, money, monthLabel, num, say, select,
   fullDate, shortDate, signed, tone,
@@ -49,7 +50,7 @@ export function openAccountDialog(existing = null) {
   const limit = input({ type: 'number', step: '0.01', min: '0', inputmode: 'decimal', value: money0(a0.creditLimit) });
   const statementDay = dayIn(a0.statementDay);
   const dueDay = dayIn(a0.dueDay);
-  const payOptions = state.accounts.filter((x) => x.type !== 'credit' && !x.archived && x.id !== a0.id).sort(byName);
+  const payOptions = state.accounts.filter((x) => x.type !== 'credit' && x.type !== 'loan' && !x.archived && x.id !== a0.id).sort(byName);
   const payFrom = select([['', 'Not set'], ...payOptions.map((x) => [x.id, x.name])], a0.payFrom ?? (existing ? '' : mainAccount()?.id ?? ''));
   // Checking
   const isMain = h('input', { type: 'checkbox', checked: Boolean(a0.isMain) });
@@ -58,6 +59,16 @@ export function openAccountDialog(existing = null) {
   const rate = input({ type: 'number', step: '0.01', min: '0', max: '100', inputmode: 'decimal', value: a0.interestRate != null ? String(a0.interestRate) : null });
   const rateEvery = select(INTEREST_EVERY.map(([m, label]) => [String(m), label]), String(a0.interestEvery ?? 1));
   const rateTax = input({ type: 'number', step: '0.01', min: '0', max: '100', inputmode: 'decimal', value: a0.interestTax != null ? String(a0.interestTax) : null });
+  // Loans: the rate it started with, and the agreed term (so many monthly payments from a date).
+  // What's owed and the repayments are asked only when adding one: they become its opening balance
+  // and a monthly transfer schedule, edited from then on like any other. Later changes to the rate or
+  // the term are on its Insights tab.
+  const loanRate = input({ type: 'number', step: '0.01', min: '0', max: '100', inputmode: 'decimal', value: a0.interestRate != null ? String(a0.interestRate) : null });
+  const loanCount = input({ type: 'number', min: '1', max: '1200', step: '1', inputmode: 'numeric', value: a0.loanPayments != null ? String(a0.loanPayments) : null });
+  const loanFirst = input({ type: 'date', value: a0.loanFirst ?? (existing ? null : addInterval(today(), { every: 1, unit: 'month' }, Number(today().slice(8, 10)))) });
+  const owed = input({ type: 'number', step: '0.01', min: '0', inputmode: 'decimal' });
+  const repayment = input({ type: 'number', step: '0.01', min: '0', inputmode: 'decimal' });
+  const repayFrom = select([['', 'Not set'], ...payOptions.map((x) => [x.id, x.name])], mainAccount()?.id ?? '');
   // Investments
   const kind = select([['', 'Not set'], ...Object.entries(INVESTMENT_KINDS)], a0.investmentKind ?? '');
   // Any account
@@ -82,6 +93,15 @@ export function openAccountDialog(existing = null) {
       field('Interest paid', rateEvery),
       field('Tax on interest (%)', rateTax, 'Withheld from each payment, e.g. 28. The estimate is what arrives after it.')),
     investment: group('Investment', field('Kind', kind, 'Pensions and retirement savings are shown apart from what’s within reach.')),
+    loan: group('Loan',
+      !existing && field('Amount owed', owed, 'What’s left to pay today. It becomes the opening balance, below zero.'),
+      field('Interest rate (% a year)', loanRate, existing && a0.loanChanges?.some((c) => c.rate != null)
+        ? 'The rate it started with. Later changes are on its Insights tab.'
+        : 'Shows about what a month of interest costs on what’s still owed.'),
+      field('Number of payments', loanCount, 'Monthly payments agreed in all, e.g. 60 for five years (paid ones included).'),
+      field('First payment', loanFirst, 'Its date sets the day of the month every payment falls on.'),
+      !existing && field('Monthly payment', repayment, 'Leave empty to work it out from what’s owed, the rate and the payments left.'),
+      !existing && field('Paid from', repayFrom, 'Scheduled as a transfer into the loan every month.')),
   };
   const more = h('details', { class: 'fin-more', open: Boolean(a0.institution || a0.lastFour || a0.openedOn || a0.closedOn || a0.excludeTotals) },
     h('summary', {}, 'More details'),
@@ -106,10 +126,13 @@ export function openAccountDialog(existing = null) {
       payFrom: (t === 'credit' && payFrom.value) || null,
       lowBalance: t === 'checking' && lowBalance.value !== '' ? toMinor(lowBalance.value) : null,
       isMain: t === 'checking' && isMain.checked,
-      interestRate: t === 'savings' && rate.value !== '' ? Number(rate.value) : null,
+      interestRate: t === 'savings' && rate.value !== '' ? Number(rate.value)
+        : t === 'loan' && loanRate.value !== '' ? Number(loanRate.value) : null,
       interestEvery: t === 'savings' && rate.value !== '' ? Number(rateEvery.value) : null,
       interestTax: t === 'savings' && rate.value !== '' && rateTax.value !== '' ? Number(rateTax.value) : null,
       investmentKind: (t === 'investment' && kind.value) || null,
+      loanPayments: t === 'loan' && loanCount.value !== '' ? Math.max(1, Math.round(Number(loanCount.value))) : null,
+      loanFirst: (t === 'loan' && loanFirst.value) || null,
       institution: institution.value.trim() || null, lastFour: lastFour.value.trim() || null,
       openedOn: openedOn.value || null, closedOn: closedOn.value || null, excludeTotals: exclude.checked,
     };
@@ -124,9 +147,44 @@ export function openAccountDialog(existing = null) {
   };
   const returnKey = existing ? 'edit-account' : document.activeElement?.dataset?.key;
   const close = () => { dialog.close(); render(returnKey); };
+  const error = h('p', { class: 'fin-error', role: 'alert' });
+  // A new loan's opening balance and repayment schedule, from what was filled in.
+  const loanSetup = async (account) => {
+    const parts = [];
+    const owedMinor = owed.value !== '' ? toMinor(owed.value) : 0;
+    if (owedMinor > 0) {
+      const date = today();
+      state.transactions.push({
+        id: newId(), accountId: account.id, date, description: 'Opening balance', amount: -owedMinor,
+        categoryIds: [], memo: '', kind: 'opening', rate: await ensureRate(account.currency, date),
+      });
+      parts.push(`${money(owedMinor, account.currency)} owed`);
+    }
+    // With the term agreed, the payment left empty is the one that pays it off on time.
+    const term = loanTerm(account, today());
+    const payMinor = repayment.value !== '' ? toMinor(repayment.value)
+      : owedMinor > 0 && term?.left ? annuityPayment(owedMinor, account.interestRate ?? 0, term.left) : 0;
+    if (payMinor > 0 && repayFrom.value && term?.left !== 0) {
+      const day = Number((account.loanFirst ?? today()).slice(8, 10));
+      const nextDate = term?.next ?? nextOnDay(day);
+      state.schedules.push({
+        id: newId(), description: `${account.name} payment`, amount: payMinor, kind: 'transfer',
+        accountId: repayFrom.value, toAccountId: account.id, categoryIds: [],
+        every: 1, unit: 'month', anchorDay: day, nextDate, endDate: term?.end ?? null,
+      });
+      parts.push(`${money(payMinor, account.currency)} a month from ${accountName(repayFrom.value)}, next on ${shortDate(nextDate)}${term ? `, the last on ${shortDate(term.end)}` : ''}`);
+    }
+    return parts.length ? ` ${parts.join('; ')}.` : '';
+  };
   dialog.replaceChildren(h('form', {
     onsubmit: async (e) => {
       e.preventDefault();
+      const newLoan = !existing && type.value === 'loan';
+      if (newLoan && repayment.value !== '' && toMinor(repayment.value) > 0 && !repayFrom.value) {
+        error.textContent = 'Pick the account the monthly payment comes from, or leave the payment empty.';
+        repayFrom.focus();
+        return;
+      }
       if (existing) {
         apply(existing, values());
         persist(); close(); say(`Saved ${existing.name}.`);
@@ -134,27 +192,39 @@ export function openAccountDialog(existing = null) {
         const account = { id: newId() };
         apply(account, values());
         state.accounts.push(account);
+        const setup = newLoan ? await loanSetup(account) : '';
         dialog.close();
         selectAccount(account.id);
-        say(`Added account ${account.name}.`);
+        say(`Added account ${account.name}.${setup}`);
       }
       await refreshRates();
     },
   },
     h('h2', { id: 'account-dialog-h', class: 'fin-dialog-title' }, existing ? 'Edit account' : 'Add account'),
     h('div', { class: 'fin-grid fin-grid-2' },
-      field('Name', name), field('Type', type),
+      field('Type', type), field('Name', name),
       field('Currency', cur, used
         ? 'Fixed, because this account already has transactions.'
         : 'USD amounts are converted to EUR at the daily rate.'),
       field('Colour', color, 'A dot by its name.')),
     ...Object.values(sections),
     more,
+    error,
     h('div', { class: 'fin-dialog-actions' },
       button('Cancel', close),
       h('button', { type: 'submit', class: 'fin-btn btn-primary' }, existing ? 'Save' : 'Add account'))));
   dialog.showModal();
-  name.focus();
+  // Adding: the type first, as it decides what else is asked. Editing: the name.
+  (existing ? name : type).focus();
+}
+
+// The next date (today or later) that falls on `day` of the month, the month's last day when shorter.
+function nextOnDay(day) {
+  const now = today();
+  const [y, m] = now.split('-').map(Number);
+  const last = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  const iso = `${now.slice(0, 7)}-${String(Math.min(day, last)).padStart(2, '0')}`;
+  return iso >= now ? iso : addInterval(iso, { every: 1, unit: 'month' }, day);
 }
 
 export function setArchived(account, archived) {
@@ -372,6 +442,11 @@ export function renderAccount(account) {
           account.archived && 'Archived',
         ].filter(Boolean).join(' · '))),
       h('div', { class: 'fin-actions' },
+        // A loan's own actions: a payment made ahead of time, and the bank changing its rate or term.
+        account.type === 'loan' && !account.archived && accountValue(account) < 0 && [
+          button('Pay in advance…', () => openAdvanceDialog(account), 'secondary', { 'data-key': 'loan-advance', 'aria-haspopup': 'dialog' }),
+          button('Change rate or term…', () => openChangeDialog(account), 'secondary', { 'data-key': 'loan-change', 'aria-haspopup': 'dialog' }),
+        ],
         button('Edit', () => openAccountDialog(account), 'secondary', { 'data-key': 'edit-account' }),
         account.archived
           ? button('Unarchive', () => setArchived(account, false), 'secondary', { 'data-key': 'unarchive-account' })
@@ -406,7 +481,7 @@ export function renderAccount(account) {
     h('dl', { class: 'fin-stats' },
       (() => {
         const use = limitUse(account, value);
-        const neg = account.type === 'credit' ? Boolean(use && use.left < 0) : value < 0;
+        const neg = account.type === 'credit' ? Boolean(use && use.left < 0) : account.type !== 'loan' && value < 0;
         const low = !neg && (account.type === 'credit' ? use?.level === 'high' : account.lowBalance != null && value < account.lowBalance);
         // With holdings: the gain or loss since yesterday, as net worth's on the Overview.
         const since = inv?.hasHoldings ? accountSinceYesterday(account) : null;
@@ -415,6 +490,7 @@ export function renderAccount(account) {
           since && h('p', { class: `fin-stat-note fin-stat-day ${tone(since.day)}` },
             since.day !== 0 && h('span', { 'aria-hidden': 'true' }, since.day > 0 ? '▲ ' : '▼ '), since.text),
           h('p', { class: 'fin-stat-note' }, inv?.hasHoldings ? 'holdings at today’s prices'
+            : account.type === 'loan' ? (value < 0 ? 'still owed' : value === 0 ? 'paid off' : 'paid more than owed')
             : account.type === 'credit' ? (neg ? `owed on the card, over its ${money(account.creditLimit, account.currency)} limit` : low ? `owed on the card, ${use.used}% of its limit` : value < 0 ? 'owed on the card' : 'in your favour')
               : low ? `up to today, below your ${money(account.lowBalance, account.currency)} warning` : neg ? 'up to today, overdrawn' : 'up to today'));
       })(),
@@ -449,11 +525,12 @@ export function renderAccount(account) {
       })(),
       // A credit card's latest statement: what it said, what's left to pay and by when.
       statementCard(account),
-      // Savings with an interest rate: what it should earn.
+      // Savings with an interest rate: what it should earn. A loan: what a month of interest costs.
       interestCard(account, value),
       // Like Buxfer's forecast: the balance once everything scheduled in the next 30 days happens,
       // the transactions already added for those days, and card payments.
-      (() => {
+      // A loan: its next payment instead, as the forecast's 30 days say little over years of payments.
+      account.type === 'loan' ? nextPaymentCard(account, value) : (() => {
         const coming = upcomingEffects(account);
         if (!coming.length) return null;
         const next = coming.reduce((sum, it) => sum + it.amount, value);
@@ -463,7 +540,7 @@ export function renderAccount(account) {
       })()),
     accountTabs(),
     view.tab === 'insights'
-      ? (account.type === 'investment' ? investmentInsights(account)
+      ? (account.type === 'investment' ? investmentInsights(account) : account.type === 'loan' ? loanInsights(account)
         : insightsPanel(new Set([account.id]), { spendingOnly: account.type === 'credit', balanceOf: account }))
       : [account.type === 'investment' && holdingsSection(account), transactionsSection(account)]);
 }
@@ -482,7 +559,17 @@ export function statementCard(card) {
     p && h('div', { class: 'fin-stat-action' }, button(p.from ? `Pay from ${p.from.name}…` : 'Set where it’s paid from', () => payCard(p), 'secondary fin-btn-sm', { 'data-key': 'pay-card', 'aria-haspopup': 'dialog' })));
 }
 
+// An estimate: "~" on screen, "about" for screen readers (which would read the tilde as "tilde").
+const approx = (text) => [h('span', { 'aria-hidden': 'true' }, '~'), h('span', { class: 'fin-sr' }, 'about '), text];
+
 export function interestCard(account, value) {
+  if (account.type === 'loan') {
+    const r = loanRateAt(account, today());
+    if (!r) return null;
+    return h('div', {}, h('dt', {}, 'Interest'),
+      h('dd', { class: 'fin-num fin-neg' }, approx(money(loanInterest(value, r), account.currency))),
+      h('p', { class: 'fin-stat-note' }, `a month, at ${num(r, 2)}% a year on what’s owed`));
+  }
   if (account.type !== 'savings' || !account.interestRate) return null;
   const every = account.interestEvery ?? 1;
   const tax = account.interestTax ?? 0;
@@ -490,7 +577,7 @@ export function interestCard(account, value) {
   const label = INTEREST_EVERY.find(([m]) => m === every)?.[1].toLowerCase() ?? '';
   const scheduled = state.schedules.some((sc) => sc.accountId === account.id && sc.kind === 'income' && /interest|juro/i.test(sc.description));
   return h('div', {}, h('dt', {}, 'Interest'),
-    h('dd', { class: 'fin-num fin-pos' }, `about ${money(est.perPayment, account.currency)}`),
+    h('dd', { class: 'fin-num fin-pos' }, approx(money(est.perPayment, account.currency))),
     h('p', { class: 'fin-stat-note' }, tax
       ? `${label} at ${num(account.interestRate, 2)}% a year, after ${num(tax, tax % 1 ? 2 : 0)}% tax (${money(est.gross.perPayment, account.currency)} before it; ${money(est.yearly, account.currency)} a year)`
       : `${label} at ${num(account.interestRate, 2)}% a year (${money(est.yearly, account.currency)} a year), before tax`),
