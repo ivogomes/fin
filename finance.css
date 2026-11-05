@@ -1,37 +1,6 @@
 /* Fin (the finance tool). Its own look: soft neutral page, white rounded cards, quiet controls that show up when
    needed, and colour reserved for money and categories. The teal tool header from src/tools.css stays.
-   Light and dark values live in the tokens below. */
-
-:root {
-  --f-bg: #F3F5F4;
-  --f-surface: #FFFFFF;
-  --f-surface-2: #F7F9F8;
-  --f-hover: #F0F4F3;
-  --f-border: #E3E8E6;
-  --f-border-strong: #CBD4D1;
-  --f-text: #15201C;
-  --f-muted: #5F6C67;
-  --f-accent: #1F7A8C;
-  --f-accent-strong: #165F6E;
-  --f-accent-soft: #E2F0F1;
-  --f-accent-ink: #FFFFFF;
-  --f-pos: #0F7A54;
-  --f-neg: #C0392B;
-  --f-danger-soft: #FBEBE9; --f-warn-soft: #FBF3E2;
-  --f-warn: #B7791F;
-  --f-radius: 12px;
-  --f-radius-sm: 8px;
-  --f-shadow: 0 1px 2px rgb(16 24 20 / 0.05), 0 2px 8px rgb(16 24 20 / 0.04);
-  --f-shadow-lg: 0 16px 48px rgb(16 24 20 / 0.2);
-  --f-ring: 0 0 0 3px rgb(31 122 140 / 0.25);
-  --f-hero: linear-gradient(135deg, #1F7A8C 0%, #155A68 100%);
-  --f-hero-ink: #FFFFFF;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) { --f-bg: #0E1312; --f-surface: #161C1B; --f-surface-2: #1B2321; --f-hover: #1F2826; --f-border: #26302E; --f-border-strong: #384542; --f-text: #E6EEEB; --f-muted: #9AA8A3; --f-accent: #5BBFB5; --f-accent-strong: #7FD2C9; --f-accent-soft: rgb(91 191 181 / 0.14); --f-accent-ink: #0E1312; --f-pos: #4CC594; --f-neg: #F0897C; --f-danger-soft: rgb(240 137 124 / 0.12); --f-warn-soft: rgb(227 176 90 / 0.14); --f-warn: #E3B05A; --f-shadow: 0 1px 2px rgb(0 0 0 / 0.3); --f-shadow-lg: 0 16px 48px rgb(0 0 0 / 0.5); --f-ring: 0 0 0 3px rgb(91 191 181 / 0.3); --f-hero: linear-gradient(135deg, #1D4B48 0%, #163634 100%); --f-hero-ink: #E6F3F1; }
-}
-:root[data-theme="dark"] { --f-bg: #0E1312; --f-surface: #161C1B; --f-surface-2: #1B2321; --f-hover: #1F2826; --f-border: #26302E; --f-border-strong: #384542; --f-text: #E6EEEB; --f-muted: #9AA8A3; --f-accent: #5BBFB5; --f-accent-strong: #7FD2C9; --f-accent-soft: rgb(91 191 181 / 0.14); --f-accent-ink: #0E1312; --f-pos: #4CC594; --f-neg: #F0897C; --f-danger-soft: rgb(240 137 124 / 0.12); --f-warn-soft: rgb(227 176 90 / 0.14); --f-warn: #E3B05A; --f-shadow: 0 1px 2px rgb(0 0 0 / 0.3); --f-shadow-lg: 0 16px 48px rgb(0 0 0 / 0.5); --f-ring: 0 0 0 3px rgb(91 191 181 / 0.3); --f-hero: linear-gradient(135deg, #1D4B48 0%, #163634 100%); --f-hero-ink: #E6F3F1; }
+   Its colours are the --f-* tokens in src/tools.css, shared with the other tools. */
 
 /* Appearance (Settings → Display): Fin follows the system unless a theme is picked, which sets
    data-theme="light" or "dark" on <html> (theme.js, before the page is drawn). Every dark block in
