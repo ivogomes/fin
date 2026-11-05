@@ -37,10 +37,12 @@ export function scheduleCardIcon(s) {
 }
 export const scheduleAccounts = (s) => [accountName(s.accountId), s.kind === 'transfer' && accountName(s.toAccountId)].filter(Boolean).join(' → ');
 
-// Enter one due date: add its transaction(s) with that date and move the schedule on. `edit`: then
-// open the one in `edit` (an account id) for editing, to change just this date ("Change this one").
+// Enter one due date: add its transaction(s) and move the schedule on. One entered ahead of its date
+// is dated today, so it counts at once; an overdue one keeps its date. `edit`: then open the one in
+// `edit` (an account id) for editing, to change just this date ("Change this one").
 export async function enterScheduled(s, focusKey, { edit = null } = {}) {
-  const rows = scheduledTransactions(s, s.nextDate, state.accounts);
+  const now = today();
+  const rows = scheduledTransactions(s, s.nextDate > now ? now : s.nextDate, state.accounts);
   const currencyOf = (t) => state.accounts.find((a) => a.id === t.accountId)?.currency ?? 'EUR';
   for (const t of rows) t.rate = await ensureRate(currencyOf(t), t.date);
   // A transfer between currencies arrives converted at that day's rate.
