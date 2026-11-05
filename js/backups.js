@@ -239,7 +239,7 @@ export function backupCard(last, every) {
 
   if (!driveConfigured()) {
     return card(about,
-      h('p', { class: 'fin-hint' }, 'Fin can also back itself up to your Google Drive every day. It needs a Google OAuth client ID in tools/finance/config.js; the steps are in tools/finance/README.md (Backups).'),
+      h('p', { class: 'fin-hint' }, 'Fin can also back itself up to your Google Drive every day. It needs a Google OAuth client ID in tools/finance/js/config.js; the steps are in tools/finance/README.md (Backups).'),
       h('div', { class: 'fin-actions fin-mt' }, download(true)));
   }
   if (!driveOn()) {

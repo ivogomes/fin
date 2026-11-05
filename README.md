@@ -7,40 +7,47 @@ Data is stored in a Supabase project (Postgres) and you sign in with Google or a
 | File | What it is |
 | --- | --- |
 | `index.html` | The page: tool header, account panel, main area, dialogs. |
-| `app.js` | The app's core and shell: what's shown (`state`, `view`, the address), `render`, sign-in and start-up, the header, the account menu and the phone tab bar. Loads the other modules. |
-| `ui.js` | Building blocks every page uses: `h()` for elements, form controls, icons, preferences, money and number formatting, category names and colours. |
-| `accounts.js` | An account's dialog and page, credit card statements and payments, and alerts. |
-| `transactions.js` | Transaction lists: filters, selection and bulk changes, the table, editing in place, paging from the database, and Search. |
-| `entry.js` | Adding transactions: the quick-entry grid, the single form, description suggestions, the category picker. |
-| `holdings.js` | Holdings and their buys and sells. |
-| `ious.js` | IOUs, per person. |
-| `insights.js` | Insights and net worth over time. |
-| `schedules.js` | Scheduled transactions and subscriptions. |
-| `overview.js` | The Overview and its alerts. |
-| `settings.js` | Settings pages and navigation, and category management. |
-| `imports.js` | Imports (CSV, Buxfer, holdings, rules) and CSV export. |
-| `backups.js` | Backups: download, restore, Google Drive. |
-| `palette.js` | Go to (Ctrl/⌘+K). |
-| `assets.js` | Assets: a home, vehicles and other things of value, their dashboard, valuations and value over time. |
-| `theme.js` | Applies the picked appearance (light, dark or the system's) before the page is drawn. |
-| `model.js` | Pure logic: money in cents, categories by rule, balances, transfers, net worth, CSV parsing and import mapping. No DOM, no I/O. |
-| `model.test.mjs` | The spec for `model.js`. |
-| `store.js` | Loads the signed-in user's data and saves changes: compares with the last saved copy and sends only added, changed or removed rows. |
-| `cloud.js` | Supabase over plain `fetch`: sign-in (email link or Google) and table access. No SDK. |
-| `market.js` | Exchange rates (Frankfurter), symbol search and US prices (Twelve Data), non-US prices (Alpha Vantage). |
-| `drive.js` | Backups to Google Drive (optional, with a Google OAuth client ID in `config.js`). |
-| `schema.sql` | Database tables and row-level security. |
-| `config.js` | Your Supabase project URL and anon key. |
-| `finance.css` | The tool's styles, on the shared tokens (see `STYLEGUIDE.md`). |
+| `sw.js` | Service worker: keeps the app's own files so it opens instantly and installs as an app. Stays at the root so its scope covers the whole tool. |
+| `manifest.webmanifest` | Install name, colours, icons and the "Add transactions" shortcut. |
+| `js/app.js` | The app's core and shell: what's shown (`state`, `view`, the address), `render`, sign-in and start-up, the header, the account menu and the phone tab bar. Loads the other modules. |
+| `js/ui.js` | Building blocks every page uses: `h()` for elements, form controls, icons, preferences, money and number formatting, category names and colours. |
+| `js/accounts.js` | An account's dialog and page, credit card statements and payments, and alerts. |
+| `js/transactions.js` | Transaction lists: filters, selection and bulk changes, the table, editing in place, paging from the database, and Search. |
+| `js/entry.js` | Adding transactions: the quick-entry grid, the single form, description suggestions, the category picker. |
+| `js/holdings.js` | Holdings and their buys and sells. |
+| `js/loans.js` | Loans: the next payment, paying in advance, rate and term changes. |
+| `js/ious.js` | IOUs, per person. |
+| `js/insights.js` | Insights and net worth over time. |
+| `js/goals.js` | Goals, under Insights. |
+| `js/schedules.js` | Scheduled transactions and subscriptions. |
+| `js/overview.js` | The Overview and its alerts. |
+| `js/settings.js` | Settings pages and navigation, and category management. |
+| `js/imports.js` | Imports (CSV, Buxfer, holdings, rules) and CSV export. |
+| `js/backups.js` | Backups: download, restore, Google Drive. |
+| `js/palette.js` | Go to (Ctrl/⌘+K). |
+| `js/assets.js` | Assets: a home, vehicles and other things of value, their dashboard, valuations and value over time. |
+| `js/theme.js` | Applies the picked appearance (light, dark or the system's) before the page is drawn. |
+| `js/model.js` | Pure logic: money in cents, categories by rule, balances, transfers, net worth, CSV parsing and import mapping. No DOM, no I/O. |
+| `js/store.js` | Loads the signed-in user's data and saves changes: compares with the last saved copy and sends only added, changed or removed rows. |
+| `js/cloud.js` | Supabase over plain `fetch`: sign-in (email link or Google) and table access. No SDK. |
+| `js/market.js` | Exchange rates (Frankfurter), symbol search and US prices (Twelve Data), non-US prices (Alpha Vantage). |
+| `js/drive.js` | Backups to Google Drive (optional, with a Google OAuth client ID in `js/config.js`). |
+| `js/zip.js` | Writing and reading the backup `.zip`. |
+| `js/config.js` | Your Supabase project URL and anon key. |
+| `css/finance.css` | The tool's styles, on the shared tokens (see `STYLEGUIDE.md`). |
+| `shared/` | `tokens.css` and `tools.css`, copied from the site. |
+| `icons/` | Favicon, touch and install icons. |
+| `db/schema.sql` | Database tables and row-level security. |
+| `test/model.test.mjs` | The spec for `js/model.js` (and `js/zip.js`). |
 
-The modules are plain ES modules, loaded by `app.js` (no build step). Each exports its top-level declarations and imports what it uses from the others; they only reach each other's code when called, so the cycles between them are safe. A module can read another's variables (`state`, `view`, `txPage`…) but not assign them, so each such variable has a setter next to it (`setView`, `setTxPage`, `setEditingTxId`…). A new file needs adding to `SHELL` in `sw.js`.
+The modules are plain ES modules, loaded by `js/app.js` (no build step). Each exports its top-level declarations and imports what it uses from the others; they only reach each other's code when called, so the cycles between them are safe. A module can read another's variables (`state`, `view`, `txPage`…) but not assign them, so each such variable has a setter next to it (`setView`, `setTxPage`, `setEditingTxId`…). A new file needs adding to `SHELL` in `sw.js`.
 
 ## Set up the database (once)
 
 1. Create a free project at [supabase.com](https://supabase.com).
-2. In **SQL editor**, paste `schema.sql` and run it.
+2. In **SQL editor**, paste `db/schema.sql` and run it.
 3. In **Authentication → URL configuration**, set **Site URL** to `https://ivogomes.com/tools/finance/` and add `http://localhost:4000/tools/finance/` under **Redirect URLs** (and any other address you serve Fin from: sign-in links only go back to these).
-4. In **Project settings → API**, copy the project URL (`https://<project-ref>.supabase.co`, not the dashboard address in your browser bar) and the `anon` public key into `config.js`. The anon key is meant to be public; the row-level security policies in `schema.sql` are what keep data private.
+4. In **Project settings → API**, copy the project URL (`https://<project-ref>.supabase.co`, not the dashboard address in your browser bar) and the `anon` public key into `js/config.js`. The anon key is meant to be public; the row-level security policies in `db/schema.sql` are what keep data private.
 5. Open the tool, sign in with your email, and click the link.
 6. Once your account exists, turn off **Authentication → Sign In / Providers → Allow new users to sign up**, so nobody else can create an account in your project.
 
@@ -53,21 +60,21 @@ npm run preview        # from the site's root, with this repo cloned into its to
 # then open http://localhost:4000/tools/finance/
 ```
 
-It's static, so any web server works too, from this folder. Tests: `node --test model.test.mjs`. On this machine the `node` shim needs a version, so use `MISE_NODE_VERSION=22.19.0 node --test …`.
+It's static, so any web server works too, from this folder. Tests: `node --test test/model.test.mjs`. On this machine the `node` shim needs a version, so use `MISE_NODE_VERSION=22.19.0 node --test …`.
 
 ### After an update that adds a table
 
-`schema.sql` only creates what's missing, so running the whole file again is safe and keeps your data. Do this when a new feature needs a table or a column (scheduled transactions added `schedules`; splits and dividends added `transactions.splits` and `transactions.holding_id`; marking subscriptions added `schedules.subscription`; several categories per schedule added `schedules.category_ids`; account settings added a dozen `accounts` columns; listing the newest of a day first added `transactions.created_at`); until then the app loads normally, says the database needs updating, and doesn't save.
+`db/schema.sql` only creates what's missing, so running the whole file again is safe and keeps your data. Do this when a new feature needs a table or a column (scheduled transactions added `schedules`; splits and dividends added `transactions.splits` and `transactions.holding_id`; marking subscriptions added `schedules.subscription`; several categories per schedule added `schedules.category_ids`; account settings added a dozen `accounts` columns; listing the newest of a day first added `transactions.created_at`); until then the app loads normally, says the database needs updating, and doesn't save.
 
 ## Pages
 
 Each section in the header (Overview, Accounts, Assets, Search, Scheduled, Insights, IOUs), and Settings (in your avatar's menu), is its own page with its own address, e.g. `/tools/finance/?page=search`, `?page=settings&section=backup` or `?account=<id>&tab=insights`; `/tools/finance/` opens the Overview and `?account=` the last account opened. `?page=search&q=rent` opens Search already looking for "rent"; it also takes `cats`, `types` and `accounts` (comma-separated ids, an empty one among the categories for uncategorised) and `from`/`to`, which is how a category on Insights opens its transactions in the period. Going to another section loads that page with fresh data, so switching sections also picks up changes made on another device.
 
-Not every page loads every transaction. Account totals (balances, counts, what's coming in the next 30 days) are worked out by the database (`account_summaries` in `schema.sql`), and a change you make shows in them at once; they're checked against the database again after each save. An account page asks the database for the 100 transactions it shows, with their running balance and filters applied (`account_transactions`), and the suggestions when adding transactions come from `description_index`. Search asks the database for one page of results with their In and Out totals (`search_transactions`), and Insights for the period's sums per day and per category (`insight_totals`, the same rules as `insightTotals` in `model.js`); the app groups those into weeks or months and parent categories. Net worth (and an investment account's Insights tab) asks for each account's running total at the end of each week or month (`balances_at`); investments are then valued from their holdings in the app. No page loads every transaction up front: the IOUs page fetches just the ones its entries are linked to, and the Settings pages that work on all of them (categories, rules, backup, imports, link transfers, export) load them when opened. A backup always has every transaction, wherever it's downloaded from. Anything waiting to be saved is sent first, and leaving with something typed but not saved asks first. Moving between accounts, account tabs and settings pages stays instant, and the address follows, so reloading or bookmarking keeps you there.
+Not every page loads every transaction. Account totals (balances, counts, what's coming in the next 30 days) are worked out by the database (`account_summaries` in `db/schema.sql`), and a change you make shows in them at once; they're checked against the database again after each save. An account page asks the database for the 100 transactions it shows, with their running balance and filters applied (`account_transactions`), and the suggestions when adding transactions come from `description_index`. Search asks the database for one page of results with their In and Out totals (`search_transactions`), and Insights for the period's sums per day and per category (`insight_totals`, the same rules as `insightTotals` in `model.js`); the app groups those into weeks or months and parent categories. Net worth (and an investment account's Insights tab) asks for each account's running total at the end of each week or month (`balances_at`); investments are then valued from their holdings in the app. No page loads every transaction up front: the IOUs page fetches just the ones its entries are linked to, and the Settings pages that work on all of them (categories, rules, backup, imports, link transfers, export) load them when opened. A backup always has every transaction, wherever it's downloaded from. Anything waiting to be saved is sent first, and leaving with something typed but not saved asks first. Moving between accounts, account tabs and settings pages stays instant, and the address follows, so reloading or bookmarking keeps you there.
 
 ## Appearance
 
-Settings → **Display** → Appearance picks light, dark, or the same as your device (the default), saved in this browser. `theme.js` applies it in the page's `<head>`, before anything is drawn, by setting `data-theme` on `<html>`; every dark style in `finance.css` answers to that as well as to the system setting.
+Settings → **Display** → Appearance picks light, dark, or the same as your device (the default), saved in this browser. `js/theme.js` applies it in the page's `<head>`, before anything is drawn, by setting `data-theme` on `<html>`; every dark style in `css/finance.css` answers to that as well as to the system setting.
 
 ## Overview
 
@@ -89,7 +96,7 @@ A row can be a transfer: pick **⇄ Transfer** as its type and the category cell
 
 Click a transaction's date, amount or description (or Tab to it and press Enter) to change just that, in place: Enter or clicking away saves, Esc cancels, and Undo puts it back. A transfer's other side follows.
 
-Each account's transactions have a filter bar: text (description, memo, or an amount such as `12.99`), categories (a parent includes its children; "Uncategorized" too), types, dates and amount range. **Search** in the header does the same across every account, archived ones included, with totals in and out, and can narrow to some accounts. Categories, types and accounts each open a list of checkboxes: tick several and a transaction matching any of them shows (the categories have a search box, and so do the accounts when there are many; ↓/↑ move, Esc closes). This needs the `schema.sql` from when several could be picked (`account_transactions` and `search_transactions` take `p_categories` and `p_types` lists); with an older one the app asks for it to be run again. Rows have checkboxes (and one for the whole page); with any selected, a bar sets, adds or removes categories, or deletes them. Deletes and bulk changes show a message with **Undo** (also Ctrl/⌘+Z while it shows): account, transaction, holding, lot, IOU entry, schedule and category deletes.
+Each account's transactions have a filter bar: text (description, memo, or an amount such as `12.99`), categories (a parent includes its children; "Uncategorized" too), types, dates and amount range. **Search** in the header does the same across every account, archived ones included, with totals in and out, and can narrow to some accounts. Categories, types and accounts each open a list of checkboxes: tick several and a transaction matching any of them shows (the categories have a search box, and so do the accounts when there are many; ↓/↑ move, Esc closes). This needs the `db/schema.sql` from when several could be picked (`account_transactions` and `search_transactions` take `p_categories` and `p_types` lists); with an older one the app asks for it to be run again. Rows have checkboxes (and one for the whole page); with any selected, a bar sets, adds or removes categories, or deletes them. Deletes and bulk changes show a message with **Undo** (also Ctrl/⌘+Z while it shows): account, transaction, holding, lot, IOU entry, schedule and category deletes.
 
 When you categorize a transaction by hand and no rule would already do that, the app offers "Always put … in …?". The rule matches the whole description, goes to the top of the list (the first match wins), and can fill in the other uncategorized transactions with that description at the same time.
 
@@ -177,7 +184,7 @@ An investment account's Insights tab (its value, what was invested and the gain 
 
 Between valuations, an asset's value is estimated from the latest (the purchase price counts as the first) at its **yearly change**, compounding: +2% a year for a home, −15% for a vehicle and 0% for other things unless it has its own; a falling value stops at its **lowest value** (`assetValue` in `model.js`). An asset not valued for over a year gets a Heads up alert on the Overview.
 
-Assets aren't money, so they're never part of net worth. The Net worth page shows **Net worth today** (what counts in totals, pensions included) and **Within reach** (without pensions), both from the same point of its history, net worth over time, and what the assets are worth beside them. **Show total wealth** (remembered in this browser) adds the assets, and any accounts left out of totals, for a **total worth**: the figures, the chart and the by-type list then count everything, without changing what's left out elsewhere. It values each asset on each date of the history, and the by-type list shows them as one more line. `schema.sql` creates the `assets` table.
+Assets aren't money, so they're never part of net worth. The Net worth page shows **Net worth today** (what counts in totals, pensions included) and **Within reach** (without pensions), both from the same point of its history, net worth over time, and what the assets are worth beside them. **Show total wealth** (remembered in this browser) adds the assets, and any accounts left out of totals, for a **total worth**: the figures, the chart and the by-type list then count everything, without changing what's left out elsewhere. It values each asset on each date of the history, and the by-type list shows them as one more line. `db/schema.sql` creates the `assets` table.
 
 **A loan on an asset.** An asset's **Loan on it** (in Add asset and Edit, once there's a loan account) links it to the mortgage or loan taken for it. Its card then shows its **equity**, what it's worth less what's still owed (with the share that's yours), and what's owed on it; its chart compares its worth with what was owed on each date, so the gap between the lines is the equity.
 
@@ -221,7 +228,7 @@ To set it up once:
 2. **APIs & Services → Library:** enable the **Google Drive API**.
 3. **APIs & Services → OAuth consent screen:** user type External; app name Fin; your email as support and developer contact. Under **Data access**, add the scope `.../auth/drive.file`. Under **Audience**, leave it in Testing and add your Google account as a test user (only test users can connect, which is what you want).
 4. **APIs & Services → Credentials → Create credentials → OAuth client ID:** type Web application; under **Authorized JavaScript origins** add `https://ivogomes.com` and `http://localhost:4000`. No redirect URIs are needed.
-5. Copy the client ID (`….apps.googleusercontent.com`) into `GOOGLE_CLIENT_ID` in `config.js`. It's meant to be public, like the Supabase anon key: Google only accepts it from those origins.
+5. Copy the client ID (`….apps.googleusercontent.com`) into `GOOGLE_CLIENT_ID` in `js/config.js`. It's meant to be public, like the Supabase anon key: Google only accepts it from those origins.
 6. In Fin: Settings → Backup and restore → **Connect Google Drive and back up now**.
 
 **Signing in with Google.** With the client ID set, the sign-in screen also shows **Sign in with Google**, above the email link. Turn it on in Supabase: **Authentication → Sign In / Providers → Google**, enable it, and paste the same client ID (and a client secret from that Google client, if the form asks for one). Nothing more is needed in Google Cloud: the button runs from the same JavaScript origins, needs no redirect URI, and asks only for your name and email (basic scopes). Google's signed ID token is exchanged for a Supabase session (`signInWithGoogle` in `cloud.js`, with a nonce so a token can't be reused elsewhere), and Supabase links it to the account with the same email, so you get the same data either way. Your Google name and photo show in the header, on a button at the end that opens a menu with your email, **Settings** (all of them: the avatar is ringed while you're in them) and **Sign out** (with the email link, it shows your initials instead; so does a photo that doesn't load). The photo is loaded from Google. Drive is a separate permission, but it goes with the Google account rather than the browser: once that account has allowed it (one click on **Use Google Drive and back up now**, or the reminder's button), every browser where you sign in with Google uses it without asking, and backs up by itself when one is due. Disconnecting in a browser stops that there. The Backup page shows which Google account the backups go to, and says so if it isn't the one you signed in with.
@@ -230,7 +237,7 @@ While the app is in Testing, Google may ask you to confirm again from time to ti
 
 **A copy on a Synology NAS:** in DSM, install **Cloud Sync**, add a Google Drive connection with your account, and sync the **Fin backups** folder to a folder on the NAS with the direction set to **Download remote changes only**. If it offers to keep local files when they're removed from Drive, turn that on, so the NAS keeps every backup even after Drive's copy rotates. Hyper Backup can then include that folder in the NAS's own backups.
 
-`.github/workflows/finance-keepalive.yml` pings the Supabase project every 3 days so the free plan doesn't pause it for inactivity. It uses the public URL and key from `config.js` and reads no data. GitHub turns scheduled workflows off after 60 days without commits to the repo; re-enable it from the Actions tab if that happens.
+`.github/workflows/finance-keepalive.yml` pings the Supabase project every 3 days so the free plan doesn't pause it for inactivity. It uses the public URL and key from `js/config.js` and reads no data. GitHub turns scheduled workflows off after 60 days without commits to the repo; re-enable it from the Actions tab if that happens.
 
 ## Import and export
 
@@ -249,7 +256,7 @@ Settings → **Export (CSV)** downloads transactions, accounts, holdings and cat
 - **Exchange rates:** Frankfurter (ECB reference rates), no key. Each transaction keeps the rate of its own date.
 - **Search and US prices:** Twelve Data, free key. Its free plan doesn't include Xetra and most other non-US exchanges.
 - **Non-US prices:** Alpha Vantage, free key, 25 lookups a day. Xetra, London and Toronto suffixes are documented; Frankfurt, Paris and Amsterdam are unconfirmed.
-- **Funds (by ISIN):** EODHD, free key (about 20 lookups a day). Type the fund's ISIN (e.g. LU0109981661) when adding a holding. EODHD doesn't let web pages read its answers, so the database fetches them (`fund_data` in `schema.sql`, using Postgres's `http` extension) with your key, which only that function reads.
+- **Funds (by ISIN):** EODHD, free key (about 20 lookups a day). Type the fund's ISIN (e.g. LU0109981661) when adding a holding. EODHD doesn't let web pages read its answers, so the database fetches them (`fund_data` in `db/schema.sql`, using Postgres's `http` extension) with your key, which only that function reads.
 - **By hand:** any holding without a live price can have its price typed in. Something no provider lists (a pension fund, say) can be added with **Not listed? Add it by hand** under the holdings: a name, currency and price per unit, which you update from the holdings list.
 
 API keys are saved in your settings row in the database, so they follow you between devices.

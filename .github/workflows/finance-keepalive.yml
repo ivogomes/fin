@@ -1,0 +1,31 @@
+# Keeps the Finance tool's Supabase project awake. Free projects pause after a week without any
+# requests; this sends one small request every few days. It uses the project URL and the public
+# (anon) key already in js/config.js, and reads nothing: row-level security returns no
+# rows to a request that isn't signed in.
+name: Finance keep-alive
+
+on:
+  schedule:
+    - cron: '17 6 */3 * *' # every 3 days, early morning UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: js/config.js
+          sparse-checkout-cone-mode: false
+
+      - name: Ping Supabase
+        run: |
+          url=$(sed -n "s/^export const SUPABASE_URL = '\(.*\)';/\1/p" js/config.js)
+          key=$(sed -n "s/^export const SUPABASE_ANON_KEY = '\(.*\)';/\1/p" js/config.js)
+          test -n "$url" && test -n "$key" || { echo "No Supabase URL or key in config.js"; exit 1; }
+          status=$(curl -s -o /dev/null -w '%{http_code}' -H "apikey: $key" "$url/rest/v1/accounts?select=id&limit=1")
+          echo "Supabase answered $status"
+          test "$status" = 200

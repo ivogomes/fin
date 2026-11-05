@@ -28,7 +28,7 @@ export function goalFigures(g) {
 export function renderGoals() {
   if (missingTables().includes('goals')) {
     return h('section', { class: 'fin-card fin-pad' },
-      h('p', { class: 'fin-empty' }, 'Goals need the database updated: run tools/finance/schema.sql again in the Supabase SQL editor, then reload.'));
+      h('p', { class: 'fin-empty' }, 'Goals need the database updated: run tools/finance/db/schema.sql again in the Supabase SQL editor, then reload.'));
   }
   return h('div', { class: 'fin-insights' },
     h('div', { class: 'fin-actions fin-goals-actions' },

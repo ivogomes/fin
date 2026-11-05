@@ -41,7 +41,7 @@ export let state = null;
 // fresh; within a page (accounts, settings pages) it's instant.
 // Where Fin is served from (its folder: /tools/finance/ on ivogomes.com, / on its own), so it runs
 // anywhere without changes.
-export const BASE_PATH = new URL('./', import.meta.url).pathname;
+export const BASE_PATH = new URL('../', import.meta.url).pathname;
 export const PAGES = ['overview', 'search', 'scheduled', 'insights', 'assets', 'ious', 'settings'];
 export const sectionOf = (v) => (v.name === 'account' ? 'accounts' : v.name);
 export function urlOf(v) {
@@ -567,7 +567,7 @@ export function render(focusKey) {
   side.replaceChildren(...(isPhone() ? [] : inSettings ? renderSettingsNav() : renderSide()).flat().filter(Boolean));
   main.replaceChildren(
     needsSchemaUpdate() ? h('p', { class: 'fin-notice fin-legacy', role: 'alert' },
-      'This version needs a database update: run tools/finance/schema.sql again in the Supabase SQL editor (it keeps your data), then reload. Until then, changes aren’t saved.') : '',
+      'This version needs a database update: run tools/finance/db/schema.sql again in the Supabase SQL editor (it keeps your data), then reload. Until then, changes aren’t saved.') : '',
     legacyBanner() ?? '',
     backupBanner() ?? '',
     view.name === 'settings' ? renderSettings()
@@ -658,7 +658,7 @@ export function seaScene() {
 
 export function renderSetupNeeded() {
   screen('Connect a database',
-    h('p', { class: 'fin-empty' }, 'Your data is stored in your own Supabase project, so you can reach it from any device. Fill in tools/finance/config.js with the project URL and anon key, then reload. The steps are in tools/finance/README.md.'));
+    h('p', { class: 'fin-empty' }, 'Your data is stored in your own Supabase project, so you can reach it from any device. Fill in tools/finance/js/config.js with the project URL and anon key, then reload. The steps are in tools/finance/README.md.'));
 }
 
 export function renderSignIn(message) {

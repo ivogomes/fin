@@ -531,7 +531,7 @@ export function requestList(scope, key, name, args) {
     const outdated = /could not find the function/i.test(err.message);
     if (outdated) markSchemaOutdated();
     listErrors.set(scope, { key, message: outdated
-      ? 'The database needs updating for these filters: run tools/finance/schema.sql again in the Supabase SQL editor, then reload.'
+      ? 'The database needs updating for these filters: run tools/finance/db/schema.sql again in the Supabase SQL editor, then reload.'
       : `Couldn’t load the transactions: ${err.message}` });
     renderWhenIdle();
   });

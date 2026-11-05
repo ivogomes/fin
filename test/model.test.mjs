@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { makeZip, readZip, crc32 } from './zip.js';
+import { makeZip, readZip, crc32 } from '../js/zip.js';
 import {
   toMinor, formatMoney, categorize, convert, rateFor, accountBalance, plannedTransactions,
   holdingValue, investmentValue, netWorth, defaultState, withRunningBalance,
@@ -14,7 +14,7 @@ import {
   parseFrequency, addInterval, occurrences, forecast, scheduledTransactions, advanceSchedule,
   splitsOf, scaleSplits, DIVIDENDS, recurringGroups, suggestSchedules, xirr, lotFlows, returnSummary, findSubscriptions, withMarkedSchedules, timesAYear,
   lastStatementDate, dueAfter, balanceDip, savingsInterest, loanPlan, annuityPayment, loanInterestSoFar, loanTerm, loanRateAt, loanInterestRow, goalProgress,
-} from './model.js';
+} from '../js/model.js';
 
 test('periods: presets relative to today, Monday weeks, granularity', () => {
   const today = '2026-11-04'; // a Wednesday
