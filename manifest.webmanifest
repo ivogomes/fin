@@ -2,9 +2,9 @@
   "name": "Fin",
   "short_name": "Fin",
   "description": "Take care of your Finances. Accounts, transactions, investments and insights.",
-  "start_url": "/tools/finance/",
-  "scope": "/tools/finance/",
-  "id": "/tools/finance/",
+  "start_url": "./",
+  "scope": "./",
+  "id": "./",
   "display": "standalone",
   "background_color": "#F3F5F4",
   "theme_color": "#A4D5CF",
@@ -14,6 +14,6 @@
     { "src": "icon-512-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
   ],
   "shortcuts": [
-    { "name": "Add transactions", "url": "/tools/finance/?add", "icons": [{ "src": "icon-192.png", "sizes": "192x192" }] }
+    { "name": "Add transactions", "url": "./?add", "icons": [{ "src": "icon-192.png", "sizes": "192x192" }] }
   ]
 }

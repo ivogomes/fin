@@ -1,0 +1,75 @@
+/* Copied from ivogomes.com (src/tokens.css) so this tool runs on its own. Fin's look is shared by every
+   tool: change it in the site's src/ first, then copy it into each tool's shared/ folder. */
+/* Warm grey neutrals — shared across all three directions */
+:root {
+  --font-sans: 'Geist', system-ui, sans-serif; /* shared with the tools (Fin's typeface) */
+  --font-serif: Georgia, serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+  --radius: 2px; /* the website's flat elements: rules, hero art */
+  --radius-sm: 8px; /* controls: buttons, inputs, as in the tools */
+  --radius-lg: 12px; /* cards, tiles, screenshots, images */
+
+  --hero-ink: #FFF8E8;
+  --hero-teal: #5BBFB5; /* the home hero */
+  --hero-teal-ink: #16181C;
+  --button-teal: #1F7A8C; /* primary buttons, resting */
+  --button-teal-hover: #186577;
+  --button-teal-ink: #FFFFFF;
+  --hero-teal-soft: #A4D5CF; /* the hero teal, eased toward the warm grey for tool headers */
+  --tool-header-bg: var(--hero-teal-soft); /* tool header: soft teal in light, deep teal in dark */
+  --tool-header-ink: var(--hero-teal-ink);
+
+  --z-above: 2;
+  --z-hero: 3;
+  --z-modal: 1000;
+  --cream: #EEECE9; /* light warm grey */
+  --cream-2: #E2E0DC;
+  --paper: #FAF9F7;
+  --ink: #1C1B19;
+  --ink-soft: #292826;
+  --text: #1C1B19;
+  --text-muted: #5A5753;
+  --text-quiet: #5E5B57;
+  --rule: #1C1B1920;
+  --rule-strong: #1C1B1950;
+  --accent: #C8361A; /* vivid vermillion */
+  --bg: var(--cream);
+  --surface: var(--paper);
+  --shadow: 0 1px 0 #1C1B1910;
+  --shadow-card: 0 1px 2px rgb(28 27 25 / 0.05), 0 2px 8px rgb(28 27 25 / 0.04); /* Fin's soft card shadow, warm */
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+  --cream: #1A1814;
+  --cream-2: #221F1A;
+  --paper: #14110D;
+  --ink: #F3EDE1;
+  --ink-soft: #E6DFCF;
+  --text: #EDE6D6;
+  --text-muted: #9A9081;
+  --text-quiet: #8A8070;
+  --rule: #EDE6D620;
+  --rule-strong: #EDE6D650;
+  --accent: #F2825A;
+  --tool-header-bg: #1B3836;
+  --tool-header-ink: #E4F1EF;
+  --bg: var(--cream);
+  --surface: var(--paper);
+  --shadow: 0 1px 0 #00000030;
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.3);
+  }
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+a { color: inherit; }
+img { max-width: 100%; display: block; }
+::selection { background: var(--ink); color: var(--cream); }

@@ -39,7 +39,9 @@ export let state = null;
 // (&q=… to search for something), ?page=settings&section=backup, ?account=<id>&tab=insights, and
 // ?account= for the last account opened. Going to another section loads that page, so its data is
 // fresh; within a page (accounts, settings pages) it's instant.
-export const BASE_PATH = '/tools/finance/';
+// Where Fin is served from (its folder: /tools/finance/ on ivogomes.com, / on its own), so it runs
+// anywhere without changes.
+export const BASE_PATH = new URL('./', import.meta.url).pathname;
 export const PAGES = ['overview', 'search', 'scheduled', 'insights', 'assets', 'ious', 'settings'];
 export const sectionOf = (v) => (v.name === 'account' ? 'accounts' : v.name);
 export function urlOf(v) {
@@ -684,7 +686,7 @@ export function renderSignIn(message) {
         const submit = e.target.querySelector('button[type="submit"]');
         submit.disabled = true;
         try {
-          await sendSignInLink(email.value.trim(), `${location.origin}/tools/finance/`);
+          await sendSignInLink(email.value.trim(), `${location.origin}${BASE_PATH}`);
           screen('Check your email',
             h('p', { class: 'fin-empty' }, `We sent a sign-in link to ${email.value.trim()}. Open it on this device. You can close this tab.`),
             button('Use a different email', () => renderSignIn()));
@@ -972,7 +974,7 @@ export function quickAdd() {
 document.getElementById('fab').addEventListener('click', quickAdd);
 
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-  navigator.serviceWorker.register('/tools/finance/sw.js', { scope: '/tools/finance/' }).catch(() => {});
+  navigator.serviceWorker.register(`${BASE_PATH}sw.js`, { scope: BASE_PATH }).catch(() => {});
 }
 
 export async function signOutNow() {

@@ -1,0 +1,238 @@
+/* Copied from ivogomes.com (src/tools.css) so this tool runs on its own. Fin's look is shared by every
+   tool: change it in the site's src/ first, then copy it into each tool's shared/ folder. */
+/* ── Tools index ─────────────────────────────────────────────── */
+.tools-list {
+  list-style: none;
+  margin: 48px 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+@media (max-width: 40rem) {
+  .tools-list { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* the teaser card: a dashed outline marks it as a placeholder, not a tool. It isn't a link, so it
+   has no hover or focus state. */
+.tools-card--next,
+.tools-card--next:hover {
+  --mark-ground: var(--cream);
+  background: transparent;
+  border-style: dashed;
+  border-color: var(--rule-strong);
+  box-shadow: none;
+  cursor: default;
+}
+
+.tools-card--next .tools-card-icon { color: var(--text-muted); }
+
+/* every card in a row is as tall as the tallest */
+.tools-list > li { display: flex; }
+
+.tools-card {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 20px;
+  padding: 24px;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+  text-decoration: none;
+  color: var(--ink);
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+}
+
+.tools-card {
+  --mark-ground: var(--surface);
+}
+
+.tools-card:hover {
+  --mark-ground: var(--cream-2);
+  background: var(--cream-2);
+  border-color: var(--rule-strong);
+}
+
+.tools-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: var(--radius-lg);
+}
+
+.tools-card-icon {
+  width: 40px;
+  height: 40px;
+  color: var(--ink);
+  flex-shrink: 0;
+}
+
+.tools-card-body {
+  min-width: 0;
+}
+
+.tools-card-title {
+  font-family: var(--font-serif);
+  font-size: 22px;
+  font-weight: 400;
+  letter-spacing: -0.01em;
+  margin: 0 0 6px;
+  color: var(--ink);
+}
+
+.tools-card-desc {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--text-muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tools-card { transition: none; }
+}
+
+/* ── Tool colours: the teal of the site's buttons, in place of the accent ─── */
+:root {
+  --tool-teal: #5BBFB5;
+  --tool-teal-deep: var(--button-teal); /* dark enough for rings, links and text on paper */
+  --tool-danger: #B3261E;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --tool-teal-deep: #5BBFB5;
+    --tool-danger: #F2867F;
+  }
+}
+
+/* ── The tools' look (Fin's): soft neutral page, white rounded cards, sentence-case controls ───
+   Fin uses these directly; the other tools map the site tokens onto them in src/tools-look.css. A
+   picked theme (data-theme on <html>, Fin only) is answered as well as the system's. */
+:root {
+  --f-bg: #F3F5F4;
+  --f-surface: #FFFFFF;
+  --f-surface-2: #F7F9F8;
+  --f-hover: #F0F4F3;
+  --f-border: #E3E8E6;
+  --f-border-strong: #CBD4D1;
+  --f-text: #15201C;
+  --f-muted: #5F6C67;
+  --f-accent: #1F7A8C;
+  --f-accent-strong: #165F6E;
+  --f-accent-soft: #E2F0F1;
+  --f-accent-ink: #FFFFFF;
+  --f-pos: #0F7A54;
+  --f-neg: #C0392B;
+  --f-danger-soft: #FBEBE9; --f-warn-soft: #FBF3E2;
+  --f-warn: #B7791F;
+  --f-radius: 12px;
+  --f-radius-sm: 8px;
+  --f-shadow: 0 1px 2px rgb(16 24 20 / 0.05), 0 2px 8px rgb(16 24 20 / 0.04);
+  --f-shadow-lg: 0 16px 48px rgb(16 24 20 / 0.2);
+  --f-ring: 0 0 0 3px rgb(31 122 140 / 0.25);
+  --f-hero: linear-gradient(135deg, #1F7A8C 0%, #155A68 100%);
+  --f-hero-ink: #FFFFFF;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --f-bg: #0E1312; --f-surface: #161C1B; --f-surface-2: #1B2321; --f-hover: #1F2826; --f-border: #26302E; --f-border-strong: #384542; --f-text: #E6EEEB; --f-muted: #9AA8A3; --f-accent: #5BBFB5; --f-accent-strong: #7FD2C9; --f-accent-soft: rgb(91 191 181 / 0.14); --f-accent-ink: #0E1312; --f-pos: #4CC594; --f-neg: #F0897C; --f-danger-soft: rgb(240 137 124 / 0.12); --f-warn-soft: rgb(227 176 90 / 0.14); --f-warn: #E3B05A; --f-shadow: 0 1px 2px rgb(0 0 0 / 0.3); --f-shadow-lg: 0 16px 48px rgb(0 0 0 / 0.5); --f-ring: 0 0 0 3px rgb(91 191 181 / 0.3); --f-hero: linear-gradient(135deg, #1D4B48 0%, #163634 100%); --f-hero-ink: #E6F3F1; }
+}
+:root[data-theme="dark"] { --f-bg: #0E1312; --f-surface: #161C1B; --f-surface-2: #1B2321; --f-hover: #1F2826; --f-border: #26302E; --f-border-strong: #384542; --f-text: #E6EEEB; --f-muted: #9AA8A3; --f-accent: #5BBFB5; --f-accent-strong: #7FD2C9; --f-accent-soft: rgb(91 191 181 / 0.14); --f-accent-ink: #0E1312; --f-pos: #4CC594; --f-neg: #F0897C; --f-danger-soft: rgb(240 137 124 / 0.12); --f-warn-soft: rgb(227 176 90 / 0.14); --f-warn: #E3B05A; --f-shadow: 0 1px 2px rgb(0 0 0 / 0.3); --f-shadow-lg: 0 16px 48px rgb(0 0 0 / 0.5); --f-ring: 0 0 0 3px rgb(91 191 181 / 0.3); --f-hero: linear-gradient(135deg, #1D4B48 0%, #163634 100%); --f-hero-ink: #E6F3F1; }
+
+/* ── Secondary toolbar: the row under a tool header ─── */
+.tool-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 40px;
+  background: var(--cream-2);
+  border-bottom: 1px solid var(--rule-strong);
+}
+
+@media (max-width: 40rem) {
+  .tool-toolbar { padding-inline: 16px; }
+}
+
+.tool-toolbar[hidden] { display: none; }
+
+/* ── Tool header: the home hero's teal, shared by every tool ─── */
+.tool-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  position: sticky;
+  top: 0;
+  z-index: 5; /* above the page, below a tool's full-screen layers */
+  min-height: 72px;
+  padding: 12px 40px;
+  --mark-ground: var(--tool-header-bg);
+  background: var(--tool-header-bg);
+  color: var(--tool-header-ink);
+}
+
+.tool-header :focus-visible {
+  outline-color: var(--tool-header-ink);
+}
+
+.tool-logo {
+  display: inline-flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  color: inherit;
+  font: inherit;
+}
+
+.tool-logo-mark {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+}
+
+.tool-logo-text {
+  font-family: var(--font-serif);
+  font-size: 22px;
+  font-weight: 400;
+  letter-spacing: -0.015em;
+  line-height: 1;
+}
+
+@media (max-width: 40rem) {
+  .tool-header { padding-inline: 16px; }
+}
+
+/* ── Primary button shimmer: the sweep on the site's download button ─── */
+.btn-primary,
+.file-btn {
+  position: relative;
+  overflow: hidden;
+}
+
+.btn-primary::after,
+.file-btn::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 55%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.14), transparent);
+  transform: skewX(-15deg);
+  transition: left 500ms ease;
+  pointer-events: none;
+}
+
+.btn-primary:not(:disabled):hover::after,
+.file-btn:hover::after {
+  left: 150%;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn-primary::after,
+  .file-btn::after { display: none; }
+}

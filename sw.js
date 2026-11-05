@@ -2,7 +2,7 @@
    Your data isn't cached here: it always comes from the database (other origins pass straight through).
    Files are served from the cache and refreshed in the background, so a new deploy shows on the next
    visit; bump CACHE to drop everything at once. */
-const CACHE = 'finance-v116';
+const CACHE = 'finance-v117';
 const SHELL = [
   './',
   './index.html',
@@ -37,8 +37,8 @@ const SHELL = [
   './icon-512.png',
   './apple-touch-icon.png',
   './favicon-32.png',
-  '/src/tokens.css',
-  '/src/tools.css',
+  './shared/tokens.css',
+  './shared/tools.css',
 ];
 
 self.addEventListener('install', (e) => {
