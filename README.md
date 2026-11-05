@@ -57,7 +57,7 @@ Tests: `node --test tools/finance/model.test.mjs`. On this machine the `node` sh
 
 ### After an update that adds a table
 
-`schema.sql` only creates what's missing, so running the whole file again is safe and keeps your data. Do this when a new feature needs a table or a column (scheduled transactions added `schedules`; splits and dividends added `transactions.splits` and `transactions.holding_id`; marking subscriptions added `schedules.subscription`; several categories per schedule added `schedules.category_ids`; account settings added a dozen `accounts` columns); until then the app loads normally, says the database needs updating, and doesn't save.
+`schema.sql` only creates what's missing, so running the whole file again is safe and keeps your data. Do this when a new feature needs a table or a column (scheduled transactions added `schedules`; splits and dividends added `transactions.splits` and `transactions.holding_id`; marking subscriptions added `schedules.subscription`; several categories per schedule added `schedules.category_ids`; account settings added a dozen `accounts` columns; listing the newest of a day first added `transactions.created_at`); until then the app loads normally, says the database needs updating, and doesn't save.
 
 ## Pages
 

@@ -578,10 +578,12 @@ export function transactionsSection(account) {
   // The page's rows (minus any deleted since), plus transactions added here since it was fetched.
   const fresh = ready ? state.transactions.filter((t) => t.accountId === account.id && t.date <= now
     && !txView.known.has(t.id) && !isFromDatabase(t.id) && !txView.ids.includes(t.id)) : [];
+  // Within a day, the newest added comes first: the ones added since (latest first), then the page
+  // in the database's order (newest added first too). The sort is stable, so it only moves days.
   const rows = [
+    ...(filtered ? filterTransactions(fresh, f, { categories: state.categories }) : fresh).reverse(),
     ...(ready ? txView.ids.map((id) => byId.get(id)).filter((t) => t && t.accountId === account.id && t.date <= now) : []),
-    ...(filtered ? filterTransactions(fresh, f, { categories: state.categories }) : fresh),
-  ].sort((a, b) => b.date.localeCompare(a.date) || b.id.localeCompare(a.id));
+  ].sort((a, b) => b.date.localeCompare(a.date));
   // Running balances: on the first page, counted down from the balance right now, so they follow
   // every change at once; elsewhere, the database's (exact again after the next save).
   if (txPage === 0 && !filtered) {

@@ -182,6 +182,10 @@ alter table settings add column if not exists backup_every integer not null defa
 alter table transactions add column if not exists splits jsonb;
 -- A dividend (kind 'dividend'): the holding that paid it.
 alter table transactions add column if not exists holding_id text;
+-- When a transaction was added, so the newest of a day is listed first. The database sets it; rows
+-- from before this column have none and come after the dated ones of their day.
+alter table transactions add column if not exists created_at timestamptz;
+alter table transactions alter column created_at set default clock_timestamp();
 -- Suggested schedules turned down ("Not recurring"), so they aren't offered again.
 alter table settings add column if not exists hidden_suggestions jsonb not null default '[]';
 -- A schedule can have several categories, like a transaction. Existing single ones are copied over once.
@@ -310,7 +314,7 @@ language sql stable as $$
   with w as materialized (select fin_family(p_categories) as wanted),
   t as (
     select tr as r0, tr.*, fin_cats(tr.category_ids, tr.category_id) as cats,
-      sum(tr.amount) over (order by tr.date, tr.id rows unbounded preceding) as balance
+      sum(tr.amount) over (order by tr.date, tr.created_at nulls first, tr.id rows unbounded preceding) as balance
     from transactions tr
     where tr.user_id = auth.uid() and tr.account_id = p_account and tr.date <= p_today
   ),
@@ -319,7 +323,7 @@ language sql stable as $$
     where fin_match(t.r0, t.cats, p_text, p_amount, w.wanted, p_uncategorized, p_types, p_from, p_to, p_min, p_max)
   ),
   page as (
-    select * from f order by date desc, id desc limit p_limit offset p_offset
+    select * from f order by date desc, created_at desc nulls last, id desc limit p_limit offset p_offset
   ),
   planned as (
     select tr.* from transactions tr
@@ -333,8 +337,8 @@ language sql stable as $$
   )
   select jsonb_build_object(
     'total', (select count(*) from f),
-    'rows', coalesce((select jsonb_agg((to_jsonb(page) - 'user_id' - 'cats' - 'r0') order by date desc, id desc) from page), '[]'::jsonb),
-    'planned', coalesce((select jsonb_agg(to_jsonb(planned) - 'user_id' order by date, id) from planned), '[]'::jsonb),
+    'rows', coalesce((select jsonb_agg((to_jsonb(page) - 'user_id' - 'cats' - 'r0') order by date desc, created_at desc nulls last, id desc) from page), '[]'::jsonb),
+    'planned', coalesce((select jsonb_agg(to_jsonb(planned) - 'user_id' order by date, created_at nulls first, id) from planned), '[]'::jsonb),
     'partners', coalesce((select jsonb_agg(to_jsonb(partners) - 'user_id') from partners), '[]'::jsonb)
   )
 $$;
@@ -364,7 +368,7 @@ language sql stable as $$
                     p_uncategorized, p_types, p_from, p_to, p_min, p_max)
   ),
   page as (
-    select * from f order by date desc, id limit p_limit offset p_offset
+    select * from f order by date desc, created_at desc nulls last, id limit p_limit offset p_offset
   ),
   partners as (
     select tr.* from transactions tr
@@ -375,7 +379,7 @@ language sql stable as $$
     'total', (select count(*) from f),
     'in', (select coalesce(sum(eur), 0) from f where transfer_id is null and amount > 0),
     'out', (select coalesce(-sum(eur), 0) from f where transfer_id is null and amount < 0),
-    'rows', coalesce((select jsonb_agg((to_jsonb(page) - 'user_id' - 'eur') order by date desc, id) from page), '[]'::jsonb),
+    'rows', coalesce((select jsonb_agg((to_jsonb(page) - 'user_id' - 'eur') order by date desc, created_at desc nulls last, id) from page), '[]'::jsonb),
     'partners', coalesce((select jsonb_agg(to_jsonb(partners) - 'user_id') from partners), '[]'::jsonb)
   )
 $$;
