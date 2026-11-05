@@ -183,6 +183,8 @@ alter table transactions add column if not exists kind text;
 alter table settings add column if not exists fx jsonb not null default '{}';
 -- Weekly closing prices per holding, { date: price }, loaded once and kept, for charts over time.
 alter table holdings add column if not exists price_history jsonb;
+-- The trading day a fetched price is from (price_at is when it was fetched).
+alter table holdings add column if not exists price_date date;
 -- Backups: when one was last downloaded, and how many days between reminders (0 = none).
 -- Credit cards: the credit limit (cents, in the account's currency), to show what's left.
 alter table accounts add column if not exists credit_limit bigint;

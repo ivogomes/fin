@@ -171,6 +171,7 @@ export const ICONS = {
   // Alerts: a payment that's due, a balance that runs low
   clock: ['M12 3.5a8.5 8.5 0 1 0 0 17 8.5 8.5 0 0 0 0-17Z', 'M12 7.5V12l3 2'],
   warn: ['M12 4 2.8 19.5h18.4Z', 'M12 10v4.5', 'M12 17.2h.01'],
+  info: ['M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z', 'M12 11v5.5', 'M12 7.8h.01'],
   pause: ['M9.5 6v12', 'M14.5 6v12'],
   cloud: ['M7 18.5h10.5a4 4 0 0 0 .4-7.98A6 6 0 0 0 6.3 9.7 4.4 4.4 0 0 0 7 18.5Z', 'M12 11v4.5', 'M12 18h.01'],
   // A subscription: a calendar page (it comes back every month or year), unlike a transfer's arrows.

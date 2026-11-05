@@ -1306,7 +1306,7 @@ export function holdingHistory(holding, lots, today) {
   const prices = new Map(Object.entries(holding.priceHistory ?? {}).map(([d, p]) => [d, Number(p)]));
   for (const l of own) if (!prices.has(l.date)) prices.set(l.date, l.price);
   if (holding.price != null) {
-    const at = holding.priceAt?.slice(0, 10) ?? today;
+    const at = (!holding.manual && holding.priceDate) || (holding.priceAt?.slice(0, 10) ?? today);
     prices.set(at > today ? today : at, holding.price);
   }
   const start = own[0]?.date ?? '';

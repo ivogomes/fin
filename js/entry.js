@@ -525,7 +525,11 @@ export function symbolPicker(onPick) {
 // A holding is priced live unless the provider can't (wrong plan, no ticker), in which case you type
 // the price. Manual holdings are skipped by automatic refreshes until you ask for a live price again.
 export function priceCell(x) {
-  if (!x.manual && !x.priceError) return x.price == null ? 'no price' : money(Math.round(x.price * 100), x.currency);
+  if (!x.manual && !x.priceError) {
+    if (x.price == null) return 'no price';
+    return [money(Math.round(x.price * 100), x.currency),
+      x.priceDate && h('span', { class: 'fin-sub', title: 'The trading day this price is from' }, x.priceDate === today() ? 'today' : shortDate(x.priceDate))];
+  }
   const priceIn = input({
     type: 'number', step: 'any', min: '0', inputmode: 'decimal', class: 'fin-input fin-input-sm fin-price',
     value: x.price == null ? null : String(x.price), 'aria-label': `Price of ${x.symbol} in ${x.currency}`,

@@ -223,7 +223,7 @@ export async function refreshPrices(only, { quiet = false } = {}) {
           : await fetchQuote(x.symbol, state.settings.quoteApiKey, x.mic);
       Object.assign(x, {
         price: q.price, name: x.name ?? q.name, currency: q.currency ?? x.currency,
-        source: fund ? 'EODHD' : viaAV ? 'Alpha Vantage' : 'Twelve Data', priceAt: new Date().toISOString(),
+        source: fund ? 'EODHD' : viaAV ? 'Alpha Vantage' : 'Twelve Data', priceAt: new Date().toISOString(), priceDate: q.date,
       });
       delete x.priceError;
       priceUpdatedAt.set(x.id, Date.now());

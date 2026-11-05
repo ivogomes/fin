@@ -73,14 +73,16 @@ async function avQuery(params) {
   }
 }
 
-// Returns { price }. Alpha Vantage doesn't report a currency, so the listing's own is kept.
+// Returns { price, date }: the date is the trading day the price is from. Alpha Vantage doesn't
+// report a currency, so the listing's own is kept.
 export async function fetchQuoteAV(symbol, mic, apiKey) {
   if (!apiKey) throw new Error('Add an Alpha Vantage API key in Settings to price this listing');
   const ticker = `${symbol}.${AV_SUFFIX[mic]}`;
   const data = await avQuery(`function=GLOBAL_QUOTE&symbol=${encodeURIComponent(ticker)}&apikey=${encodeURIComponent(apiKey)}`);
-  const price = Number(data['Global Quote']?.['05. price']);
+  const quote = data['Global Quote'];
+  const price = Number(quote?.['05. price']);
   if (!price) throw new Error(`Alpha Vantage has no price for ${ticker}`);
-  return { price };
+  return { price, date: quote['07. latest trading day'] || null };
 }
 
 // Weekly closing prices for a listing, { 'YYYY-MM-DD': price }, as far back as the provider goes:
@@ -109,7 +111,7 @@ export async function fetchQuote(symbol, apiKey, mic) {
   const res = await fetch(`${QUOTE}?symbol=${encodeURIComponent(symbol)}${micParam}&apikey=${encodeURIComponent(apiKey)}`);
   const data = await res.json();
   if (data.status === 'error' || !data.close) throw new Error(data.message || `No quote for ${symbol}`);
-  return { name: data.name, currency: data.currency, price: Number(data.close) };
+  return { name: data.name, currency: data.currency, price: Number(data.close), date: data.datetime?.slice(0, 10) || null };
 }
 
 // Funds (named by ISIN) come from EODHD, through the database's fund_data function (schema.sql),
@@ -131,7 +133,7 @@ export async function fundQuote(isin, call) {
   const rows = await call({ p_isin: isin, p_kind: 'prices' });
   const last = (Array.isArray(rows) ? rows : []).filter((r) => Number(r.close) > 0).at(-1);
   if (!last) throw new Error(`EODHD has no recent price for ${isin}`);
-  return { price: Number(last.close) };
+  return { price: Number(last.close), date: last.date || null };
 }
 
 // Weekly prices (the last of each week), { 'YYYY-MM-DD': price }, as far back as EODHD goes.

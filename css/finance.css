@@ -424,6 +424,10 @@ nav .fin-account { padding-left: 12px; }
   vertical-align: 1px;
 }
 .fin-hint { margin: 6px 0 0; font-size: 12px; color: var(--f-muted); }
+.fin-hint-info { display: flex; align-items: flex-start; gap: 6px; }
+.fin-head-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px 14px; }
+.fin-head-actions .fin-hint { margin: 0; }
+.fin-hint-info .fin-icon { flex: none; width: 15px; height: 15px; margin-top: 1px; color: var(--f-accent); }
 .fin-empty { color: var(--f-muted); }
 .fin-muted { color: var(--f-muted); }
 .fin-sub { display: block; margin-top: 1px; font-size: 12px; font-weight: 400; color: var(--f-muted); }

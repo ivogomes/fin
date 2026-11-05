@@ -259,4 +259,6 @@ Settings → **Export (CSV)** downloads transactions, accounts, holdings and cat
 - **Funds (by ISIN):** EODHD, free key (about 20 lookups a day). Type the fund's ISIN (e.g. LU0109981661) when adding a holding. EODHD doesn't let web pages read its answers, so the database fetches them (`fund_data` in `db/schema.sql`, using Postgres's `http` extension) with your key, which only that function reads.
 - **By hand:** any holding without a live price can have its price typed in. Something no provider lists (a pension fund, say) can be added with **Not listed? Add it by hand** under the holdings: a name, currency and price per unit, which you update from the holdings list.
 
+Prices aren't live. They're fetched once a day, the first time Fin opens that day (or with **Refresh prices**), and on the free plans non-US listings and funds give the latest close. Under each price is the trading day it's from (`holdings.price_date`; `price_at` is when it was fetched), and the price history's last point sits on that day.
+
 API keys are saved in your settings row in the database, so they follow you between devices.

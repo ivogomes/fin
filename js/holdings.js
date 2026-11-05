@@ -6,7 +6,7 @@ import { persist } from './store.js';
 import { byName, loadHistory, priceStatus, priceUpdatedAt, refreshPrices, refreshingPrices, render, setView, state, undoable, view } from './app.js';
 import { priceCell, symbolPicker } from './entry.js';
 import {
-  button, dialog, field, h, hideAmounts, iconButton, input, isPhone, latestRate, money, num, say, select,
+  button, dialog, field, h, hideAmounts, icon, iconButton, input, isPhone, latestRate, money, num, say, select,
   fullDate, shortDate, shownQty, signed, tone,
 } from './ui.js';
 
@@ -60,7 +60,7 @@ export function openHoldingDialog(x) {
         ...(hasLots ? {} : { quantity: Number(units.value) }),
       });
       if (price.value !== '' && Number(price.value) !== x.price) {
-        Object.assign(x, { price: Number(price.value), priceAt: new Date().toISOString() });
+        Object.assign(x, { price: Number(price.value), priceAt: new Date().toISOString(), priceDate: undefined });
       }
       if (listingChanged) delete x.priceError;
       if (account.value !== view.id) setView({ name: 'account', id: account.value });
@@ -417,25 +417,21 @@ export function holdingsSection(account) {
   };
   toggle.addEventListener('click', () => setManual(!manualMode));
   setManual(false, false);
+  const live = list.some((x) => !x.manual);
   return h('section', { class: 'fin-card', 'aria-labelledby': 'hold-h' },
     h('div', { class: 'fin-card-head' },
       h('h3', { id: 'hold-h', class: 'fin-label' }, 'Holdings ', h('span', { class: 'fin-count' }, String(list.length))),
-      list.some((x) => !x.manual) && button(refreshingPrices() ? 'Refreshing prices…' : 'Refresh prices', () => refreshPrices(list.filter((x) => !x.manual)), 'secondary',
-        { 'data-key': 'refresh-prices', disabled: refreshingPrices(), 'aria-busy': String(refreshingPrices()) })),
+      live && h('div', { class: 'fin-head-actions' },
+        list.some((x) => !x.manual && x.priceAt) && h('p', { class: 'fin-hint fin-hint-info' }, icon('info'), h('span', {}, 'Prices aren’t live; each shows the day it’s from.')),
+        button(refreshingPrices() ? 'Refreshing prices…' : 'Refresh prices', () => refreshPrices(list.filter((x) => !x.manual)), 'secondary',
+          { 'data-key': 'refresh-prices', disabled: refreshingPrices(), 'aria-busy': String(refreshingPrices()) }))),
     list.some((x) => !x.manual && alphaVantageCovers(x.mic)) && !state.settings.avApiKey && h('p', { class: 'fin-notice fin-notice-in' },
       'Non-US listings are priced through Alpha Vantage. Add its free API key in Settings.'),
     list.some((x) => !x.manual && !alphaVantageCovers(x.mic)) && !state.settings.quoteApiKey && h('p', { class: 'fin-notice fin-notice-in' },
       'US listings are priced through Twelve Data. Add its free API key in Settings.'),
-    (() => {
-      const times = list.map((x) => x.priceAt).filter(Boolean).sort();
-      // Each holding is in the currency it's priced in; say so when that isn't the account's.
-      const mixed = list.some((x) => x.currency !== account.currency);
-      const parts = [
-        times.length > 0 && `Prices as of ${new Date(times[0]).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}.`,
-        mixed && `Each holding is shown in the currency it’s priced in; the account’s value is in ${account.currency}, at today’s rates.`,
-      ].filter(Boolean);
-      return parts.length > 0 && h('p', { class: 'fin-hint fin-pad-x' }, parts.join(' '));
-    })(),
+    // Each holding is in the currency it's priced in; say so when that isn't the account's.
+    list.some((x) => x.currency !== account.currency) && h('p', { class: 'fin-hint fin-pad-x' },
+      `Each holding is shown in the currency it’s priced in; the account’s value is in ${account.currency}, at today’s rates.`),
     list.length === 0
       ? h('p', { class: 'fin-empty fin-pad' }, 'No holdings yet.')
       : h('div', { class: 'fin-scroll' }, h('table', { class: 'fin-table fin-holdings' },
