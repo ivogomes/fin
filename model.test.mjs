@@ -13,7 +13,7 @@ import {
   descriptionIndex, suggestDescriptions, filterTransactions, ruleSuggestion,
   parseFrequency, addInterval, occurrences, forecast, scheduledTransactions, advanceSchedule,
   splitsOf, scaleSplits, DIVIDENDS, recurringGroups, suggestSchedules, xirr, lotFlows, returnSummary, rulesFromHistory, findSubscriptions, withMarkedSchedules, timesAYear,
-  lastStatementDate, dueAfter, balanceDip, savingsInterest, loanPlan, annuityPayment, loanInterestSoFar, loanTerm, loanRateAt,
+  lastStatementDate, dueAfter, balanceDip, savingsInterest, loanPlan, annuityPayment, loanInterestSoFar, loanTerm, loanRateAt, loanInterestRow, goalProgress,
 } from './model.js';
 
 test('periods: presets relative to today, Monday weeks, granularity', () => {
@@ -1173,4 +1173,24 @@ test('loans: the rate on a date follows the changes that set one', () => {
   const flat = loanPlan({ owed: 1000000, rate: 3, payment: 50000, first: '2026-06-01' });
   const rising = loanPlan({ owed: 1000000, rate: (d) => loanRateAt(loan, d), payment: 50000, first: '2026-06-01' });
   assert.ok(rising.interest > flat.interest);
+});
+
+test('loans: the interest added with a payment, at the rate of its date, on what was owed', () => {
+  const loan = { id: 'l', name: 'Car loan', interestRate: 6, loanChanges: [{ date: '2026-06-01', rate: 12 }] };
+  let n = 0;
+  const row = loanInterestRow(loan, -1000000, '2026-05-05', [], () => `i${++n}`);
+  assert.deepEqual(row, { id: 'i1', accountId: 'l', date: '2026-05-05', description: 'Car loan interest', amount: -5000, categoryIds: [], memo: '' });
+  assert.equal(loanInterestRow(loan, -1000000, '2026-06-05', []).amount, -10000);
+  assert.equal(loanInterestRow(loan, 0, '2026-06-05', []), null);
+});
+
+test('goals: how far along, when reached at the pace, what a target date takes', () => {
+  const g = goalProgress({ saved: 300000, target: 1000000, monthly: 50000, targetDate: '2027-06-30' }, '2026-11-05');
+  assert.equal(g.share, 0.3);
+  assert.equal(g.left, 700000);
+  assert.equal(g.reachBy, '2028-01-05'); // 14 months of 500.00
+  assert.equal(g.needed, 100000); // 7,000.00 over the 7 months to June
+  assert.equal(g.onTrack, false);
+  assert.equal(goalProgress({ saved: 1200000, target: 1000000 }, '2026-11-05').share, 1);
+  assert.equal(goalProgress({ saved: 0, target: 1000000 }, '2026-11-05').reachBy, null);
 });

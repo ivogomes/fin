@@ -149,6 +149,18 @@ create table if not exists assets (
   primary key (user_id, id)
 );
 
+-- Savings goals: a target in EUR (by a date, or none), and the accounts that count toward it.
+create table if not exists goals (
+  user_id uuid not null default auth.uid() references auth.users on delete cascade,
+  id text not null,
+  name text not null,
+  target bigint not null,              -- minor units (cents) in EUR
+  target_date date,
+  account_ids text[] not null default '{}',
+  position int not null default 0,
+  primary key (user_id, id)
+);
+
 -- One row per user: API keys for market data and the last account viewed.
 create table if not exists settings (
   user_id uuid primary key default auth.uid() references auth.users on delete cascade,
@@ -191,6 +203,8 @@ alter table accounts add constraint accounts_type_check
 alter table accounts add column if not exists loan_payments integer;
 alter table accounts add column if not exists loan_first date;
 alter table accounts add column if not exists loan_changes jsonb;
+-- The loan an asset is bought with (a mortgage on a home): its equity is its value less what's owed.
+alter table assets add column if not exists loan_id text;
 -- When a transaction was added, so the newest of a day is listed first. The database sets it; rows
 -- from before this column have none and come after the dated ones of their day.
 alter table transactions add column if not exists created_at timestamptz;
@@ -618,7 +632,7 @@ $$;
 do $$
 declare t text;
 begin
-  foreach t in array array['accounts', 'categories', 'rules', 'transactions', 'holdings', 'schedules', 'people', 'ious', 'snapshots', 'lots', 'assets', 'settings'] loop
+  foreach t in array array['accounts', 'categories', 'rules', 'transactions', 'holdings', 'schedules', 'people', 'ious', 'snapshots', 'lots', 'assets', 'goals', 'settings'] loop
     execute format('alter table %I enable row level security', t);
     execute format('drop policy if exists own_rows on %I', t);
     execute format(

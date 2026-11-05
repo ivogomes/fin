@@ -12,21 +12,18 @@ import {
   CARD_NETWORKS, accountValue, byName, cardMark, ensureRate, limitUse, refreshRates, render,
   selectAccount, setView, state, totalsOf, undoable, usageBar, view,
 } from './app.js';
-import { holdingsGain, holdingsSection } from './holdings.js';
+import { holdingsGain, holdingsSection, timeChart } from './holdings.js';
 import { accountSinceYesterday, ask, insightsPanel, investmentInsights, runMap, transactionsLoaded } from './insights.js';
 import { FORECAST_DAYS, daysFromToday, openScheduleDialog } from './schedules.js';
 import { loanInsights, nextPaymentCard, openAdvanceDialog, openChangeDialog } from './loans.js';
 import { accountName, fetchTransactions, transactionsSection } from './transactions.js';
 import {
-  button, dialog, field, flag, h, icon, input, latestRate, money, monthLabel, num, say, select,
-  fullDate, shortDate, signed, tone,
+  button, dialog, field, flag, h, icon, input, latestRate, money, monthLabel, num, readPref, say, select,
+  fullDate, shortDate, signed, tone, writePref,
 } from './ui.js';
 
 // ── account dialog ───────────────────────────────────────────────────────────
 
-// Colours an account can wear (a dot by its name), the same hues as the category chips.
-export const ACCOUNT_COLORS = ['Teal', 'Blue', 'Purple', 'Pink', 'Orange', 'Yellow', 'Green', 'Grey'];
-export const colorDot = (a) => a.color != null && h('span', { class: 'fin-acc-dot', 'data-hue': a.color, 'aria-hidden': 'true' });
 export const mainAccount = () => state.accounts.find((a) => a.isMain && !a.archived);
 // Accounts that count in net worth and the group totals (not the ones left out of totals).
 export const counted = (a) => !a.excludeTotals;
@@ -42,7 +39,6 @@ export function openAccountDialog(existing = null) {
   const name = input({ type: 'text', required: true, autocomplete: 'off', value: a0.name });
   const type = select(ACCOUNT_TYPES.map((t) => [t, ACCOUNT_TYPE_LABELS[t]]), a0.type ?? 'checking');
   const cur = select(CURRENCIES.map((c) => [c, c]), a0.currency ?? 'EUR', { disabled: used });
-  const color = select([['', 'No colour'], ...ACCOUNT_COLORS.map((c, i) => [String(i), c])], a0.color ?? '');
   const money0 = (v) => (v != null ? String(v / 100) : null);
   const dayIn = (v) => input({ type: 'number', min: '1', max: '31', step: '1', inputmode: 'numeric', value: v != null ? String(v) : null });
   // Credit cards
@@ -118,7 +114,7 @@ export function openAccountDialog(existing = null) {
   const values = () => {
     const t = type.value;
     return {
-      name: name.value.trim(), type: t, currency: cur.value, color: color.value || null,
+      name: name.value.trim(), type: t, currency: cur.value,
       creditLimit: t === 'credit' && limit.value !== '' ? toMinor(limit.value) : null,
       cardNetwork: (t === 'credit' && network.value) || null,
       statementDay: t === 'credit' ? intOrNull(statementDay) : null,
@@ -205,8 +201,7 @@ export function openAccountDialog(existing = null) {
       field('Type', type), field('Name', name),
       field('Currency', cur, used
         ? 'Fixed, because this account already has transactions.'
-        : 'USD amounts are converted to EUR at the daily rate.'),
-      field('Colour', color, 'A dot by its name.')),
+        : 'USD amounts are converted to EUR at the daily rate.')),
     ...Object.values(sections),
     more,
     error,
@@ -344,8 +339,8 @@ export function payCard(p) {
 
 // What's coming for an account in the next 30 days, as { date, amount } in its currency: scheduled
 // dates, transactions added ahead, and card payments to or from it.
-export function upcomingEffects(account) {
-  const until = daysFromToday(FORECAST_DAYS);
+export function upcomingEffects(account, days = FORECAST_DAYS) {
+  const until = daysFromToday(days);
   return [
     ...state.schedules.filter((sc) => scheduledEffect(sc, account.id) !== 0)
       .flatMap((sc) => occurrences(sc, until).map((date) => ({ date, amount: scheduledEffect(sc, account.id) }))),
@@ -430,7 +425,7 @@ export function renderAccount(account) {
   return h('div', {},
     h('div', { class: 'fin-account-head' },
       h('div', {},
-        h('h2', { class: 'fin-title' }, colorDot(account), cardMark(account, 'fin-card-mark--title'), account.name),
+        h('h2', { class: 'fin-title' }, cardMark(account, 'fin-card-mark--title'), account.name),
         h('p', { class: 'fin-meta' }, [
           ACCOUNT_TYPE_LABELS[account.type] + (account.investmentKind ? `, ${INVESTMENT_KINDS[account.investmentKind].toLowerCase()}` : ''),
           account.currency,
@@ -538,11 +533,60 @@ export function renderAccount(account) {
           h('dd', { class: `fin-num ${tone(next)}` }, signed(next, account.currency)),
           h('p', { class: 'fin-stat-note' }, 'with what’s scheduled or dated ahead'));
       })()),
-    accountTabs(),
-    view.tab === 'insights'
-      ? (account.type === 'investment' ? investmentInsights(account) : account.type === 'loan' ? loanInsights(account)
-        : insightsPanel(new Set([account.id]), { spendingOnly: account.type === 'credit', balanceOf: account }))
-      : [account.type === 'investment' && holdingsSection(account), transactionsSection(account)]);
+    accountTabs(account),
+    accountTab(account) === 'ahead' ? balanceAhead(account)
+      : accountTab(account) === 'insights'
+        ? (account.type === 'investment' ? investmentInsights(account) : account.type === 'loan' ? loanInsights(account)
+          : insightsPanel(new Set([account.id]), { spendingOnly: account.type === 'credit', balanceOf: account }))
+        : [account.type === 'investment' && holdingsSection(account), transactionsSection(account)]);
+}
+
+// The balance ahead, months out: what's scheduled (loan payments included), transactions dated
+// ahead, and card payments (the next of each card, as later statements aren't known yet), with the
+// lowest point, and the account's "Warn below" as a line to compare with.
+const AHEAD = [[3, 'Next 3 months'], [6, 'Next 6 months'], [12, 'Next 12 months']];
+let aheadMonths = readPref('finance:ahead', 6);
+function balanceAhead(account) {
+  const cur = account.currency;
+  const now = today();
+  const until = addInterval(now, { every: aheadMonths, unit: 'month' }, Number(now.slice(8, 10)));
+  const days = Math.round((Date.parse(until) - Date.parse(now)) / 864e5);
+  const items = upcomingEffects(account, days).sort((a, b) => a.date.localeCompare(b.date));
+  const start = accountValue(account);
+  const points = [{ date: now, v: start }];
+  for (const it of items) {
+    if (points.at(-1).date === it.date) points.at(-1).v += it.amount;
+    else points.push({ date: it.date, v: points.at(-1).v + it.amount });
+  }
+  if (points.at(-1).date < until) points.push({ date: until, v: points.at(-1).v });
+  const { lowest } = balanceDip(start, items, -Infinity);
+  const end = points.at(-1).v;
+  // Laid out like Insights: the period, then the figures, then the chart in its own card.
+  const period = select(AHEAD.map(([m, label]) => [String(m), label]), String(aheadMonths), { 'data-key': 'ahead-period' });
+  period.addEventListener('change', () => { aheadMonths = Number(period.value); writePref('finance:ahead', aheadMonths); render('ahead-period'); });
+  return h('div', { class: 'fin-insights' },
+    h('div', { class: 'fin-period' },
+      field('Period', period),
+      h('p', { class: 'fin-period-range' }, `${shortDate(now)} – ${shortDate(until)}`)),
+    items.length === 0
+      ? h('section', { class: 'fin-card fin-pad' }, h('p', { class: 'fin-empty' }, 'Nothing scheduled or dated ahead for this account, so its balance stays as it is.'))
+      : [
+        h('dl', { class: 'fin-stats' },
+          h('div', { class: 'fin-stat-key' }, h('dt', {}, `On ${fullDate(until)}`),
+            h('dd', { class: `fin-num ${tone(end)}` }, signed(end, cur)),
+            h('p', { class: 'fin-stat-note' }, `${signed(end - start, cur)} from today`)),
+          h('div', { class: lowest.balance < 0 ? 'fin-stat-key is-neg' : account.lowBalance != null && lowest.balance < account.lowBalance ? 'fin-stat-key is-low' : '' },
+            h('dt', {}, 'Lowest'), h('dd', { class: `fin-num ${tone(lowest.balance)}` }, signed(lowest.balance, cur)),
+            h('p', { class: 'fin-stat-note' }, lowest.date ? `on ${fullDate(lowest.date)}` : 'today')),
+          h('div', {}, h('dt', {}, 'Coming in'), h('dd', { class: 'fin-num fin-pos' }, money(items.filter((it) => it.amount > 0).reduce((sum, it) => sum + it.amount, 0), cur)),
+            h('p', { class: 'fin-stat-note' }, 'scheduled or dated ahead')),
+          h('div', {}, h('dt', {}, 'Going out'), h('dd', { class: 'fin-num fin-neg' }, money(-items.filter((it) => it.amount < 0).reduce((sum, it) => sum + it.amount, 0), cur)),
+            h('p', { class: 'fin-stat-note' }, 'card payments: the next statement only'))),
+        h('section', { class: 'fin-card fin-pad' }, timeChart(points, {
+          id: `ahead-${account.id}`, title: 'Balance ahead', unit: cur, format: (v) => money(v, cur), wide: true,
+          ref: account.lowBalance != null ? points.map((p) => ({ date: p.date, v: account.lowBalance })) : null, refLabel: 'Warn below',
+        })),
+      ]);
 }
 
 export function statementCard(card) {
@@ -588,13 +632,17 @@ export function interestCard(account, value) {
 }
 
 // Transactions or Insights for the selected account.
-export function accountTabs() {
-  const tab = view.tab === 'insights' ? 'insights' : 'transactions';
+// Accounts whose balance is worth looking ahead at (not cards, loans or investments).
+const hasAhead = (account) => !['credit', 'loan', 'investment'].includes(account.type);
+const TAB_LABELS = { transactions: 'Transactions', insights: 'Insights', ahead: 'Balance ahead' };
+export const accountTab = (account) => (view.tab === 'insights' || (view.tab === 'ahead' && hasAhead(account)) ? view.tab : 'transactions');
+export function accountTabs(account) {
+  const tab = accountTab(account);
   const pick = (t) => { setView({ ...view, tab: t }); render(`tab-${t}`); };
   return h('div', { class: 'fin-tabs', role: 'group', 'aria-label': 'Account view' },
-    ['transactions', 'insights'].map((t) => h('button', {
+    ['transactions', 'insights', hasAhead(account) && 'ahead'].filter(Boolean).map((t) => h('button', {
       type: 'button', class: 'fin-tab', 'aria-pressed': String(tab === t), 'data-key': `tab-${t}`, onclick: () => pick(t),
-    }, t === 'transactions' ? 'Transactions' : 'Insights')));
+    }, TAB_LABELS[t])));
 }
 
 // Only one page of rows is put in the DOM. The running balance is still worked out over all of the

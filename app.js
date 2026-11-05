@@ -13,7 +13,7 @@ import {
   accountTotals, forgetLegacyData, hasPendingChanges, legacyData, load, needsSchemaUpdate, onSaved,
   onStatus, persist, refreshSummaries, settle, transactionsComplete,
 } from './store.js';
-import { colorDot, counted, mainAccount, openAccountDialog, renderAccount, renderWelcome } from './accounts.js';
+import { counted, mainAccount, openAccountDialog, renderAccount, renderWelcome } from './accounts.js';
 import { adoptGoogleDrive, backupBanner, backupToDrive, driveBackupDue, driveOn } from './backups.js';
 import { openTxDialog } from './entry.js';
 import { answers, ask, recordSnapshot, renderInsights, sinceYesterday } from './insights.js';
@@ -46,14 +46,14 @@ export function urlOf(v) {
   const q = new URLSearchParams();
   if (v.name === 'account') {
     q.set('account', v.id ?? '');
-    if (v.tab === 'insights') q.set('tab', 'insights');
+    if (v.tab === 'insights' || v.tab === 'ahead') q.set('tab', v.tab);
     // A transaction to show (the other side of a transfer, opened from another page).
     if (v.tx) { q.set('tx', v.tx); q.set('on', v.on ?? ''); }
   } else if (v.name !== 'overview') {
     q.set('page', v.name);
     if (v.name === 'settings' && v.section) q.set('section', v.section);
     if (v.name === 'settings' && v.section === 'import' && v.kind) q.set('kind', v.kind);
-    if (v.name === 'insights' && v.tab === 'networth') q.set('tab', 'networth');
+    if (v.name === 'insights' && (v.tab === 'networth' || v.tab === 'goals')) q.set('tab', v.tab);
     if (v.name === 'scheduled' && v.tab === 'subscriptions') q.set('tab', 'subscriptions');
     if (v.name === 'ious' && v.personId) q.set('person', v.personId);
     if (v.name === 'search') {
@@ -74,6 +74,7 @@ export function viewFromUrl() {
   const page = q.get('page');
   // Net worth was its own page; it's now a tab of Insights (old links still land there).
   if (page === 'networth' || (page === 'insights' && q.get('tab') === 'networth')) return { name: 'insights', tab: 'networth' };
+  if (page === 'insights' && q.get('tab') === 'goals') return { name: 'insights', tab: 'goals' };
   // The imports were separate settings pages; they're now one, with a kind (old links still work).
   const oldImport = { buxfer: 'buxfer', ft: 'holdings' }[q.get('section')];
   if (page === 'settings' && oldImport) return { name: 'settings', section: 'import', kind: oldImport };
@@ -93,7 +94,7 @@ export function viewFromUrl() {
   }
   if (q.has('account')) {
     return {
-      name: 'account', id: q.get('account'), ...(q.get('tab') === 'insights' && { tab: 'insights' }),
+      name: 'account', id: q.get('account'), ...((q.get('tab') === 'insights' || q.get('tab') === 'ahead') && { tab: q.get('tab') }),
       ...(q.get('tx') && { tx: q.get('tx'), on: q.get('on') }),
     };
   }
@@ -194,13 +195,22 @@ export async function refreshRates() {
 // Each holding keeps its own `priceError` (the provider's message) so a failure shows on its row
 // instead of disappearing. Asked for, the outcome also shows as a toast, naming what failed; `quiet`
 // (the refresh when the page opens) only announces it to screen readers.
+// Where each holding's price refresh is, for its row in the holdings table: 'waiting' its turn or
+// 'loading'; and when it was updated, so its row flashes once (carried on across redraws).
+export const priceStatus = new Map();
+export const priceUpdatedAt = new Map();
+export const refreshingPrices = () => [...priceStatus.values()].some((s) => s === 'waiting' || s === 'loading');
+
 export async function refreshPrices(only, { quiet = false } = {}) {
-  const targets = only ?? state.holdings;
+  const targets = (only ?? state.holdings).filter((x) => !['waiting', 'loading'].includes(priceStatus.get(x.id)));
   if (!targets.length) return;
-  say('Fetching prices…');
-  if (!quiet) showToast(`Fetching ${targets.length === 1 ? 'the price' : `${targets.length} prices`}…`, [], { timeout: 60000 });
+  say(`Fetching ${targets.length === 1 ? 'the price' : `${targets.length} prices`}…`);
+  const mark = (x, status) => { if (status) priceStatus.set(x.id, status); else priceStatus.delete(x.id); renderWhenIdle(); };
+  for (const x of targets) priceStatus.set(x.id, 'waiting');
+  renderWhenIdle();
   const failed = [];
   for (const x of targets) {
+    mark(x, 'loading');
     try {
       // Funds go to EODHD (through the database); non-US listings to Alpha Vantage when a key is
       // set; everything else to Twelve Data.
@@ -214,18 +224,23 @@ export async function refreshPrices(only, { quiet = false } = {}) {
         source: fund ? 'EODHD' : viaAV ? 'Alpha Vantage' : 'Twelve Data', priceAt: new Date().toISOString(),
       });
       delete x.priceError;
+      priceUpdatedAt.set(x.id, Date.now());
+      mark(x, null);
     } catch (err) {
       failed.push(x);
       x.priceError = err.message;
+      mark(x, null);
     }
   }
   persist();
   await refreshRates(); // a quote may be in a currency we have no rate for yet
+  renderWhenIdle();
   const updated = targets.length - failed.length;
   const message = !failed.length ? `Prices updated for ${targets.length === 1 ? targets[0].symbol : `all ${targets.length} holdings`}.`
     : `${updated ? `Prices updated for ${updated} of ${targets.length} holdings. ` : ''}No new price for ${failed.map((x) => `${x.symbol} (${x.priceError.replace(/\s*Consider upgrading.*$/i, '')})`).join(', ')}.`;
   say(message);
-  if (!quiet) showToast(message, [], { timeout: failed.length ? 20000 : 6000 });
+  // The rows show each update as it lands; a message only when something didn't come through.
+  if (!quiet && failed.length) showToast(message, [], { timeout: 20000 });
 }
 
 // Prices from an earlier day are refreshed when the page opens (needs the API key).
@@ -416,7 +431,7 @@ export function accountGroup(key, label, total, list) {
           'aria-current': current ? 'page' : null,
           onclick: () => selectAccount(a.id),
         },
-          h('span', { class: 'fin-account-name' }, colorDot(a), cardMark(a), a.name,
+          h('span', { class: 'fin-account-name' }, cardMark(a), a.name,
             a.isMain && h('span', { class: 'fin-main-mark', title: 'Main account' }, h('span', { 'aria-hidden': 'true' }, '★'), h('span', { class: 'fin-sr' }, ', main account'))),
           // No + on positive balances here: less text, and the negative ones (in red) stand out.
           h('span', { class: `fin-num ${tone(value)}${counted(a) ? '' : ' fin-uncounted'}`, title: counted(a) ? null : 'Not in totals' }, money(value, a.currency),

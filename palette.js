@@ -34,6 +34,7 @@ export function paletteItems(query) {
     { group: 'Pages', label: 'Subscriptions', words: 'recurring netflix spotify streaming cancel', run: go({ name: 'scheduled', tab: 'subscriptions' }) },
     { group: 'Pages', label: 'Insights: income and spending', words: 'charts categories budget', run: go({ name: 'insights' }) },
     { group: 'Pages', label: 'Insights: net worth', words: 'wealth history allocation', run: go({ name: 'insights', tab: 'networth' }) },
+    { group: 'Pages', label: 'Insights: goals', words: 'savings target saving for', run: go({ name: 'insights', tab: 'goals' }) },
     { group: 'Pages', label: 'Assets', words: 'home house car vehicle property value', run: go({ name: 'assets' }) },
     { group: 'Pages', label: 'IOUs', words: 'loans owe people friends', run: go({ name: 'ious' }) },
   );

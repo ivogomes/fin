@@ -70,8 +70,11 @@ export function loanInsights(account) {
   const own = state.transactions.filter((t) => t.accountId === account.id && t.date <= now);
   // Interest recorded on the loan (money out of it that isn't a transfer or the opening balance)
   // is what it cost; without any, it's estimated from what was owed each month, at the rate then.
+  // Months before the first recorded are estimated (a loan added before interest was recorded).
   const recorded = own.filter((t) => t.amount < 0 && !t.transferId && t.kind !== 'opening');
-  const soFar = recorded.length ? -recorded.reduce((sum, t) => sum + t.amount, 0) : loanInterestSoFar(own, rateOn, now);
+  const firstRecorded = recorded.reduce((min, t) => (t.date < min ? t.date : min), now);
+  const estimated = loanInterestSoFar(own.filter((t) => t.date < firstRecorded), rateOn, firstRecorded);
+  const soFar = -recorded.reduce((sum, t) => sum + t.amount, 0) + estimated;
   const repayment = repaymentOf(account);
   const first = term?.next ?? repayment?.nextDate ?? addInterval(now, { every: 1, unit: 'month' }, Number(now.slice(8, 10)));
   const w = whatIf.get(account.id) ?? { payment: '', lump: '', extra: '', fee: '' };
@@ -80,8 +83,9 @@ export function loanInsights(account) {
 
   const paidSoFar = () => h('div', {}, h('dt', {}, 'Interest paid so far'),
     h('dd', { class: 'fin-num' }, money(soFar, cur)),
-    h('p', { class: 'fin-stat-note' }, recorded.length ? 'as recorded on this account'
-      : rate || account.loanChanges?.length ? 'estimated from what was owed each month' : 'set the interest rate to estimate it'));
+    h('p', { class: 'fin-stat-note' }, recorded.length && !estimated ? 'as recorded on this account'
+      : recorded.length ? 'as recorded, estimated before that'
+        : rate || account.loanChanges?.length ? 'estimated from what was owed each month' : 'set the interest rate to estimate it'));
   if (owed === 0) {
     return h('div', { class: 'fin-insights' },
       h('dl', { class: 'fin-stats' }, h('div', { class: 'fin-stat-key' }, h('dt', {}, 'Still owed'), h('dd', { class: 'fin-num' }, money(0, cur)),
@@ -171,7 +175,7 @@ export function loanInsights(account) {
       planOut,
       h('p', { class: 'fin-stat-note' },
         'Worked out as banks do: each month interest is added on what’s owed, then the payment comes off. ',
-        'Fin’s balance drops by the whole payment unless the interest is recorded too: add it each month as money out of this account and the balance follows your statement (and the interest paid so far uses it).')),
+        'Entering a scheduled payment into the loan adds that month’s interest to it too, so the balance follows your statement.')),
     changesSection(account));
 }
 

@@ -200,7 +200,7 @@ export function backupSection() {
       await refreshRates();
     }, 'danger', { disabled: true });
     confirmIn.addEventListener('input', () => { go.disabled = confirmIn.value.trim() !== 'RESTORE'; });
-    const labels = { accounts: 'accounts', transactions: 'transactions', categories: 'categories', rules: 'rules', holdings: 'holdings', lots: 'buys and sells', schedules: 'schedules', people: 'people', ious: 'IOU entries', snapshots: 'daily values', assets: 'assets' };
+    const labels = { accounts: 'accounts', transactions: 'transactions', categories: 'categories', rules: 'rules', holdings: 'holdings', lots: 'buys and sells', schedules: 'schedules', people: 'people', ious: 'IOU entries', snapshots: 'daily values', assets: 'assets', goals: 'goals' };
     restore = [
       h('p', {}, h('strong', {}, restoreDraft.name), ` · made ${new Date(d.createdAt).toLocaleString()}`),
       h('ul', { class: 'fin-import-list' }, Object.entries(labels).filter(([t]) => d.tables[t]?.length).map(([t, label]) =>

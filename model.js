@@ -178,6 +178,15 @@ export function savingsInterest(balance, rate, months = 1, tax = 0) {
 // The interest a loan charges in a month on what's owed (a negative balance), at `rate` % a year.
 export const loanInterest = (balance, rate) => (balance < 0 ? Math.round((-balance * rate) / 100 / 12) : 0);
 
+// The interest a bank adds to a loan with a payment, as a transaction on the loan: a month at the
+// rate of that date on what was owed before it (`balance`, below zero). Null when nothing is owed.
+export function loanInterestRow(loan, balance, date, rules, id = newId) {
+  const amount = loanInterest(balance, loanRateAt(loan, date));
+  if (!amount) return null;
+  const description = `${loan.name} interest`;
+  return { id: id(), accountId: loan.id, date, description, amount: -amount, categoryIds: [categorize(description, rules)].filter(Boolean), memo: '' };
+}
+
 // A loan paid off month by month, as banks work it out: each month interest is added on what's owed
 // (`rate` % a year, a twelfth of it; or a function of the payment's date, for rates that change), then
 // the payment comes off. `owed` and payments in minor units;
@@ -246,6 +255,22 @@ export function loanTerm(account, today) {
   let end = date;
   for (let k = 1; k < left; k += 1) end = step(end);
   return { made, left, next: date, end };
+}
+
+// A savings goal against what's saved (`saved`, EUR minor units) and what goes in a month
+// (`monthly`): how far along (0 to 1), what's left, when it's reached at that pace (null without
+// one), and with a target date, what it would take a month to get there by then.
+export function goalProgress({ saved, target, monthly = 0, targetDate = null }, today) {
+  const left = Math.max(0, target - saved);
+  const share = target > 0 ? Math.min(1, Math.max(0, saved / target)) : 1;
+  const step = (n) => addInterval(today, { every: n, unit: 'month' }, Number(today.slice(8, 10)));
+  const reachBy = left === 0 ? today : monthly > 0 ? step(Math.ceil(left / monthly)) : null;
+  let needed = null;
+  if (targetDate && left > 0) {
+    const months = (Number(targetDate.slice(0, 4)) - Number(today.slice(0, 4))) * 12 + Number(targetDate.slice(5, 7)) - Number(today.slice(5, 7));
+    needed = months > 0 ? Math.ceil(left / months) : left;
+  }
+  return { share, left, reachBy, needed, onTrack: targetDate ? left === 0 || (reachBy != null && reachBy <= targetDate) : null };
 }
 
 // The monthly payment that pays `owed` off in `months` at `rate` % a year (rounded up to the cent,
@@ -1953,6 +1978,7 @@ export function defaultState() {
     snapshots: [],
     lots: [],
     assets: [],
+    goals: [],
     categories: ids.map((id, i) => ({ id, name: names[i], parentId: null })),
     rules: [
       { id: 'r-lunch', pattern: 'lunch', match: 'contains', categoryId: 'meals' },

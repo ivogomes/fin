@@ -3,7 +3,7 @@
 import { alphaVantageCovers, today } from './market.js';
 import { CURRENCIES, holdingHistory, holdingValue, lotSummary, newId } from './model.js';
 import { persist } from './store.js';
-import { byName, loadHistory, refreshPrices, render, setView, state, undoable, view } from './app.js';
+import { byName, loadHistory, priceStatus, priceUpdatedAt, refreshPrices, refreshingPrices, render, setView, state, undoable, view } from './app.js';
 import { priceCell, symbolPicker } from './entry.js';
 import {
   button, dialog, field, h, hideAmounts, iconButton, input, isPhone, latestRate, money, num, say, select,
@@ -144,6 +144,9 @@ export function chartTip(wrap, svg) {
     hide() { tip.hidden = true; },
   };
 }
+
+// How long a holding's row flashes after its price is updated (finance.css, fin-price-flash).
+const FLASH_MS = 1400;
 
 // One series over time, placed by date. `kind`:
 // - 'change' (default): the total on the left axis, and on the right the same gridlines as the change
@@ -417,7 +420,8 @@ export function holdingsSection(account) {
   return h('section', { class: 'fin-card', 'aria-labelledby': 'hold-h' },
     h('div', { class: 'fin-card-head' },
       h('h3', { id: 'hold-h', class: 'fin-label' }, 'Holdings ', h('span', { class: 'fin-count' }, String(list.length))),
-      list.some((x) => !x.manual) && button('Refresh prices', () => refreshPrices(list.filter((x) => !x.manual)), 'secondary', { 'data-key': 'refresh-prices' })),
+      list.some((x) => !x.manual) && button(refreshingPrices() ? 'Refreshing prices…' : 'Refresh prices', () => refreshPrices(list.filter((x) => !x.manual)), 'secondary',
+        { 'data-key': 'refresh-prices', disabled: refreshingPrices(), 'aria-busy': String(refreshingPrices()) })),
     list.some((x) => !x.manual && alphaVantageCovers(x.mic)) && !state.settings.avApiKey && h('p', { class: 'fin-notice fin-notice-in' },
       'Non-US listings are priced through Alpha Vantage. Add its free API key in Settings.'),
     list.some((x) => !x.manual && !alphaVantageCovers(x.mic)) && !state.settings.quoteApiKey && h('p', { class: 'fin-notice fin-notice-in' },
@@ -452,7 +456,12 @@ export function holdingsSection(account) {
           // On a phone the row stacks as a card (fin-holdings in finance.css), each cell in its place
           // (h-…), and the few figures without their header say what they are (fin-stack-label).
           const label = (text) => h('span', { class: 'fin-stack-label' }, `${text} `);
-          const row = h('tr', { class: 'fin-holding' },
+          // A price refresh going on: waiting its turn, loading, or just updated. The flash is
+          // started where it had got to, so a redraw (the next row loading) doesn't restart it.
+          const since = Date.now() - (priceUpdatedAt.get(x.id) ?? 0);
+          if (since >= FLASH_MS) priceUpdatedAt.delete(x.id);
+          const status = priceStatus.get(x.id) ?? (priceUpdatedAt.has(x.id) ? 'updated' : null);
+          const row = h('tr', { class: `fin-holding${status ? ` is-price-${status}` : ''}`, 'aria-busy': status === 'loading' || status === 'waiting' ? 'true' : null },
             h('td', { class: 'h-sym' }, x.symbol),
             h('td', { class: 'h-name' }, x.name ?? '', x.priceError && h('span', { class: 'fin-sub fin-row-error' },
               `No live price: ${x.priceError.replace(/\s*Consider upgrading.*$/i, '')} Enter the price by hand for now.`)),
@@ -476,6 +485,7 @@ export function holdingsSection(account) {
                 state.holdings = state.holdings.filter((y) => y.id !== x.id);
                 state.lots = state.lots.filter((l) => l.holdingId !== x.id);
               }), { danger: true }))));
+          if (status === 'updated') row.style.setProperty('--flash-at', `-${since}ms`);
           return [row,
             charted && h('tr', { class: 'fin-edit-row' }, h('td', { colspan: 10 }, holdingChartPanel(x))),
             open && h('tr', { class: 'fin-edit-row' }, h('td', { colspan: 10 }, lotsPanel(x)))];

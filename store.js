@@ -24,7 +24,7 @@ const TABLES = {
       low_balance: a.lowBalance ?? null, is_main: Boolean(a.isMain),
       interest_rate: a.interestRate ?? null, interest_every: a.interestEvery ?? null, interest_tax: a.interestTax ?? null, investment_kind: a.investmentKind ?? null,
       opened_on: a.openedOn ?? null, closed_on: a.closedOn ?? null, institution: a.institution ?? null, last_four: a.lastFour ?? null,
-      exclude_totals: Boolean(a.excludeTotals), color: a.color ?? null,
+      exclude_totals: Boolean(a.excludeTotals),
       loan_payments: a.loanPayments ?? null, loan_first: a.loanFirst ?? null, loan_changes: a.loanChanges ?? null,
     }),
     // Settings that aren't set are left off, so an account only carries what it uses.
@@ -47,7 +47,6 @@ const TABLES = {
       set('institution', r.institution);
       set('lastFour', r.last_four);
       set('excludeTotals', r.exclude_totals);
-      set('color', r.color);
       set('loanPayments', r.loan_payments);
       set('loanFirst', r.loan_first);
       if (r.loan_changes?.length) a.loanChanges = r.loan_changes;
@@ -111,7 +110,7 @@ const TABLES = {
     to: (x, i) => ({
       id: x.id, name: x.name, kind: x.kind, currency: x.currency, purchase_price: x.purchasePrice ?? null, bought_on: x.boughtOn ?? null,
       value_change: x.valueChange ?? null, value_floor: x.valueFloor ?? null, valuations: x.valuations ?? [],
-      sold_on: x.soldOn ?? null, position: i,
+      sold_on: x.soldOn ?? null, loan_id: x.loanId ?? null, position: i,
     }),
     from: (r) => {
       const x = { id: r.id, name: r.name, kind: r.kind, currency: r.currency, valuations: (r.valuations ?? []).map((v) => ({ date: v.date, value: Number(v.value) })) };
@@ -120,8 +119,14 @@ const TABLES = {
       if (r.value_change != null) x.valueChange = Number(r.value_change);
       if (r.value_floor != null) x.valueFloor = Number(r.value_floor);
       if (r.sold_on) x.soldOn = r.sold_on;
+      if (r.loan_id) x.loanId = r.loan_id;
       return x;
     },
+  },
+  // Savings goals (goals.js): a target in EUR, maybe by a date, from some accounts.
+  goals: {
+    to: (g, i) => ({ id: g.id, name: g.name, target: g.target, target_date: g.targetDate ?? null, account_ids: g.accountIds ?? [], position: i }),
+    from: (r) => ({ id: r.id, name: r.name, target: Number(r.target), targetDate: r.target_date ?? null, accountIds: r.account_ids ?? [], position: r.position }),
   },
   transactions: {
     to: (t) => ({
@@ -140,10 +145,10 @@ const TABLES = {
   },
 };
 // Parents before children when saving; children before parents when deleting.
-const ORDER = ['categories', 'accounts', 'people', 'rules', 'holdings', 'lots', 'schedules', 'transactions', 'ious', 'snapshots', 'assets'];
+const ORDER = ['categories', 'accounts', 'people', 'rules', 'holdings', 'lots', 'schedules', 'transactions', 'ious', 'snapshots', 'assets', 'goals'];
 // Tables added after the first release. If the database doesn't have one yet (schema.sql not
 // re-run), the app still loads and simply doesn't save that table.
-const OPTIONAL = new Set(['schedules', 'people', 'ious', 'snapshots', 'lots', 'assets']);
+const OPTIONAL = new Set(['schedules', 'people', 'ious', 'snapshots', 'lots', 'assets', 'goals']);
 const missing = new Set();
 export const missingTables = () => [...missing];
 
@@ -151,7 +156,7 @@ export const missingTables = () => [...missing];
 // app, which asks for schema.sql to be run again.
 const NEW_COLUMNS = {
   accounts: ['credit_limit', 'card_network', 'statement_day', 'due_day', 'pay_from', 'low_balance', 'is_main', 'interest_rate',
-    'interest_every', 'interest_tax', 'investment_kind', 'opened_on', 'closed_on', 'institution', 'last_four', 'exclude_totals', 'color', 'loan_payments', 'loan_first', 'loan_changes'], categories: ['parent_id'], transactions: ['category_ids', 'kind', 'splits', 'holding_id'], settings: ['fx', 'last_backup_at', 'backup_every', 'eodhd_api_key', 'hidden_suggestions'], holdings: ['price_history'], schedules: ['subscription', 'category_ids'] };
+    'interest_every', 'interest_tax', 'investment_kind', 'opened_on', 'closed_on', 'institution', 'last_four', 'exclude_totals', 'loan_payments', 'loan_first', 'loan_changes'], categories: ['parent_id'], transactions: ['category_ids', 'kind', 'splits', 'holding_id'], settings: ['fx', 'last_backup_at', 'backup_every', 'eodhd_api_key', 'hidden_suggestions'], holdings: ['price_history'], schedules: ['subscription', 'category_ids'], assets: ['loan_id'] };
 let schemaOutdated = false;
 export const needsSchemaUpdate = () => schemaOutdated || missing.size > 0;
 // A database function the app calls doesn't take its arguments yet (schema.sql not run again).
@@ -214,6 +219,8 @@ export async function load({ allTransactions: everything = false, today, until }
     .sort((a, b) => a.position - b.position).map(TABLES.rules.from);
   state.assets = rows[ORDER.indexOf('assets')]
     .sort((a, b) => (a.position ?? 0) - (b.position ?? 0)).map(TABLES.assets.from);
+  state.goals = rows[ORDER.indexOf('goals')]
+    .sort((a, b) => (a.position ?? 0) - (b.position ?? 0)).map(TABLES.goals.from);
   const s = settingsRows[0] ?? {};
   state.settings = {
     quoteApiKey: s.quote_api_key ?? '', avApiKey: s.av_api_key ?? '', eodhdApiKey: s.eodhd_api_key ?? '', lastAccountId: s.last_account_id ?? undefined,

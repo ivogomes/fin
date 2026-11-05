@@ -1472,31 +1472,6 @@ a.fin-break-link:focus-visible { outline: none; box-shadow: var(--f-ring); borde
 .fin-legend-label { padding: 0; margin: 4px 0 8px; font-size: 13px; font-weight: 600; color: var(--f-text); }
 .fin-check-field { align-self: end; padding-bottom: 8px; }
 .fin-more > summary { cursor: pointer; color: var(--f-accent-strong); font-weight: 500; margin-bottom: 10px; }
-/* An account's colour: a dot by its name (the category hues). */
-.fin-acc-dot { display: inline-block; flex: none; width: 9px; height: 9px; margin-right: 8px; border-radius: 50%; background: var(--dot); vertical-align: 1px; }
-.fin-title .fin-acc-dot { width: 12px; height: 12px; margin-right: 12px; vertical-align: 3px; }
-.fin-acc-dot[data-hue="0"] { --dot: #1F7A8C; } .fin-acc-dot[data-hue="1"] { --dot: #2A78D6; }
-.fin-acc-dot[data-hue="2"] { --dot: #6250D6; } .fin-acc-dot[data-hue="3"] { --dot: #C2417A; }
-.fin-acc-dot[data-hue="4"] { --dot: #D9622B; } .fin-acc-dot[data-hue="5"] { --dot: #C99400; }
-.fin-acc-dot[data-hue="6"] { --dot: #1D8A4E; } .fin-acc-dot[data-hue="7"] { --dot: #7A878E; }
-@media (prefers-color-scheme: dark) {
-  :where(:root:not([data-theme="light"])) .fin-acc-dot[data-hue="0"] { --dot: #5BBFB5; }
-  :where(:root:not([data-theme="light"])) .fin-acc-dot[data-hue="1"] { --dot: #6FA0EE; }
-  :where(:root:not([data-theme="light"])) .fin-acc-dot[data-hue="2"] { --dot: #A895F2; }
-  :where(:root:not([data-theme="light"])) .fin-acc-dot[data-hue="3"] { --dot: #EC8AB5; }
-  :where(:root:not([data-theme="light"])) .fin-acc-dot[data-hue="4"] { --dot: #F29B66; }
-  :where(:root:not([data-theme="light"])) .fin-acc-dot[data-hue="5"] { --dot: #E6C25C; }
-  :where(:root:not([data-theme="light"])) .fin-acc-dot[data-hue="6"] { --dot: #6CCB92; }
-  :where(:root:not([data-theme="light"])) .fin-acc-dot[data-hue="7"] { --dot: #A7B3B9; }
-}
-:where(:root[data-theme="dark"]) .fin-acc-dot[data-hue="0"] { --dot: #5BBFB5; }
-:where(:root[data-theme="dark"]) .fin-acc-dot[data-hue="1"] { --dot: #6FA0EE; }
-:where(:root[data-theme="dark"]) .fin-acc-dot[data-hue="2"] { --dot: #A895F2; }
-:where(:root[data-theme="dark"]) .fin-acc-dot[data-hue="3"] { --dot: #EC8AB5; }
-:where(:root[data-theme="dark"]) .fin-acc-dot[data-hue="4"] { --dot: #F29B66; }
-:where(:root[data-theme="dark"]) .fin-acc-dot[data-hue="5"] { --dot: #E6C25C; }
-:where(:root[data-theme="dark"]) .fin-acc-dot[data-hue="6"] { --dot: #6CCB92; }
-:where(:root[data-theme="dark"]) .fin-acc-dot[data-hue="7"] { --dot: #A7B3B9; }
 .fin-main-mark { margin-left: 6px; color: var(--f-warn); font-size: 11px; }
 .fin-uncounted { color: var(--f-muted) !important; font-style: italic; }
 .fin-stat-action { margin-top: 8px; }
@@ -2103,3 +2078,31 @@ label > .fin-flag { margin-right: 6px; }
 .fin-loan-changes li > span:nth-child(2) { flex: 1; }
 .fin-loan-change-date { min-width: 8.5em; color: var(--f-muted); font-size: 13px; }
 .fin-loan-change-start { color: var(--f-muted); }
+
+/* Savings goals (Insights → Goals): what's saved against the target, a bar, and the pace. */
+.fin-goals-actions { justify-content: flex-end; margin-bottom: 16px; }
+.fin-goal-figures { margin: 0; font-size: 15px; }
+.fin-goal-figures strong { font-size: 20px; font-weight: 650; }
+.fin-goal-pace { margin-top: 8px; }
+.fin-goal-behind { color: var(--f-text); font-weight: 500; }
+.fin-goal-accounts { display: grid; gap: 6px; }
+.fin-usage-bar[data-level="done"] { background: var(--f-pos); }
+
+/* A holdings price refresh, row by row: waiting its turn (faded), loading (the price and value
+   pulse), then just updated (they flash in the accent once). Still under reduced motion. */
+.fin-holding.is-price-waiting :is(.h-price, .h-val, .h-gain) { opacity: 0.45; }
+.fin-holding.is-price-loading :is(.h-price, .h-val, .h-gain) { animation: fin-price-pulse 1s ease-in-out infinite alternate; }
+.fin-holding.is-price-loading .h-sym::after {
+  content: ''; display: inline-block; width: 10px; height: 10px; margin-left: 8px; vertical-align: -1px;
+  border: 2px solid var(--f-accent); border-right-color: transparent; border-radius: 50%;
+  animation: fin-price-spin 0.8s linear infinite;
+}
+.fin-holding.is-price-updated :is(.h-price, .h-val, .h-gain) { animation: fin-price-flash 1.4s ease-out both; animation-delay: var(--flash-at, 0ms); }
+@keyframes fin-price-pulse { from { opacity: 1; } to { opacity: 0.3; } }
+@keyframes fin-price-spin { to { transform: rotate(360deg); } }
+@keyframes fin-price-flash { from { background: var(--f-accent-soft); color: var(--f-accent-strong); } to { background: transparent; } }
+@media (prefers-reduced-motion: reduce) {
+  .fin-holding.is-price-loading :is(.h-price, .h-val, .h-gain) { animation: none; opacity: 0.6; }
+  .fin-holding.is-price-loading .h-sym::after { animation: none; border-right-color: var(--f-accent); }
+  .fin-holding.is-price-updated :is(.h-price, .h-val, .h-gain) { animation: none; }
+}

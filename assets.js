@@ -8,8 +8,10 @@ import {
   historyPoints, newId, toMinor,
 } from './model.js';
 import { persist } from './store.js';
-import { render, state, undoable } from './app.js';
+import { accountValue, render, state, undoable } from './app.js';
+import { inCurrency } from './accounts.js';
 import { timeChart } from './holdings.js';
+import { transactionsLoaded } from './insights.js';
 import { pageLink } from './overview.js';
 import {
   button, dialog, field, h, icon, iconButton, input, latestRate, money, num, say, select, shortDate,
@@ -19,6 +21,11 @@ import {
 // What `list` is worth on `date`, in EUR at today's rates.
 export const assetsInEur = (list, date = today()) =>
   list.reduce((sum, x) => sum + convert(assetValue(x, date)?.value ?? 0, latestRate(x.currency) ?? 1), 0);
+
+// The loan an asset was bought with (a mortgage), while it's still an account.
+const loanOf = (x) => x.loanId && state.accounts.find((a) => a.id === x.loanId && a.type === 'loan');
+// What's owed on it, in the asset's currency.
+const owedOn = (x, loan) => inCurrency(Math.max(0, -accountValue(loan)), loan.currency, x.currency);
 
 const KIND_ICONS = { home: 'asset-home', vehicle: 'asset-vehicle', other: 'asset-other' };
 const rateText = (x) => {
@@ -62,6 +69,10 @@ function assetCard(x) {
   const shownAt = x.soldOn ? assetValue(x, prevDay(x.soldOn)) : now;
   const cur = x.currency;
   const gain = shownAt && x.purchasePrice != null ? shownAt.value - x.purchasePrice : null;
+  // With a loan on it: what's owed, and the equity (what's yours: its worth less that).
+  const loan = !x.soldOn && loanOf(x);
+  const owed = loan ? owedOn(x, loan) : null;
+  const equity = loan && shownAt ? shownAt.value - owed : null;
   const headId = `asset-${x.id}`;
   return h('section', { class: `fin-card fin-asset${x.soldOn ? ' is-sold' : ''}`, 'aria-labelledby': headId },
     h('div', { class: 'fin-card-head fin-asset-head' },
@@ -86,7 +97,11 @@ function assetCard(x) {
           h('p', { class: 'fin-stat-note' }, !shownAt ? 'add a valuation below'
             : shownAt.estimated ? `from ${money(shownAt.from.value, cur)} ${shownAt.from.bought ? 'paid' : 'valued'} on ${shortDate(shownAt.from.date)}, at ${rateText(x)}`
               : shownAt.from.bought ? `its purchase price; changes at ${rateText(x)}` : `valued on ${shortDate(shownAt.from.date)}; changes at ${rateText(x)}`))),
-      (x.purchasePrice != null || (cur !== 'EUR' && shownAt)) && h('dl', { class: 'fin-asset-side' },
+      (x.purchasePrice != null || (cur !== 'EUR' && shownAt) || loan) && h('dl', { class: 'fin-asset-side' },
+        loan && h('div', {}, h('dt', {}, 'Equity'), h('dd', { class: `fin-num ${equity != null && equity < 0 ? 'fin-neg' : ''}` }, equity != null ? money(equity, cur) : '—'),
+          h('p', { class: 'fin-stat-note' }, equity != null && shownAt.value > 0 ? `${Math.round((equity / shownAt.value) * 100)}% yours` : 'its worth less what’s owed')),
+        loan && h('div', {}, h('dt', {}, 'Still owed'), h('dd', { class: 'fin-num' }, money(owed, cur)),
+          h('p', { class: 'fin-stat-note' }, `on ${loan.name}`)),
         x.purchasePrice != null && h('div', {}, h('dt', {}, 'Bought for'), h('dd', { class: 'fin-num' }, money(x.purchasePrice, cur)),
           x.boughtOn && h('p', { class: 'fin-stat-note' }, `on ${shortDate(x.boughtOn)}`)),
         cur !== 'EUR' && shownAt && h('div', {}, h('dt', {}, 'In EUR'), h('dd', { class: 'fin-num' }, money(convert(shownAt.value, latestRate(cur) ?? 1), 'EUR')),
@@ -106,9 +121,16 @@ function valueChart(x) {
   const { ends } = historyPoints(first, end);
   const dates = [...new Set([first, ...ends.map((e) => e.date), end])].sort();
   const pts = dates.map((date) => ({ date, v: assetValue(x, date)?.value ?? 0 }));
+  // With a loan on it, what was owed on each date to compare with (the gap is the equity), once the
+  // loan's transactions are in; otherwise what it cost.
+  const loan = !x.soldOn && loanOf(x);
+  const loanTxs = loan && transactionsLoaded(`account:${loan.id}`, `&account_id=eq.${encodeURIComponent(loan.id)}`)
+    ? state.transactions.filter((t) => t.accountId === loan.id) : null;
+  const owedAt = (date) => inCurrency(Math.max(0, -loanTxs.filter((t) => t.date <= date).reduce((sum, t) => sum + t.amount, 0)), loan.currency, x.currency);
   return h('div', { class: 'fin-pad fin-asset-chart' }, timeChart(pts, {
     id: `asset-chart-${x.id}`, title: `Worth over time`, unit: `in ${x.currency}`, format: (v) => money(v, x.currency),
-    ...(x.purchasePrice != null && { ref: pts.map((p) => ({ date: p.date, v: x.purchasePrice })), refLabel: 'Bought for' }),
+    ...(loanTxs ? { ref: pts.map((p) => ({ date: p.date, v: owedAt(p.date) })), refLabel: 'Owed on it' }
+      : x.purchasePrice != null && { ref: pts.map((p) => ({ date: p.date, v: x.purchasePrice })), refLabel: 'Bought for' }),
   }));
 }
 
@@ -166,6 +188,8 @@ export function openAssetDialog(existing = null) {
   const floor = input({ type: 'number', step: '0.01', min: '0', inputmode: 'decimal', value: money0(x0.valueFloor) });
   const floorField = field('Lowest value', floor, 'Optional. A falling estimate stops here (what it would sell for at worst).');
   const soldOn = input({ type: 'date', value: x0.soldOn ?? null });
+  const loans = state.accounts.filter((a) => a.type === 'loan' && (!a.archived || a.id === x0.loanId));
+  const loanSel = select([['', 'None'], ...loans.map((a) => [a.id, a.name])], x0.loanId ?? '');
   const error = h('p', { class: 'fin-error', role: 'alert' });
   const syncKind = () => {
     const usual = ASSET_CHANGE[kind.value];
@@ -190,6 +214,7 @@ export function openAssetDialog(existing = null) {
         valueChange: change.value !== '' ? Number(change.value) : null,
         valueFloor: kind.value !== 'home' && floor.value !== '' ? toMinor(floor.value) : null,
         soldOn: soldOn.value || null,
+        loanId: loanSel.value || null,
       };
       const apply = (x) => { for (const [k, v] of Object.entries(fields)) { if (v == null || v === false) delete x[k]; else x[k] = v; } };
       dialog.close();
@@ -210,6 +235,7 @@ export function openAssetDialog(existing = null) {
       field('Bought on', boughtOn), field('Purchase price', purchase, 'Optional. Shows the gain or loss on it.'),
       field('Yearly change (%)', change, 'How its value moves in a year between valuations: + grows (a home), − falls (a car). Empty: the usual for its kind.'),
       floorField,
+      loans.length > 0 && field('Loan on it', loanSel, 'A mortgage or loan taken for it: its card then shows your equity, what it’s worth less what’s owed.'),
       existing && field('Sold on', soldOn, 'From then it’s worth nothing to you, and it moves under Sold.')),
     error,
     h('div', { class: 'fin-dialog-actions' },

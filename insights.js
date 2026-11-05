@@ -11,6 +11,7 @@ import { missingTables, persist, transactionsComplete } from './store.js';
 import { counted } from './accounts.js';
 import { accountValue, latestClose, loadHistory, render, setView, state, totalsOf, view } from './app.js';
 import { assetsInEur } from './assets.js';
+import { renderGoals } from './goals.js';
 import { pageLink } from './overview.js';
 import { chartTip, lotsOfHolding, timeChart } from './holdings.js';
 import { fetchTransactions, ratesArg, renderWhenIdle } from './transactions.js';
@@ -510,19 +511,21 @@ export function singleColumns(series, unit, range, label) {
 
 // Insights across all accounts, in two tabs sharing the period: income and spending, and net worth.
 export function renderInsights() {
-  const worth = view.tab === 'networth';
-  const pick = (t) => { setView({ name: 'insights', ...(t === 'networth' && { tab: 'networth' }) }); render(`ins-tab-${t}`); };
+  const tab = view.tab === 'networth' || view.tab === 'goals' ? view.tab : 'spending';
+  const worth = tab === 'networth';
+  const pick = (t) => { setView({ name: 'insights', ...(t !== 'spending' && { tab: t }) }); render(`ins-tab-${t}`); };
   return h('div', {},
     h('div', { class: 'fin-account-head' },
       h('div', {}, h('h2', { class: 'fin-title', id: 'insights-h', tabindex: '-1' }, 'Insights'),
         h('p', { class: 'fin-meta' }, worth
           ? 'Everything you own minus what you owe, across all accounts, in EUR.'
-          : 'Income and spending across all your accounts, archived ones included.'))),
+          : tab === 'goals' ? 'What you’re saving for, from the accounts you put toward each, in EUR.'
+            : 'Income and spending across all your accounts, archived ones included.'))),
     h('div', { class: 'fin-tabs', role: 'group', 'aria-label': 'Insights view' },
-      [['spending', 'Income and spending'], ['networth', 'Net worth']].map(([t, label]) => h('button', {
-        type: 'button', class: 'fin-tab', 'aria-pressed': String(worth === (t === 'networth')), 'data-key': `ins-tab-${t}`, onclick: () => pick(t),
+      [['spending', 'Income and spending'], ['networth', 'Net worth'], ['goals', 'Goals']].map(([t, label]) => h('button', {
+        type: 'button', class: 'fin-tab', 'aria-pressed': String(tab === t), 'data-key': `ins-tab-${t}`, onclick: () => pick(t),
       }, label))),
-    worth ? renderNetWorth() : insightsPanel(null));
+    worth ? renderNetWorth() : tab === 'goals' ? renderGoals() : insightsPanel(null));
 }
 
 // ── net worth over time ──────────────────────────────────────────────────────

@@ -3,13 +3,13 @@
 import { today } from './market.js';
 import {
   UNITS, advanceSchedule, categoriesOf, convert, crossConvert, findSubscriptions, frequencyLabel,
-  newId, normalize, occurrences, plannedTransactions, scheduledEffect, scheduledTransactions,
+  loanInterestRow, newId, normalize, occurrences, plannedTransactions, scheduledEffect, scheduledTransactions,
   suggestSchedules, toMinor, withMarkedSchedules,
 } from './model.js';
 import { persist } from './store.js';
 import { cardPayments, inCurrency, payCard } from './accounts.js';
 import {
-  cardMark, deleteTransactions, editingTxId, ensureRate, render, setEditingTxId, setView, state, undoable,
+  accountValue, cardMark, deleteTransactions, editingTxId, ensureRate, render, setEditingTxId, setView, state, undoable,
   view,
 } from './app.js';
 import { ask, inEur } from './insights.js';
@@ -49,6 +49,11 @@ export async function enterScheduled(s, focusKey, { edit = null } = {}) {
   if (rows.length === 2 && currencyOf(rows[0]) !== currencyOf(rows[1]) && rows[0].rate && rows[1].rate) {
     rows[1].amount = crossConvert(-rows[0].amount, rows[0].rate, rows[1].rate);
   }
+  // A payment into a loan: the bank adds the month's interest, so it's added too, and the loan's
+  // balance follows the statement (what's owed falls by the payment less the interest).
+  const loan = s.kind === 'transfer' && state.accounts.find((a) => a.id === s.toAccountId && a.type === 'loan');
+  const interest = loan && loanInterestRow(loan, accountValue(loan), rows[1].date, state.rules);
+  if (interest) { interest.rate = rows[1].rate; rows.push(interest); }
   state.transactions.push(...rows);
   Object.assign(s, advanceSchedule(s));
   const open = edit && rows.find((t) => t.accountId === edit);
@@ -56,7 +61,7 @@ export async function enterScheduled(s, focusKey, { edit = null } = {}) {
   persist(); render(open ? 'tx-desc-edit' : focusKey);
   say(open
     ? `Added ${s.description} for ${shortDate(open.date)}, open to change; the schedule goes on from ${shortDate(s.nextDate)}.`
-    : `Added ${s.description}. Next one on ${shortDate(s.nextDate)}.`);
+    : `Added ${s.description}${interest ? `, with ${money(-interest.amount, loan.currency)} of interest` : ''}. Next one on ${shortDate(s.nextDate)}.`);
 }
 
 export function skipScheduled(s, focusKey) {
