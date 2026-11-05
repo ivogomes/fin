@@ -1,0 +1,26 @@
+# This tool is served from ivogomes.com/tools/ (the site's deploy checks this repo out). A push here
+# asks the site to deploy again, with a SITE_DEPLOY_TOKEN secret: a fine-grained token with
+# Contents: read and write on ivogomes/ivogomes. Without it, changes go live on the site's next deploy.
+name: Deploy ivogomes.com
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ask ivogomes.com to deploy
+        env:
+          TOKEN: ${{ secrets.SITE_DEPLOY_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "No SITE_DEPLOY_TOKEN secret: the site picks this up on its next deploy."
+            exit 0
+          fi
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/ivogomes/ivogomes/dispatches \
+            -d '{"event_type":"tool-updated"}'

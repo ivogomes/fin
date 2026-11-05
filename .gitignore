@@ -1,0 +1,6 @@
+.DS_Store
+.claude/
+
+# Personal finance data and screenshots used while building Fin. Never publish these.
+exports/
+Screenshot*.png

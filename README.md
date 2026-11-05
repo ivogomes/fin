@@ -1,6 +1,6 @@
 # Fin
 
-Fin (*take care of your Finances*) is a personal finance tracker to replace Buxfer: accounts in EUR or USD (converted at the daily ECB rate), credit cards and investments, rule-based categories, transfers, stock and ETF holdings with live prices, and CSV import and export. Served at `/tools/finance/`.
+Fin (*take care of your Finances*) is a personal finance tracker to replace Buxfer: accounts in EUR or USD (converted at the daily ECB rate), credit cards and investments, rule-based categories, transfers, stock and ETF holdings with live prices, and CSV import and export. Served at `/tools/finance/` on ivogomes.com (the site's deploy checks out this repo). It works out where it's served from, so it also runs on its own at any address: its styles are copied into `shared/` from the site (see the site's `STYLEGUIDE.md`).
 
 Data is stored in a Supabase project (Postgres) and you sign in with Google or an emailed link, so the same data is available on every device. The browser keeps only the sign-in session and a few display preferences.
 
@@ -39,7 +39,7 @@ The modules are plain ES modules, loaded by `app.js` (no build step). Each expor
 
 1. Create a free project at [supabase.com](https://supabase.com).
 2. In **SQL editor**, paste `schema.sql` and run it.
-3. In **Authentication → URL configuration**, set **Site URL** to `https://ivogomes.com/tools/finance/` and add `http://localhost:4000/tools/finance/` under **Redirect URLs**.
+3. In **Authentication → URL configuration**, set **Site URL** to `https://ivogomes.com/tools/finance/` and add `http://localhost:4000/tools/finance/` under **Redirect URLs** (and any other address you serve Fin from: sign-in links only go back to these).
 4. In **Project settings → API**, copy the project URL (`https://<project-ref>.supabase.co`, not the dashboard address in your browser bar) and the `anon` public key into `config.js`. The anon key is meant to be public; the row-level security policies in `schema.sql` are what keep data private.
 5. Open the tool, sign in with your email, and click the link.
 6. Once your account exists, turn off **Authentication → Sign In / Providers → Allow new users to sign up**, so nobody else can create an account in your project.
@@ -49,11 +49,11 @@ The default email sender in Supabase is rate-limited (a few emails an hour). Tha
 ## Run it
 
 ```bash
-npm run preview        # from the repo root, serves at http://localhost:4000
+npm run preview        # from the site's root, with this repo cloned into its tools/finance/
 # then open http://localhost:4000/tools/finance/
 ```
 
-Tests: `node --test tools/finance/model.test.mjs`. On this machine the `node` shim needs a version, so use `MISE_NODE_VERSION=22.19.0 node --test …`.
+It's static, so any web server works too, from this folder. Tests: `node --test model.test.mjs`. On this machine the `node` shim needs a version, so use `MISE_NODE_VERSION=22.19.0 node --test …`.
 
 ### After an update that adds a table
 
