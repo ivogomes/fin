@@ -685,6 +685,7 @@ export function renderSearch() {
   for (const id of selected) if (!rows.some((t) => t.id === id)) selected.delete(id);
   // Totals of what's found, in EUR (transfers left out, as they only move money around).
   const sums = ready ? view0.page : null;
+  const net = sums ? Number(sums.in) - Number(sums.out) : 0;
   return h('div', {},
     h('div', { class: 'fin-account-head' },
       h('div', {}, h('h2', { class: 'fin-title', id: 'search-h', tabindex: '-1' }, 'Search'),
@@ -694,7 +695,8 @@ export function renderSearch() {
         h('h3', { id: 'search-res-h', class: 'fin-label' }, 'Results ', ready && h('span', { class: 'fin-count' }, String(total))),
         ready && total > 0 && h('p', { class: 'fin-search-totals' },
           h('span', {}, 'In ', h('strong', { class: 'fin-num fin-pos' }, money(Number(sums.in), 'EUR'))),
-          h('span', {}, 'Out ', h('strong', { class: 'fin-num fin-neg' }, money(Number(sums.out), 'EUR'))))),
+          h('span', {}, 'Out ', h('strong', { class: 'fin-num fin-neg' }, money(Number(sums.out), 'EUR'))),
+          h('span', {}, 'Net ', h('strong', { class: `fin-num ${tone(net)}` }, signed(net, 'EUR'))))),
       filterBar('search', { showAccount: true }),
       selected.size > 0 && bulkBar(rows),
       !active
