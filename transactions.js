@@ -21,6 +21,7 @@ import {
 import { comboField, descriptionCombo, floatingList, openTxDialog } from './entry.js';
 import { inEur } from './insights.js';
 import { personName } from './ious.js';
+import { pageLink } from './overview.js';
 import { FORECAST_DAYS, daysFromToday, openScheduleDialog, subscriptionChip, upcomingRows } from './schedules.js';
 import {
   button, catLabel, catOptions, category, field, h, hueOf, icon, iconButton, input, latestRate,
@@ -901,7 +902,7 @@ export function categoryCell(t) {
     const cur = state.accounts.find((a) => a.id === t.accountId)?.currency ?? 'EUR';
     return h('div', { class: 'fin-cats fin-cats-compact', role: 'group', 'aria-label': `Split of ${t.description}` },
       parts.map((p) => h('span', { class: 'fin-cat-chip fin-cat-chip--part', 'data-hue': p.categoryId ? hueOf(p.categoryId) : '0' },
-        h('span', {}, catLabel(p.categoryId) || 'No category'),
+        p.categoryId && category(p.categoryId) ? catLink(p.categoryId) : h('span', {}, catLabel(p.categoryId) || 'No category'),
         h('span', { class: 'fin-num fin-cat-amt' }, money(Math.abs(p.amount), cur)))),
       h('button', {
         type: 'button', class: 'fin-link fin-link-sm', 'aria-label': `Change the split of ${t.description}`,
@@ -913,6 +914,7 @@ export function categoryCell(t) {
   const picker = categoryPicker(categoriesOf(t), {
     label: `Categories of ${t.description}, ${shortDate(t.date)}`,
     compact: true,
+    linked: true,
     onChange: (ids, change) => {
       const added = ids.find((id) => !categoriesOf(t).includes(id));
       t.categoryIds = ids;
@@ -1005,7 +1007,8 @@ export function categoryCombo({ label, placeholder = '+ Category', exclude = () 
 // reads the choice; `onChange(ids, message)` runs on every change. `placeholder()` is the box's text
 // while nothing is chosen (the quick-entry grid shows what the rules would pick); `refresh()`
 // redraws it.
-export function categoryPicker(selected, { label, compact = false, onChange, placeholder } = {}) {
+// `linked`: each chip's name opens Search for that category (in transaction lists, not in forms).
+export function categoryPicker(selected, { label, compact = false, onChange, placeholder, linked = false } = {}) {
   const ids = [...selected];
   const wrap = h('div', { class: `fin-cats${compact ? ' fin-cats-compact' : ''}`, role: 'group', 'aria-label': label });
   const combo = categoryCombo({
@@ -1027,7 +1030,7 @@ export function categoryPicker(selected, { label, compact = false, onChange, pla
   const paint = (focus) => {
     combo.box.placeholder = ids.length ? '+' : placeholder?.() ?? '+ Category';
     const chips = ids.map((id, i) => h('span', { class: 'fin-cat-chip', 'data-hue': hueOf(id) },
-      h('span', {}, catLabel(id) || 'Deleted category'),
+      linked && category(id) ? catLink(id) : h('span', {}, catLabel(id) || 'Deleted category'),
       h('button', {
         type: 'button', class: 'fin-cat-x', 'aria-label': `Remove ${catLabel(id) || 'category'}`,
         onclick: () => {
@@ -1052,6 +1055,9 @@ export function categoryPicker(selected, { label, compact = false, onChange, pla
 }
 
 // Categories as chips that only show (no × or menu): a schedule's in a list, a suggestion's.
+// A category's name as a link to its transactions in Search (a parent includes its children).
+const catLink = (id) => pageLink(catLabel(id), { name: 'search', cats: [id] }, 'fin-cat-link');
+
 export const catChips = (ids) => ids.length > 0 && h('div', { class: 'fin-cats' },
   ids.map((id) => h('span', { class: 'fin-cat-chip', 'data-hue': hueOf(id) }, h('span', {}, catLabel(id) || 'Deleted category'))));
 

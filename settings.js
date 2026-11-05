@@ -11,6 +11,7 @@ import {
 } from './app.js';
 import { backupSection, exportSection } from './backups.js';
 import { decimal2, importKind, importPage, importTabs, setBuxferDraft, setImportDraft } from './imports.js';
+import { pageLink } from './overview.js';
 import { accountName, catChips, needEverything } from './transactions.js';
 import {
   NUMBER_FORMATS, button, isPhone, catLabel, catOptions, category, field, h, hideAmounts, input,
@@ -311,7 +312,7 @@ export function duplicatesSection() {
   };
   return h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'dup-h' },
     h('h3', { id: 'dup-h', class: 'fin-label', tabindex: '-1', 'data-key': 'dup-h' }, 'Duplicates'),
-    h('p', { class: 'fin-hint' }, 'Transactions that look like the same one entered twice, as after importing a file again: same account, amount and description (numbers in it, like card or reference numbers, aside), at most 3 days apart. Pick the copy to keep; the one with categories, a memo or links comes first. Deleting one side of a transfer deletes its other side too.'),
+    h('p', { class: 'fin-hint' }, 'Transactions that look like the same one entered twice, as after importing a file again: same account, same day, same type, same amount and description (numbers in it, like card or reference numbers, aside). Pick the copy to keep; the one with categories, a memo or links comes first. Deleting one side of a transfer deletes its other side too.'),
     groups.length === 0
       ? h('p', { class: 'fin-empty' }, 'No duplicates found.')
       : [
@@ -329,7 +330,9 @@ export function duplicatesSection() {
             h('div', { class: 'fin-actions' },
               button(g.items.length === 2 ? 'Delete the other copy' : `Delete the other ${g.items.length - 1}`, () => deleteTransactions(new Set(extras(g))), 'secondary fin-btn-sm',
                 { 'aria-describedby': legendId }),
-              button('Not duplicates', () => notDuplicates(g), 'secondary fin-btn-sm', { 'aria-describedby': legendId }))));
+              button('Not duplicates', () => notDuplicates(g), 'secondary fin-btn-sm', { 'aria-describedby': legendId }),
+              // That day in that account, in Search: the copies with what's around them, to check before deleting.
+              pageLink(`See ${shortDate(t0.date)} in ${accountName(t0.accountId)} ›`, { name: 'search', accounts: [t0.accountId], from: t0.date, to: t0.date }, 'fin-link'))));
         })),
       ]);
 }

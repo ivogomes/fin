@@ -59,7 +59,7 @@ export function paletteItems(query) {
     items.push({ group: 'Settings', label: `Settings: ${page.label}`, words: page.group, run: go({ name: 'settings', section: page.key }) });
   }
   for (const [kind, label] of IMPORT_KINDS) {
-    items.push({ group: 'Settings', label: `Import: ${label}`, words: 'data file csv learn', run: go({ name: 'settings', section: 'import', kind }) });
+    items.push({ group: 'Settings', label: `Import: ${label}`, words: 'data file csv', run: go({ name: 'settings', section: 'import', kind }) });
   }
   if (!q) return items;
   // Every word typed must be found; names starting with it come first, then a word starting with it.

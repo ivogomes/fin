@@ -21,7 +21,7 @@ import { renderIous } from './ious.js';
 import { renderOverview } from './overview.js';
 import { openPalette } from './palette.js';
 import { FORECAST_DAYS, daysFromToday, renderSchedules, resetSubscriptionIndex } from './schedules.js';
-import { openSettings, renderSettings, renderSettingsNav } from './settings.js';
+import { renderSettings, renderSettingsNav } from './settings.js';
 import {
   fetchTransactions, focusTransaction, listViews, renderSearch, renderWhenIdle, selected, setDescCache,
   setIouByTx,
@@ -551,7 +551,9 @@ export function render(focusKey) {
   });
   const inSettings = view.name === 'settings';
   // The More tab stands for the sections in its menu.
-  moreBtn.classList.toggle('is-on', ['assets', 'scheduled', 'ious', 'settings'].includes(view.name));
+  moreBtn.classList.toggle('is-on', ['assets', 'scheduled', 'ious'].includes(view.name));
+  // Settings live in the avatar's menu, so the avatar shows when you're in them.
+  meBtn.classList.toggle('is-on', inSettings);
   document.body.dataset.view = view.name; // phones show the side panel's button only in Settings
   // The panel's button is for the panel; on a phone it isn't used (Accounts and Settings are lists).
   sideToggle.hidden = isPhone();
@@ -840,7 +842,7 @@ export function avatar(p, size) {
   return img;
 }
 
-// The avatar button opens a small menu: who you are, your account's settings, and Sign out.
+// The avatar button opens a small menu: who you are, Settings (all of them), and Sign out.
 // Esc, a click outside or tabbing away closes it; ↓/↑ move between its items.
 export const meWrap = document.getElementById('me');
 export const meBtn = document.getElementById('me-btn');
@@ -863,7 +865,10 @@ export function paintMe() {
     h('button', { type: 'button', class: 'fin-me-item fin-me-phone', onclick: () => { openMe(false); openPalette(); } }, 'Go to…'),
     h('button', { type: 'button', class: 'fin-me-item fin-me-phone', onclick: () => { openMe(false); setHideAmounts(!hideAmounts); } },
       hideAmounts ? 'Show amounts' : 'Hide amounts'),
-    item('Account settings', () => openSettings('account', 'sign-out')),
+    h('button', {
+      type: 'button', class: 'fin-me-item', 'aria-current': view.name === 'settings' ? 'page' : null,
+      onclick: () => { openMe(false); view = { name: 'settings' }; render(); },
+    }, 'Settings'),
     item('Sign out', () => signOutNow()));
 }
 meBtn.addEventListener('click', () => {
@@ -882,7 +887,7 @@ export const closeMeOutside = (e) => { if (!meMenu.hidden && !meWrap.contains(e.
 document.addEventListener('mousedown', closeMeOutside);
 document.addEventListener('focusin', closeMeOutside);
 
-// The tab bar's More: a menu above it with the sections that don't fit (Scheduled, IOUs, Settings).
+// The tab bar's More: a menu above it with the sections that don't fit (Assets, Scheduled, IOUs).
 export const moreBtn = document.getElementById('more-btn');
 export const moreMenu = document.getElementById('more-menu');
 export function openMore(on) {

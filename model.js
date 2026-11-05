@@ -391,79 +391,6 @@ export function ruleSuggestion(t, categoryId, rules, transactions) {
   return { pattern: t.description.trim(), match: 'equals', categoryId, others };
 }
 
-// Rules worth adding, learnt from how transactions are already categorized. Transactions (not
-// transfers, openings or splits) are grouped by description with numbers left out, so "CARD 1234
-// GROCER" and "CARD 5678 GROCER" go together. A group whose descriptions are all the same becomes an
-// "is exactly" rule; otherwise a "contains" rule with the longest run of whole words they all share
-// (with four letters at least: "grocer"). A rule is kept when, over every categorized transaction it
-// would match, at least `min` share its category and that's at least `share` of them, and when the
-// existing rules don't already pick that category. Each: { pattern, match, categoryId, count
-// (matching ones in that category), total (matching categorized ones), others (uncategorized ones it
-// would fill) }, most used first.
-export function rulesFromHistory(transactions, rules, { min = 3, share = 0.9 } = {}) {
-  const keyOf = (d) => normalize(d).replace(/\d+/g, ' ').replace(/\s+/g, ' ').trim();
-  const letters = (x) => normalize(x).replace(/[^\p{L}]/gu, '').length;
-  // Distinct descriptions, with how their transactions are categorized.
-  const byText = new Map();
-  for (const t of transactions) {
-    if (t.transferId || t.kind === 'opening' || splitsOf(t) || !t.description?.trim()) continue;
-    const norm = normalize(t.description).replace(/\s+/g, ' ');
-    const e = byText.get(norm) ?? { norm, text: t.description.trim(), cats: new Map(), none: 0 };
-    const first = categoriesOf(t)[0];
-    if (first) e.cats.set(first, (e.cats.get(first) ?? 0) + 1); else e.none += 1;
-    byText.set(norm, e);
-  }
-  const texts = [...byText.values()];
-  const groups = new Map();
-  for (const e of texts) {
-    const key = keyOf(e.norm);
-    if (letters(key) < 3) continue;
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(e);
-  }
-  const out = [];
-  const seen = new Set();
-  for (const list of groups.values()) {
-    const cats = new Map();
-    for (const e of list) for (const [c, n] of e.cats) cats.set(c, (cats.get(c) ?? 0) + n);
-    const [categoryId, inGroup] = [...cats].sort((x, y) => y[1] - x[1])[0] ?? [];
-    if (!categoryId || inGroup < min) continue;
-    let rule;
-    if (list.length === 1) rule = { pattern: list[0].text, match: 'equals' };
-    else {
-      // The longest run of whole words that every description has (the first one's spelling).
-      const words = list[0].text.split(/\s+/);
-      const has = (e, run) => ` ${e.norm} `.includes(` ${normalize(run)} `);
-      let best = '';
-      for (let i = 0; i < words.length; i += 1) {
-        for (let j = words.length; j > i; j -= 1) {
-          const run = words.slice(i, j).join(' ');
-          if (letters(run) > letters(best) && list.every((e) => has(e, run))) best = run;
-        }
-      }
-      if (letters(best) < 4) continue;
-      rule = { pattern: best, match: 'contains' };
-    }
-    const id = `${rule.match}|${normalize(rule.pattern)}|${categoryId}`;
-    if (seen.has(id)) continue;
-    seen.add(id);
-    // Every description the rule would match: is it right about them, and what would it fill?
-    let count = 0;
-    let total = 0;
-    let others = 0;
-    let known = true;
-    for (const e of texts) {
-      if (categorize(e.text, [{ ...rule, categoryId }]) !== categoryId) continue;
-      for (const [c, n] of e.cats) { total += n; if (c === categoryId) count += n; }
-      others += e.none;
-      if (e.cats.size && categorize(e.text, rules) !== categoryId) known = false;
-    }
-    if (count < min || count / total < share || known) continue;
-    out.push({ ...rule, categoryId, count, total, others });
-  }
-  return out.sort((a, b) => b.count - a.count || a.pattern.localeCompare(b.pattern));
-}
-
 // ── Description suggestions ──────────────────────────────────────────────────
 
 // One entry per distinct description (case and accents ignored) from past transactions, with how
@@ -865,43 +792,31 @@ export function findTransferPairs(transactions) {
   return pairs;
 }
 
-// Likely duplicates, as after importing the same file twice: transactions in the same account with
-// the same amount and description (case, accents and numbers ignored: card and reference numbers
-// often differ between exports) on dates at most `days` apart. Returns groups of two or more,
-// newest first: { key, items }, with `items[0]` the one worth keeping (categories, a memo, a split,
-// an IOU in `linked` or a transfer, then the oldest). `dismissed` holds keys answered "Not
-// duplicates"; a group that gains another copy has a new key and shows again.
-export function findDuplicates(transactions, { days = 3, dismissed = [], linked = new Set() } = {}) {
+// Likely duplicates, as after importing the same file twice: transactions in the same account, on
+// the same day, of the same type (an expense, income, a refund, a dividend, an opening balance or
+// one side of a transfer), with the same amount and description (case, accents and numbers ignored:
+// card and reference numbers often differ between exports). Returns groups of two or more, newest
+// first: { key, items }, with `items[0]` the one worth keeping (categories, a memo, a split, an IOU
+// in `linked`). `dismissed` holds keys answered "Not duplicates"; a group that gains another copy
+// has a new key and shows again.
+export function findDuplicates(transactions, { dismissed = [], linked = new Set() } = {}) {
   const skip = new Set(dismissed);
   const byKey = new Map();
   for (const t of transactions) {
     if (!t.amount) continue;
     const desc = normalize(t.description).replace(/\d+/g, ' ').replace(/\s+/g, ' ').trim();
-    const k = `${t.accountId}|${t.amount}|${desc}`;
+    const type = t.transferId ? 'transfer' : t.kind ?? '';
+    const k = `${t.accountId}|${t.date}|${type}|${t.amount}|${desc}`;
     if (!byKey.has(k)) byKey.set(k, []);
     byKey.get(k).push(t);
   }
-  const worth = (t) => (categoriesOf(t).length ? 8 : 0) + (t.memo ? 4 : 0) + (t.splits?.length ? 4 : 0)
-    + (linked.has(t.id) ? 4 : 0) + (t.transferId ? 2 : 0);
+  const worth = (t) => (categoriesOf(t).length ? 8 : 0) + (t.memo ? 4 : 0) + (t.splits?.length ? 4 : 0) + (linked.has(t.id) ? 4 : 0);
   const out = [];
   for (const list of byKey.values()) {
     if (list.length < 2) continue;
-    list.sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id));
-    // Runs of dates each within `days` of the one before.
-    let run = [list[0]];
-    const close = () => {
-      if (run.length < 2) return;
-      const key = `dup|${run.map((t) => t.id).sort().join(',')}`;
-      if (skip.has(key)) return;
-      const items = [...run].sort((a, b) => worth(b) - worth(a) || a.date.localeCompare(b.date) || a.id.localeCompare(b.id));
-      out.push({ key, items });
-    };
-    for (const t of list.slice(1)) {
-      const prev = run[run.length - 1];
-      if ((Date.parse(t.date) - Date.parse(prev.date)) / 864e5 <= days) run.push(t);
-      else { close(); run = [t]; }
-    }
-    close();
+    const key = `dup|${list.map((t) => t.id).sort().join(',')}`;
+    if (skip.has(key)) continue;
+    out.push({ key, items: [...list].sort((a, b) => worth(b) - worth(a) || a.id.localeCompare(b.id)) });
   }
   return out.sort((a, b) => b.items[0].date.localeCompare(a.items[0].date));
 }

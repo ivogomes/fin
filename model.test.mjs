@@ -12,7 +12,7 @@ import {
   periodRange, granularity, insights, completeMonths, holdingHistory, accountRuns, historyPoints, incomeCategories, REFUNDS_UNMATCHED, netWorthHistory, isFtExport, ftImport, lotSummary, investedHistory,
   descriptionIndex, suggestDescriptions, filterTransactions, ruleSuggestion,
   parseFrequency, addInterval, occurrences, forecast, scheduledTransactions, advanceSchedule,
-  splitsOf, scaleSplits, DIVIDENDS, recurringGroups, suggestSchedules, xirr, lotFlows, returnSummary, rulesFromHistory, findSubscriptions, withMarkedSchedules, timesAYear,
+  splitsOf, scaleSplits, DIVIDENDS, recurringGroups, suggestSchedules, xirr, lotFlows, returnSummary, findSubscriptions, withMarkedSchedules, timesAYear,
   lastStatementDate, dueAfter, balanceDip, savingsInterest, loanPlan, annuityPayment, loanInterestSoFar, loanTerm, loanRateAt, loanInterestRow, goalProgress,
 } from './model.js';
 
@@ -941,29 +941,6 @@ test('net worth history: an investment without buys and sells climbs to its valu
   assert.equal(totals[0], Math.round(100000 * (1 + 0.2 * (30 / 150)))); // end of January: 30 of 150 days
 });
 
-test('rules from history: exact names, shared words when numbers vary, only when they are right', () => {
-  let n = 0;
-  const t = (description, cat, extra = {}) => ({ id: String(n += 1), accountId: 'a', date: '2026-01-01', amount: -100, description, categoryIds: cat ? [cat] : [], ...extra });
-  const tx = [
-    t('Netflix', 'fun'), t('NETFLIX', 'fun'), t('netflix', 'fun'), t('Netflix', null),
-    t('CARD 1234 Green Grocer', 'food'), t('CARD 5678 Green Grocer', 'food'), t('CARD 9012 Green Grocer', 'food'), t('CARD 3456 Green Grocer', null),
-    // the same shop in a different category too often: no rule
-    t('Corner shop', 'food'), t('Corner shop', 'food'), t('Corner shop', 'home'), t('Corner shop', 'home'),
-    // too few
-    t('Rare place', 'food'), t('Rare place', 'food'),
-    // already covered by a rule
-    t('Uber trip', 'transport'), t('Uber trip', 'transport'), t('Uber trip', 'transport'),
-    // transfers and splits don't teach rules
-    t('To savings', 'x', { transferId: 'q' }), t('To savings', 'x', { transferId: 'r' }), t('To savings', 'x', { transferId: 's' }),
-  ];
-  const rules = [{ pattern: 'uber', match: 'contains', categoryId: 'transport' }];
-  const list = rulesFromHistory(tx, rules);
-  assert.deepEqual(list.map((r) => [r.pattern, r.match, r.categoryId, r.count, r.total, r.others]), [
-    ['Green Grocer', 'contains', 'food', 3, 3, 1],
-    ['Netflix', 'equals', 'fun', 3, 3, 1],
-  ]);
-});
-
 test('subscriptions: steady prices, one price rise, yearly ones, stopped ones; bills and income left out', () => {
   const g = (key, sign, dates, amounts) => ({ accountId: 'a', key, sign, description: key, categoryIds: ['c'], dates, amounts });
   const groups = [
@@ -1047,13 +1024,15 @@ test('category search: every word in the path, accents ignored, name prefix firs
   assert.deepEqual(ids('nothing'), []);
 });
 
-test('duplicates: same account, amount and description within a few days; the best one kept first', () => {
+test('duplicates: same account, day, type, amount and description; the best one kept first', () => {
   const tx = [
     { id: 'a', accountId: 'bank', date: '2026-10-01', description: 'CONTINENTE 1234', amount: -2599, categoryIds: [] },
-    { id: 'b', accountId: 'bank', date: '2026-10-02', description: 'Continente 9876', amount: -2599, categoryIds: ['food'] },
-    { id: 'c', accountId: 'bank', date: '2026-10-20', description: 'Continente', amount: -2599, categoryIds: [] }, // too late
+    { id: 'b', accountId: 'bank', date: '2026-10-01', description: 'Continente 9876', amount: -2599, categoryIds: ['food'] },
+    { id: 'c', accountId: 'bank', date: '2026-10-02', description: 'Continente', amount: -2599, categoryIds: [] }, // the next day
     { id: 'd', accountId: 'card', date: '2026-10-01', description: 'Continente 1234', amount: -2599, categoryIds: [] }, // other account
     { id: 'e', accountId: 'bank', date: '2026-10-01', description: 'Continente', amount: -2600, categoryIds: [] }, // other amount
+    { id: 'r', accountId: 'bank', date: '2026-10-01', description: 'Continente', amount: -2599, kind: 'refund', categoryIds: [] }, // other type
+    { id: 't', accountId: 'bank', date: '2026-10-01', description: 'Continente', amount: -2599, transferId: 'x', categoryIds: [] }, // a transfer
     { id: 'f', accountId: 'bank', date: '2026-09-05', description: 'Netflix', amount: -1399, categoryIds: [] },
     { id: 'g', accountId: 'bank', date: '2026-09-05', description: 'netflix', amount: -1399, memo: 'shared', categoryIds: [] },
     { id: 'h', accountId: 'bank', date: '2026-09-05', description: 'Netflix', amount: -1399, categoryIds: [] },
@@ -1063,7 +1042,7 @@ test('duplicates: same account, amount and description within a few days; the be
   assert.equal(groups[0].key, 'dup|a,b');
   // Answered "Not duplicates": gone, until another copy turns up.
   assert.deepEqual(findDuplicates(tx, { dismissed: ['dup|a,b'] }).map((g) => g.key), ['dup|f,g,h']);
-  const more = [...tx, { id: 'i', accountId: 'bank', date: '2026-10-03', description: 'Continente', amount: -2599, categoryIds: [] }];
+  const more = [...tx, { id: 'i', accountId: 'bank', date: '2026-10-01', description: 'Continente', amount: -2599, categoryIds: [] }];
   assert.deepEqual(findDuplicates(more, { dismissed: ['dup|a,b'] })[0].items.map((t) => t.id), ['b', 'a', 'i']);
   // An IOU linked to a copy makes it the one to keep.
   assert.equal(findDuplicates(tx, { linked: new Set(['h']) })[1].items[0].id, 'g'); // the memo still counts for as much

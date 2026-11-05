@@ -119,6 +119,8 @@ body {
   cursor: pointer;
 }
 .fin-me-btn:hover .fin-avatar { box-shadow: 0 0 0 3px color-mix(in srgb, var(--tool-header-ink) 18%, transparent); }
+/* In Settings (which open from its menu): the avatar ringed, as a header tab shows the page you're on. */
+.fin-me-btn.is-on .fin-avatar { box-shadow: 0 0 0 2px var(--tool-header-ink); }
 .fin-me-btn:focus-visible { outline: 2px solid var(--tool-header-ink); outline-offset: 2px; }
 .fin-avatar { display: inline-grid; place-items: center; flex: none; border-radius: 50%; object-fit: cover; }
 .fin-avatar[data-size="32"] { width: 32px; height: 32px; font-size: 13px; }
@@ -865,6 +867,10 @@ textarea.fin-input { resize: vertical; }
   white-space: nowrap;
 }
 .fin-cat-dot { --chip-ink: #0F5E6B; }
+/* A category's name in a transaction list: a link to its transactions in Search. */
+.fin-cat-link { color: inherit; text-decoration: none; border-radius: 4px; }
+.fin-cat-link:hover { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+.fin-cat-link:focus-visible { outline: 2px solid var(--f-accent); outline-offset: 2px; }
 :is(.fin-cat-chip, .fin-cat-dot)[data-hue="1"] { --chip-bg: #E6EEFB; --chip-ink: #2A4F9E; }
 :is(.fin-cat-chip, .fin-cat-dot)[data-hue="2"] { --chip-bg: #EFE9FB; --chip-ink: #5B3FA6; }
 :is(.fin-cat-chip, .fin-cat-dot)[data-hue="3"] { --chip-bg: #FBE8F1; --chip-ink: #9E2D66; }

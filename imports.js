@@ -1,20 +1,19 @@
-// Imports (CSV, Buxfer, holdings, category rules) and CSV export.
+// Imports (CSV, Buxfer, holdings) and CSV export.
 
 import { today } from './market.js';
 import {
-  ACCOUNT_TYPE_LABELS, IMPORT_FIELDS, IOU_TYPES, buxferImport, categoriesOf, categorize,
+  ACCOUNT_TYPE_LABELS, IMPORT_FIELDS, IOU_TYPES, buxferImport, categoriesOf,
   categoryPath, convert, detectBuxferFile, frequencyLabel, ftImport, fundMovementsToFt,
   guessDateFormat, guessDecimal, guessMapping, holdingValue, importRows, isFtExport,
-  isFundMovements, lotSummary, newId, normalize, parseCsv, rulesFromHistory, sortedCategories,
+  isFundMovements, lotSummary, newId, normalize, parseCsv, sortedCategories,
   splitsOf, toCsv,
 } from './model.js';
 import { missingTables, persist } from './store.js';
-import { accountValue, byName, refreshRates, render, setView, state, undoable, view } from './app.js';
+import { accountValue, byName, refreshRates, render, setView, state, view } from './app.js';
 import { personName } from './ious.js';
-import { pageLink } from './overview.js';
 import { accountLabel, holdingOf } from './transactions.js';
 import {
-  button, catLabel, category, field, h, hueOf, input, money, say, select, shortDate, signed, tone,
+  button, catLabel, category, field, h, input, money, say, select, shortDate, signed, tone,
 } from './ui.js';
 
 // ── CSV import and export ────────────────────────────────────────────────────
@@ -88,10 +87,10 @@ export function previewBuxfer() {
   buxferDraft.preview = buxferImport(buxferDraft.files, buxferCtx(() => `preview-${++n}`), { openingBalances: buxferDraft.openingBalances });
 }
 
-// ── imports: one page, four kinds ────────────────────────────────────────────
+// ── imports: one page, three kinds ───────────────────────────────────────────
 
 export const IMPORT_KINDS = [
-  ['csv', 'Transactions (CSV)'], ['buxfer', 'From Buxfer'], ['holdings', 'Holdings'], ['rules', 'Category rules'],
+  ['csv', 'Transactions (CSV)'], ['buxfer', 'From Buxfer'], ['holdings', 'Holdings'],
 ];
 export const importKind = () => (IMPORT_KINDS.some(([k]) => k === view.kind) ? view.kind : 'csv');
 export function importTabs() {
@@ -106,63 +105,8 @@ export function importPage() {
   const kind = importKind();
   return [
     importTabs(),
-    kind === 'buxfer' ? buxferSection() : kind === 'holdings' ? ftSection() : kind === 'rules' ? learnRulesSection() : importSection(),
+    kind === 'buxfer' ? buxferSection() : kind === 'holdings' ? ftSection() : importSection(),
   ];
-}
-
-// Category rules learnt from how transactions are already categorized (model.js rulesFromHistory):
-// tick the ones to add; they go to the top of the rules, and can fill in uncategorized transactions.
-export const learnSkipped = new Set(); // suggestions unticked, while the page is open
-export let learnFill = true;
-export function learnRulesSection() {
-  const list = rulesFromHistory(state.transactions, state.rules);
-  const idOf = (r) => `${r.match}|${r.pattern}|${r.categoryId}`;
-  const picked = list.filter((r) => !learnSkipped.has(idOf(r)));
-  const matchLabel = { contains: 'contains', starts: 'starts with', equals: 'is exactly' };
-  const tick = (r) => h('input', {
-    type: 'checkbox', class: 'fin-tick', checked: !learnSkipped.has(idOf(r)), 'data-key': `learn-${idOf(r)}`,
-    'aria-label': `Add the rule: description ${matchLabel[r.match]} “${r.pattern}” goes in ${catLabel(r.categoryId)}`,
-    onchange: (e) => { if (e.target.checked) learnSkipped.delete(idOf(r)); else learnSkipped.add(idOf(r)); render(`learn-${idOf(r)}`); },
-  });
-  const fills = picked.reduce((sum, r) => sum + r.others, 0);
-  const add = () => {
-    const fresh = picked.map((r) => ({ id: newId(), pattern: r.pattern, match: r.match, categoryId: r.categoryId }));
-    const fill = learnFill ? state.transactions.filter((t) => !t.transferId && !categoriesOf(t).length && categorize(t.description, fresh)) : [];
-    const plural = (k, word) => `${k} ${word}${k === 1 ? '' : 's'}`;
-    undoable(`${plural(fresh.length, 'rule')} added${fill.length ? `, and ${plural(fill.length, 'transaction')} categorized` : ''}.`, ['rules', 'transactions'], () => {
-      // At the top, in the order shown, so they win over broader rules (the first match decides).
-      state.rules.unshift(...fresh);
-      for (const t of fill) t.categoryIds = [categorize(t.description, fresh)];
-    });
-  };
-  return h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'learn-h' },
-    h('h3', { id: 'learn-h', class: 'fin-label' }, 'Category rules from your transactions'),
-    h('p', { class: 'fin-hint' }, 'Rules learnt from how you’ve already categorized things: a description seen at least three times that goes in the same category at least 9 times in 10. Where the numbers in a description change (card or reference numbers), the rule looks for the words they share. Rules that would change nothing aren’t listed. Tick the ones you want; they go to the top of your rules, where you can reorder or delete them later.'),
-    list.length === 0
-      ? h('p', { class: 'fin-empty' }, 'Nothing to learn right now: your rules already cover the descriptions you categorize the same way every time.')
-      : [
-        h('div', { class: 'fin-actions fin-mb' },
-          button('Tick all', () => { learnSkipped.clear(); render('learn-all'); }, 'secondary fin-btn-sm', { 'data-key': 'learn-all' }),
-          button('Untick all', () => { list.forEach((r) => learnSkipped.add(idOf(r))); render('learn-none'); }, 'secondary fin-btn-sm', { 'data-key': 'learn-none' })),
-        h('div', { class: 'fin-scroll' }, h('table', { class: 'fin-table' },
-          h('caption', { class: 'fin-sr' }, 'Rules that could be added'),
-          h('thead', {}, h('tr', {},
-            h('th', { scope: 'col', class: 'fin-tick-col' }, h('span', { class: 'fin-sr' }, 'Add')),
-            h('th', { scope: 'col' }, 'If the description'), h('th', { scope: 'col' }, 'Category'),
-            h('th', { scope: 'col', class: 'fin-r' }, 'Agrees with'), h('th', { scope: 'col', class: 'fin-r' }, 'Would fill'))),
-          h('tbody', {}, list.map((r) => h('tr', { class: learnSkipped.has(idOf(r)) ? null : 'is-selected' },
-            h('td', { class: 'fin-tick-col' }, tick(r)),
-            h('td', {}, `${matchLabel[r.match]} `, h('strong', {}, `“${r.pattern}”`)),
-            h('td', {}, h('span', { class: 'fin-cat-chip', 'data-hue': hueOf(r.categoryId) }, h('span', {}, catLabel(r.categoryId)))),
-            h('td', { class: 'fin-r fin-num' }, r.count === r.total ? `all ${r.total}` : `${r.count} of ${r.total}`),
-            h('td', { class: 'fin-r fin-num' }, r.others ? `${r.others} uncategorized` : '—')))))),
-        h('label', { class: 'fin-check fin-mt' },
-          h('input', { type: 'checkbox', checked: learnFill, 'data-key': 'learn-fill', onchange: (e) => { learnFill = e.target.checked; render('learn-fill'); } }),
-          ` Also categorize the uncategorized transactions they match${fills ? ` (${fills})` : ''}`),
-        h('div', { class: 'fin-actions fin-mt' },
-          button(picked.length ? `Add ${picked.length} rule${picked.length === 1 ? '' : 's'}` : 'Add rules', add, 'primary', { disabled: !picked.length, 'data-key': 'learn-add' }),
-          pageLink('See your rules ›', { name: 'settings', section: 'rules' }, 'fin-link')),
-      ]);
 }
 
 export function buxferSection() {
