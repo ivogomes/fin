@@ -1297,6 +1297,32 @@ export function lotSummary(lots) {
   return { quantity, cost: Math.round(cost * 100), avgPrice: quantity ? cost / quantity : null };
 }
 
+// Each lot's gain or loss, { id → { gain (minor units), pct } }, on the same average cost as
+// lotSummary. A buy: its units at today's `price` against what they cost with fees (null without a
+// price). A sell: what it brought in after fees against those units' average cost at the time.
+export function lotGains(lots, price) {
+  const out = new Map();
+  let quantity = 0;
+  let cost = 0;
+  for (const l of [...lots].sort((a, b) => a.date.localeCompare(b.date))) {
+    const fees = l.fees ?? 0;
+    if (l.kind === 'sell') {
+      const basis = (quantity ? cost / quantity : 0) * l.quantity;
+      const gain = l.quantity * l.price - fees - basis;
+      out.set(l.id, { gain: Math.round(gain * 100), pct: basis ? gain / basis : null });
+      quantity -= l.quantity;
+      cost -= basis;
+    } else {
+      const paid = l.quantity * l.price + fees;
+      const gain = price == null ? null : l.quantity * price - paid;
+      out.set(l.id, gain == null ? null : { gain: Math.round(gain * 100), pct: paid ? gain / paid : null });
+      quantity += l.quantity;
+      cost += paid;
+    }
+  }
+  return out;
+}
+
 // A holding over time, for its charts: at each date a price is known (its weekly closes, each buy
 // and sell, its current price), the price, the units held then, what they cost (sells at average
 // cost), their value and the gain or loss on them (minor units, in the holding's currency). It

@@ -152,7 +152,7 @@ What counts: transfers between your accounts and opening balances don't. A trans
 
 ## Holdings and their buys and sells
 
-A holding can have lots: its buys and sells, each with a date, units, price and fees. With lots, its units come from them, and the holdings table shows what it cost (and the average price) and the gain. Open a holding's **Lots** to see them, add a buy or sell, or delete one.
+A holding can have lots: its buys and sells, each with a date, units, price and fees. With lots, its units come from them, and the holdings table shows what it cost (and the average price) and the gain. Open a holding's **Lots** to see them, add a buy or sell, or delete one. Each lot shows its gain or loss, in money and percent (`lotGains` in `model.js`): a buy's units at today's price against what they cost with fees, and a sell's proceeds after fees against the average cost of the units then (the same average cost as the holding's).
 
 An investment account's cards show its **Value** (the holdings at today's prices, with the gain or loss since yesterday: the change in value less any money moved in or out since), **Invested** and **Gain**. When every holding has lots, both come from the holdings, as in the holdings table: Invested is what their lots cost and Gain each one's value less that, added up in the account's currency at today's rates, whatever the transfers in came to after conversion. Without lots for every holding, Invested is the money put in (the account's transactions) and Gain the value less that. Each holding is shown in the currency it's priced in, with its value in the account's currency under it when they differ.
 

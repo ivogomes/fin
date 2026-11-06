@@ -1,7 +1,7 @@
 // Holdings of an investment account, and their buys and sells (lots).
 
 import { alphaVantageCovers, today } from './market.js';
-import { CURRENCIES, holdingHistory, holdingValue, lotSummary, newId } from './model.js';
+import { CURRENCIES, holdingHistory, holdingValue, lotGains, lotSummary, newId } from './model.js';
 import { persist } from './store.js';
 import { byName, loadHistory, priceStatus, priceUpdatedAt, refreshPrices, refreshingPrices, render, setView, state, undoable, view } from './app.js';
 import { priceCell, symbolPicker } from './entry.js';
@@ -346,6 +346,7 @@ export function recalcHolding(x) {
 
 export function lotsPanel(x) {
   const own = lotsOfHolding(x.id);
+  const gains = lotGains(own, x.price);
   const kind = select([['buy', 'Buy'], ['sell', 'Sell']], 'buy');
   const date = input({ type: 'date', required: true, value: today(), 'data-key': `lot-date-${x.id}` });
   const units = input({ type: 'number', step: 'any', min: '0', required: true, inputmode: 'decimal' });
@@ -356,7 +357,7 @@ export function lotsPanel(x) {
       ? h('p', { class: 'fin-hint fin-mb' }, `No buys or sells for ${x.symbol} yet. Add them here, or import an FT.com export in Settings. Once it has lots, its units come from them.`)
       : h('div', { class: 'fin-scroll fin-mb' }, h('table', { class: 'fin-table fin-lots' },
         h('caption', { class: 'fin-sr' }, `Buys and sells of ${x.symbol}`),
-        h('thead', {}, h('tr', {}, ['Date', '', 'Units', 'Price', 'Fees', 'Total'].map((t, i) => h('th', { scope: 'col', class: i > 1 ? 'fin-r' : null }, t)),
+        h('thead', {}, h('tr', {}, ['Date', '', 'Units', 'Price', 'Fees', 'Total', 'Gain'].map((t, i) => h('th', { scope: 'col', class: i > 1 ? 'fin-r' : null }, t)),
           h('th', { scope: 'col' }, h('span', { class: 'fin-sr' }, 'Actions')))),
         h('tbody', {}, [...own].reverse().map((l) => h('tr', {},
           h('td', { class: 'fin-nowrap' }, shortDate(l.date)),
@@ -365,12 +366,15 @@ export function lotsPanel(x) {
           h('td', { class: 'fin-r fin-num' }, money(Math.round(l.price * 100), x.currency)),
           h('td', { class: 'fin-r fin-num fin-muted' }, l.fees ? money(Math.round(l.fees * 100), x.currency) : '—'),
           h('td', { class: 'fin-r fin-num' }, money(Math.round((l.quantity * l.price + (l.kind === 'sell' ? -(l.fees ?? 0) : (l.fees ?? 0))) * 100), x.currency)),
+          (({ gain, pct } = gains.get(l.id) ?? {}) => h('td', { class: `fin-r fin-num ${gain == null ? '' : tone(gain)}` }, gain == null ? '—' : signed(gain, x.currency),
+            pct != null && h('span', { class: 'fin-sub' }, `${pct >= 0 ? '+' : ''}${num(pct * 100)}%`)))(),
           h('td', { class: 'fin-r' }, h('div', { class: 'fin-row-actions' }, iconButton('trash', `Delete the ${l.kind} of ${l.quantity} on ${shortDate(l.date)}`, () => {
             undoable(`Deleted the ${l.kind} of ${l.quantity} ${x.symbol}.`, ['lots', 'holdings'], () => {
               state.lots = state.lots.filter((y) => y.id !== l.id);
               recalcHolding(state.holdings.find((y) => y.id === x.id));
             });
           }, { danger: true })))))))),
+    own.length > 0 && h('p', { class: 'fin-hint fin-mb' }, 'Gain: a buy’s units at today’s price; a sell against the average cost of the units then.'),
     h('form', {
       onsubmit: (e) => {
         e.preventDefault();

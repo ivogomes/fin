@@ -9,7 +9,7 @@ import {
   findTransferPairs, findDuplicates, detectBuxferFile, buxferImport, isFundMovements, fundMovementsToFt,
   categoryPath, categoryResolver, categoriesOf, sortedCategories, searchCategories, assetValue, assetValuations,
   parseBuxferIou, iouSign, iouType, personBalances, personHistory,
-  periodRange, granularity, insights, completeMonths, holdingHistory, accountRuns, historyPoints, incomeCategories, REFUNDS_UNMATCHED, netWorthHistory, isFtExport, ftImport, lotSummary, investedHistory,
+  periodRange, granularity, insights, completeMonths, holdingHistory, accountRuns, historyPoints, incomeCategories, REFUNDS_UNMATCHED, netWorthHistory, isFtExport, ftImport, lotSummary, lotGains, investedHistory,
   descriptionIndex, suggestDescriptions, filterTransactions, ruleSuggestion,
   parseFrequency, addInterval, occurrences, forecast, scheduledTransactions, advanceSchedule,
   splitsOf, scaleSplits, DIVIDENDS, recurringGroups, suggestSchedules, xirr, lotFlows, returnSummary, findSubscriptions, withMarkedSchedules, timesAYear,
@@ -93,6 +93,23 @@ test('net worth history: archived accounts close, investments at cost then snaps
   assert.equal(at('2026-05').date, '2026-05-31');
   assert.equal(at('2026-05').investments, 36000); // today's holdings
   assert.equal(at('2026-05').byType.checking, 115000 + 9000);
+});
+
+test('lots: gain per buy at today\'s price, per sell against the average cost then', () => {
+  const lots = [
+    { id: 'b1', date: '2025-01-10', kind: 'buy', quantity: 10, price: 100, fees: 2 },
+    { id: 'b2', date: '2025-06-10', kind: 'buy', quantity: 10, price: 120, fees: 0 },
+    { id: 's1', date: '2025-09-01', kind: 'sell', quantity: 5, price: 130, fees: 1 },
+  ];
+  const g = lotGains(lots, 125);
+  assert.deepEqual(g.get('b1'), { gain: 24800, pct: 248 / 1002 }); // 1250 − 1002
+  assert.deepEqual(g.get('b2'), { gain: 5000, pct: 50 / 1200 }); // 1250 − 1200
+  // Average cost then: 2202 / 20 = 110.1 a unit, so 5 cost 550.5; 650 − 1 − 550.5 = 98.5.
+  assert.equal(g.get('s1').gain, 9850);
+  assert.ok(Math.abs(g.get('s1').pct - 98.5 / 550.5) < 1e-12);
+  // Without a price, buys have no gain; sells still do.
+  assert.equal(lotGains(lots, null).get('b1'), null);
+  assert.equal(lotGains(lots, null).get('s1').gain, 9850);
 });
 
 test('lots: FT.com import matches holdings, skips duplicates and dividends, recalculates units', () => {
