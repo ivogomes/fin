@@ -11,6 +11,7 @@ import {
 import { missingTables, persist } from './store.js';
 import { accountValue, byName, refreshRates, render, setView, showToast, state, view } from './app.js';
 import { personName } from './ious.js';
+import { isXls, readXls } from './xls.js';
 import { readXlsx } from './xlsx.js';
 import { accountLabel, holdingOf } from './transactions.js';
 import {
@@ -41,13 +42,15 @@ export async function readImportFile(file) {
   }
 }
 
+// An Excel workbook's first sheet as rows, like a CSV's: .xlsx, or the older binary .xls. Null for
+// anything else (some banks' ".xls" is really text, tab-separated or UTF-16, read as a CSV).
+export async function readSheet(file) {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  return isXls(bytes) ? readXls(bytes) : readXlsx(bytes);
+}
+
 async function readImport(file) {
-  // An Excel workbook (.xlsx): its first sheet, read like a CSV.
-  const sheet = await readXlsx(new Uint8Array(await file.arrayBuffer()));
-  if (!sheet && await isBinaryXls(file)) {
-    tell('That’s an older Excel file (.xls), which Fin can’t read. Open it in Excel or Numbers and save it as .xlsx or CSV.');
-    return;
-  }
+  const sheet = await readSheet(file);
   if (sheet && !sheet.length) { tell(`The first sheet of ${file.name} is empty.`); return; }
   const text = sheet ? '' : await readText(file);
   const statement = sheet ? null : parseStatement(text);
@@ -64,7 +67,8 @@ async function readImport(file) {
     return;
   }
   const rows = sheet ?? parseCsv(text);
-  const [header, ...body] = rows.slice(findHeaderRow(rows));
+  // Rows with a single cell are notes (a disclaimer under the movements, say), never a transaction.
+  const [header, ...body] = rows.slice(findHeaderRow(rows)).filter((r, i) => i === 0 || r.filter((c) => String(c).trim() !== '').length > 1);
   if (!body.length) { tell(`${file.name} has no rows to import.`); return; }
   const mapping = guessMapping(header);
   const column = (f) => body.slice(0, 50).map((r) => r[mapping[f]] ?? '');
@@ -238,15 +242,8 @@ export async function readText(file) {
   catch { return new TextDecoder('windows-1252').decode(bytes); }
 }
 
-// The older binary Excel format (.xls) starts with this signature. Some banks' ".xls" is really
-// text (tab-separated, or an HTML table), which reads like a CSV.
-async function isBinaryXls(file) {
-  const head = new Uint8Array(await file.slice(0, 4).arrayBuffer());
-  return [0xD0, 0xCF, 0x11, 0xE0].every((b, i) => head[i] === b);
-}
-
 export async function readFtFile(file) {
-  let rows = parseCsv(await readText(file));
+  let rows = (await readSheet(file)) ?? parseCsv(await readText(file));
   const movements = rows.length > 0 && isFundMovements(rows[0]);
   // The movements list names its portfolio ("Carteira"), which may also be the account's name.
   const portfolio = movements ? normalize(rows[1]?.[rows[0].findIndex((x) => normalize(x) === 'carteira')] ?? '') : '';
@@ -265,7 +262,7 @@ export function ftSection() {
   const head = h('h3', { class: 'fin-label' }, 'Import holdings');
   const investments = state.accounts.filter((a) => a.type === 'investment' && !a.archived);
   if (!ftDraft) {
-    const file = input({ type: 'file', accept: '.csv,.xls,.txt,.tsv,text/csv,text/plain', 'data-key': 'ft-file' });
+    const file = input({ type: 'file', accept: '.csv,.xls,.xlsx,.txt,.tsv,text/csv,text/plain', 'data-key': 'ft-file' });
     file.addEventListener('change', () => file.files[0] && readFtFile(file.files[0]));
     return h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'settings-h' }, head,
       h('p', { class: 'fin-hint' }, 'Every buy and sell with its date, units and price, from either the transactions export of an FT.com portfolio, or a fund’s movements list (a pension fund’s “ListagemMovimentos”, with Data, Fundo, Operação, Nº UPs and Valor UP). They become the lots of the account’s holdings, which then show what they cost and what you’ve gained, and give the net-worth history real values over time. Holdings are matched by ticker or name and created when missing; a fund from a movements list is priced by hand, starting at its latest unit value. Importing the same file again adds nothing.'),
@@ -322,7 +319,7 @@ export function importSection() {
     const file = input({ type: 'file', accept: '.csv,.xlsx,.xls,.ofx,.qfx,.xml,.txt,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/x-ofx,application/xml,text/xml', 'data-key': 'import-file' });
     file.addEventListener('change', () => file.files[0] && readImportFile(file.files[0]));
     return h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'import-h' }, head,
-      h('p', { class: 'fin-hint' }, 'A bank statement as OFX or QFX, or as CAMT.053 or CAMT.052 (the XML many European banks export), or any CSV or Excel (.xlsx) file with a date, a description and an amount. For a CSV or Excel file you choose which column is which. Either way you see a preview before anything is saved.'),
+      h('p', { class: 'fin-hint' }, 'A bank statement as OFX or QFX, or as CAMT.053 or CAMT.052 (the XML many European banks export), or any CSV or Excel (.xlsx or .xls) file with a date, a description and an amount. For a CSV or Excel file you choose which column is which. Either way you see a preview before anything is saved.'),
       h('div', { class: 'fin-grid' }, field('Statement or CSV file', file)));
   }
 

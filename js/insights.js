@@ -909,7 +909,5 @@ export function renderNetWorth() {
               return svg;
             })(),
             h('span', { class: `fin-num fin-break-amt ${value < 0 ? 'fin-neg' : ''}` }, money(value, 'EUR')),
-            h('span', { class: 'fin-num fin-break-pct fin-muted' }, value > 0 && assets ? `${Math.round((value / assets) * 100)}%` : '')))))),
-      // Every holding in the open investment accounts.
-      allocationCard(state.holdings.filter((x) => state.accounts.some((a) => a.id === x.accountId && !a.archived && counted(a))), 'nw')));
+            h('span', { class: 'fin-num fin-break-pct fin-muted' }, value > 0 && assets ? `${Math.round((value / assets) * 100)}%` : ''))))))));
 }

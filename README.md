@@ -35,12 +35,13 @@ Data is stored in a Supabase project (Postgres) and you sign in with Google or a
 | `js/drive.js` | Backups to Google Drive (optional, with a Google OAuth client ID in `js/config.js`), and the "Fin quotes" spreadsheet that reads Google Finance prices. |
 | `js/zip.js` | Writing and reading the backup `.zip`. |
 | `js/xlsx.js` | Reading an Excel `.xlsx` (the first sheet) into rows, for imports. |
+| `js/xls.js` | The same for the older binary Excel `.xls` (Excel 97–2003 and 5/95). |
 | `js/config.js` | Your Supabase project URL and anon key. |
 | `css/finance.css` | The tool's styles, on the shared tokens (see `STYLEGUIDE.md`). |
 | `shared/` | `tokens.css` and `tools.css`, copied from the site. |
 | `icons/` | Favicon, touch and install icons. |
 | `db/schema.sql` | Database tables and row-level security. |
-| `test/model.test.mjs` | The spec for `js/model.js` (and `js/zip.js`, `js/xlsx.js`). |
+| `test/model.test.mjs` | The spec for `js/model.js` (and `js/zip.js`, `js/xlsx.js`, `js/xls.js`). |
 
 The modules are plain ES modules, loaded by `js/app.js` (no build step). Each exports its top-level declarations and imports what it uses from the others; they only reach each other's code when called, so the cycles between them are safe. A module can read another's variables (`state`, `view`, `txPage`…) but not assign them, so each such variable has a setter next to it (`setView`, `setTxPage`, `setEditingTxId`…). A new file needs adding to `SHELL` in `sw.js`.
 

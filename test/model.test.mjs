@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { makeZip, readZip, crc32 } from '../js/zip.js';
 import { readXlsx } from '../js/xlsx.js';
+import { readXls } from '../js/xls.js';
 import {
   toMinor, formatMoney, categorize, convert, rateFor, accountBalance, plannedTransactions,
   holdingValue, investmentValue, netWorth, defaultState, withRunningBalance,
@@ -590,6 +591,7 @@ test('dates in three orders, rejecting impossible ones', () => {
   assert.equal(guessDateFormat(['01/02/2026']), 'dmy');
   assert.equal(guessDecimal(['-12,50', '3']), ',');
   assert.equal(guessDecimal(['1,234.50']), '.');
+  assert.equal(guessDecimal(['-71,91 EUR', '€ 1.234,50']), ',');
 });
 
 test('header mapping is guessed from common names', () => {
@@ -1347,4 +1349,70 @@ test('findHeaderRow: skips the lines about the account above the column names', 
   assert.equal(findHeaderRow([]), 0);
   assert.equal(guessMapping(['Data Lanc.', 'Valor']).date, 0);
   assert.deepEqual(Object.values(guessMapping(['Data Mov.', 'Data Valor', 'Descrição', 'Montante (EUR)', 'Saldo'])).slice(0, 3), [0, 2, 3]);
+});
+
+// A minimal .xls: a Compound File (512-byte sectors: the FAT, the directory, then the "Workbook"
+// stream, kept over 4096 bytes so it isn't in the mini stream) holding the given BIFF8 records.
+function makeXls(sheetRecords, globalRecords) {
+  const rec = (type, bytes) => { const b = new Uint8Array(4 + bytes.length); new DataView(b.buffer).setUint16(0, type, true); new DataView(b.buffer).setUint16(2, bytes.length, true); b.set(bytes, 4); return b; };
+  const le = (...parts) => new Uint8Array(parts.flatMap(([n, size]) => Array.from({ length: size }, (_, i) => Number((BigInt(n) >> BigInt(8 * i)) & 0xFFn))));
+  const bof = rec(0x0809, le([0x0600, 2], [0x10, 2], [0, 12]));
+  const eof = rec(0x000A, new Uint8Array());
+  const globalsWith = (sheetAt) => [bof, ...globalRecords, rec(0x0085, new Uint8Array([...le([sheetAt, 4], [0, 1], [0, 1]), 1, 0, 83])), eof];
+  const size = (list) => list.reduce((n, r) => n + r.length, 0);
+  const sheetAt = size(globalsWith(0));
+  const parts = [...globalsWith(sheetAt), bof, ...sheetRecords, eof];
+  parts.push(rec(0x1234, new Uint8Array(Math.max(0, 4200 - size(parts))))); // padding past the mini-stream cutoff
+  const stream = new Uint8Array(size(parts));
+  parts.reduce((at, r) => { stream.set(r, at); return at + r.length; }, 0);
+
+  const sectors = Math.ceil(stream.length / 512);
+  const file = new Uint8Array(512 * (3 + sectors));
+  const v = new DataView(file.buffer);
+  file.set([0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]);
+  v.setUint16(0x1A, 0x3E, true); v.setUint16(0x1C, 3, true); v.setUint16(0x1E, 9, true); v.setUint16(0x20, 6, true);
+  v.setUint32(0x2C, 1, true); v.setUint32(0x30, 1, true); v.setUint32(0x38, 4096, true);
+  v.setUint32(0x3C, 0xFFFFFFFE, true); v.setUint32(0x44, 0xFFFFFFFE, true);
+  for (let i = 0; i < 109; i += 1) v.setUint32(0x4C + i * 4, i === 0 ? 0 : 0xFFFFFFFF, true);
+  const fat = 512; // sector 0
+  for (let i = 0; i < 128; i += 1) v.setUint32(fat + i * 4, 0xFFFFFFFF, true);
+  v.setUint32(fat, 0xFFFFFFFD, true);
+  v.setUint32(fat + 4, 0xFFFFFFFE, true);
+  for (let i = 0; i < sectors; i += 1) v.setUint32(fat + (2 + i) * 4, i === sectors - 1 ? 0xFFFFFFFE : 3 + i, true);
+  const dirEntry = (at, name, type, start, len) => {
+    [...name].forEach((ch, i) => v.setUint16(at + i * 2, ch.charCodeAt(0), true));
+    v.setUint16(at + 0x40, (name.length + 1) * 2, true);
+    file[at + 0x42] = type;
+    v.setUint32(at + 0x74, start, true);
+    v.setUint32(at + 0x78, len, true);
+  };
+  dirEntry(1024, 'Root Entry', 5, 0xFFFFFFFE, 0); // sector 1
+  dirEntry(1024 + 128, 'Workbook', 2, 2, stream.length);
+  file.set(stream, 512 * 3);
+  return file;
+}
+
+test('xls: the first sheet of an Excel 97–2003 workbook, strings across CONTINUE, dates and RK numbers', () => {
+  const rec = (type, bytes) => { const b = new Uint8Array(4 + bytes.length); new DataView(b.buffer).setUint16(0, type, true); new DataView(b.buffer).setUint16(2, bytes.length, true); b.set(bytes, 4); return b; };
+  const u16 = (n) => [n & 0xFF, n >> 8];
+  const u32 = (n) => [n & 0xFF, (n >> 8) & 0xFF, (n >> 16) & 0xFF, n >>> 24];
+  const ascii = (t) => [...t].map((c) => c.charCodeAt(0));
+  const cell = (row, col, xf) => [...u16(row), ...u16(col), ...u16(xf)];
+  const f64 = (n) => { const b = new DataView(new ArrayBuffer(8)); b.setFloat64(0, n, true); return [...new Uint8Array(b.buffer)]; };
+  const format = rec(0x041E, new Uint8Array([...u16(164), ...u16(10), 0, ...ascii('dd/mm/yyyy')]));
+  const xf = (fmt) => rec(0x00E0, new Uint8Array([0, 0, ...u16(fmt), ...new Array(16).fill(0)]));
+  // Two strings; the second ("Descrição") breaks off after "Descri" and goes on, 2 bytes a character, in a CONTINUE.
+  const sst = rec(0x00FC, new Uint8Array([...u32(2), ...u32(2), ...u16(4), 0, ...ascii('Data'), ...u16(9), 0, ...ascii('Descri')]));
+  const more = rec(0x003C, new Uint8Array([1, ...[...'ção'].flatMap((c) => u16(c.charCodeAt(0)))]));
+  const sheet = [
+    rec(0x00FD, new Uint8Array([...cell(0, 0, 0), ...u32(0)])),
+    rec(0x00FD, new Uint8Array([...cell(0, 1, 0), ...u32(1)])),
+    rec(0x0203, new Uint8Array([...cell(1, 0, 2), ...f64(46331)])),
+    rec(0x0204, new Uint8Array([...cell(1, 1, 0), ...u16(4), 0, ...ascii('Caf'), 0xE9])),
+    // -12.50 as an RK: the integer -1250, marked as divided by 100.
+    rec(0x027E, new Uint8Array([...cell(1, 3, 0), ...u32(((-1250 << 2) | 0x03) >>> 0)])),
+  ];
+  const rows = readXls(makeXls(sheet, [format, xf(0), xf(0), xf(164), sst, more]));
+  assert.deepEqual(rows, [['Data', 'Descrição'], ['2026-11-05', 'Café', '', '-12.5']]);
+  assert.equal(readXls(new TextEncoder().encode('Date\tAmount')), null);
 });

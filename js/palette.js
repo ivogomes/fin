@@ -34,7 +34,7 @@ export function paletteItems(query) {
     { group: 'Pages', label: 'Scheduled', words: 'recurring bills reminders', run: go({ name: 'scheduled' }) },
     { group: 'Pages', label: 'Subscriptions', words: 'recurring netflix spotify streaming cancel', run: go({ name: 'scheduled', tab: 'subscriptions' }) },
     { group: 'Pages', label: 'Insights: income and spending', words: 'charts categories', run: go({ name: 'insights' }) },
-    { group: 'Pages', label: 'Insights: net worth', words: 'wealth history allocation', run: go({ name: 'insights', tab: 'networth' }) },
+    { group: 'Pages', label: 'Insights: net worth', words: 'wealth history', run: go({ name: 'insights', tab: 'networth' }) },
     { group: 'Pages', label: 'Insights: investments', words: 'portfolio holdings stocks etf return xirr dividends allocation', run: go({ name: 'insights', tab: 'investments' }) },
     { group: 'Pages', label: 'Insights: budgets', words: 'budget monthly limit envelope spending', run: go({ name: 'insights', tab: 'budgets' }) },
     { group: 'Pages', label: 'Insights: goals', words: 'savings target saving for', run: go({ name: 'insights', tab: 'goals' }) },

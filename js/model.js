@@ -700,8 +700,9 @@ export function guessDateFormat(samples) {
   if (parts.some((p) => p[1] > 12)) return 'mdy';
   return 'dmy';
 }
+// Currency signs and codes around the number ("-71,91 EUR", "€ 12,50") are left out first.
 export function guessDecimal(samples) {
-  return samples.some((s) => /\d,\d{1,2}\s*$/.test(String(s).trim())) ? ',' : '.';
+  return samples.some((s) => /\d,\d{1,2}$/.test(String(s).replace(/[^\d.,]/g, ''))) ? ',' : '.';
 }
 
 export const IMPORT_FIELDS = ['date', 'description', 'amount', 'type', 'account', 'category', 'memo', 'currency', 'reference', 'iou'];

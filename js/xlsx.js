@@ -16,9 +16,9 @@ const runsOf = (xml) => [...xml.replace(/<rPh\b[\s\S]*?<\/rPh>/g, '').matchAll(/
 
 // Excel's built-in number formats that show a date: 14–17 and 22 (18–21 are times alone), and a
 // few East Asian date formats.
-const BUILT_IN_DATES = new Set([14, 15, 16, 17, 22, 27, 30, 36, 50, 57]);
+export const BUILT_IN_DATES = new Set([14, 15, 16, 17, 22, 27, 30, 36, 50, 57]);
 // A custom format is a date when it has a day or a year, outside quoted text and [colour] parts.
-const isDateFormat = (code) => /[dy]/i.test(code.replace(/"[^"]*"|\[[^\]]*\]|\\./g, ''));
+export const isDateFormat = (code) => /[dy]/i.test(code.replace(/"[^"]*"|\[[^\]]*\]|\\./g, ''));
 
 // Which cell styles (by index) show dates.
 function dateStyles(stylesXml) {
@@ -38,9 +38,9 @@ function dateStyles(stylesXml) {
 
 // Day number → YYYY-MM-DD. Excel counts from 1899-12-30 (it takes 1900 as a leap year, which only
 // matters before March 1900), or from 1904-01-01 in workbooks made with that setting.
-const serialDate = (n, from1904) => new Date(Date.UTC(1899, 11, 30) + (Math.floor(n) + (from1904 ? 1462 : 0)) * 864e5).toISOString().slice(0, 10);
+export const serialDate = (n, from1904) => new Date(Date.UTC(1899, 11, 30) + (Math.floor(n) + (from1904 ? 1462 : 0)) * 864e5).toISOString().slice(0, 10);
 // 12.300000000000001 → "12.3": the binary float Excel stored, back to what it shows.
-const plainNumber = (n) => String(Number(n.toPrecision(15)));
+export const plainNumber = (n) => String(Number(n.toPrecision(15)));
 
 const columnIndex = (ref) => [...ref.replace(/\d+$/, '')].reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0) - 1;
 
