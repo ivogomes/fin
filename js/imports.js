@@ -3,14 +3,15 @@
 import { today } from './market.js';
 import {
   ACCOUNT_TYPE_LABELS, IMPORT_FIELDS, IOU_TYPES, buxferImport, categoriesOf,
-  categoryPath, convert, detectBuxferFile, frequencyLabel, ftImport, fundMovementsToFt,
+  categoryPath, convert, detectBuxferFile, findHeaderRow, frequencyLabel, ftImport, fundMovementsToFt,
   guessDateFormat, guessDecimal, guessMapping, holdingValue, importRows, isFtExport,
   isFundMovements, lotSummary, newId, normalize, parseCsv, parseStatement, sortedCategories,
   splitsOf, statementAccount, toCsv,
 } from './model.js';
 import { missingTables, persist } from './store.js';
-import { accountValue, byName, refreshRates, render, setView, state, view } from './app.js';
+import { accountValue, byName, refreshRates, render, setView, showToast, state, view } from './app.js';
 import { personName } from './ious.js';
+import { readXlsx } from './xlsx.js';
 import { accountLabel, holdingOf } from './transactions.js';
 import {
   button, catLabel, category, field, h, input, money, say, select, shortDate, signed, tone,
@@ -29,11 +30,29 @@ export const FIELD_LABELS = {
   iou: 'IOU (Buxfer: “Name: 12,50”)',
 };
 
+// Reading a file can fail in ways that leave nothing on screen, so the reason shows as a toast.
+const tell = (message) => { say(message); showToast(message, [], { timeout: 20000 }); };
+
 export async function readImportFile(file) {
-  const text = await readText(file);
-  const statement = parseStatement(text);
+  try {
+    await readImport(file);
+  } catch (err) {
+    tell(`Couldn’t read ${file.name}: ${err.message}`);
+  }
+}
+
+async function readImport(file) {
+  // An Excel workbook (.xlsx): its first sheet, read like a CSV.
+  const sheet = await readXlsx(new Uint8Array(await file.arrayBuffer()));
+  if (!sheet && await isBinaryXls(file)) {
+    tell('That’s an older Excel file (.xls), which Fin can’t read. Open it in Excel or Numbers and save it as .xlsx or CSV.');
+    return;
+  }
+  if (sheet && !sheet.length) { tell(`The first sheet of ${file.name} is empty.`); return; }
+  const text = sheet ? '' : await readText(file);
+  const statement = sheet ? null : parseStatement(text);
   if (statement) {
-    if (!statement.body.length) { say(`That ${statement.format} file has no transactions.`); return; }
+    if (!statement.body.length) { tell(`That ${statement.format} file has no transactions.`); return; }
     const account = statementAccount(state.accounts, statement.accountNumber);
     importDraft = {
       fileName: file.name, header: statement.header, body: statement.body, mapping: statement.mapping,
@@ -44,13 +63,13 @@ export async function readImportFile(file) {
     say(`Read ${statement.body.length} transactions from ${file.name}.${account ? ` They go to ${account.name}.` : ' Choose the account they go to.'}`);
     return;
   }
-  const rows = parseCsv(text);
-  if (rows.length < 2) { say('That file has no rows to import.'); return; }
-  const [header, ...body] = rows;
+  const rows = sheet ?? parseCsv(text);
+  const [header, ...body] = rows.slice(findHeaderRow(rows));
+  if (!body.length) { tell(`${file.name} has no rows to import.`); return; }
   const mapping = guessMapping(header);
   const column = (f) => body.slice(0, 50).map((r) => r[mapping[f]] ?? '');
   importDraft = {
-    fileName: file.name, header, body, mapping,
+    fileName: file.name, header, body, mapping, iouColumn: mapping.iou >= 0,
     dateFormat: mapping.date >= 0 ? guessDateFormat(column('date')) : 'dmy',
     decimal: mapping.amount >= 0 ? guessDecimal(column('amount')) : '.',
     defaultAccountId: view.id ?? state.accounts[0]?.id ?? '',
@@ -219,6 +238,13 @@ export async function readText(file) {
   catch { return new TextDecoder('windows-1252').decode(bytes); }
 }
 
+// The older binary Excel format (.xls) starts with this signature. Some banks' ".xls" is really
+// text (tab-separated, or an HTML table), which reads like a CSV.
+async function isBinaryXls(file) {
+  const head = new Uint8Array(await file.slice(0, 4).arrayBuffer());
+  return [0xD0, 0xCF, 0x11, 0xE0].every((b, i) => head[i] === b);
+}
+
 export async function readFtFile(file) {
   let rows = parseCsv(await readText(file));
   const movements = rows.length > 0 && isFundMovements(rows[0]);
@@ -293,17 +319,18 @@ export function ftSection() {
 export function importSection() {
   const head = h('h3', { id: 'import-h', class: 'fin-label' }, 'Import transactions');
   if (!importDraft) {
-    const file = input({ type: 'file', accept: '.csv,.ofx,.qfx,.xml,.txt,text/csv,application/x-ofx,application/xml,text/xml', 'data-key': 'import-file' });
+    const file = input({ type: 'file', accept: '.csv,.xlsx,.xls,.ofx,.qfx,.xml,.txt,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/x-ofx,application/xml,text/xml', 'data-key': 'import-file' });
     file.addEventListener('change', () => file.files[0] && readImportFile(file.files[0]));
     return h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'import-h' }, head,
-      h('p', { class: 'fin-hint' }, 'A bank statement as OFX or QFX, or as CAMT.053 or CAMT.052 (the XML many European banks export), or any CSV with a date, a description and an amount. For a CSV you choose which column is which. Either way you see a preview before anything is saved.'),
+      h('p', { class: 'fin-hint' }, 'A bank statement as OFX or QFX, or as CAMT.053 or CAMT.052 (the XML many European banks export), or any CSV or Excel (.xlsx) file with a date, a description and an amount. For a CSV or Excel file you choose which column is which. Either way you see a preview before anything is saved.'),
       h('div', { class: 'fin-grid' }, field('Statement or CSV file', file)));
   }
 
   const d = importDraft;
   const update = (key, value, focus) => { d[key] = value; render(focus); };
   const columnOptions = [['-1', 'Not in this file'], ...d.header.map((name, i) => [String(i), name || `Column ${i + 1}`])];
-  const mapSelects = IMPORT_FIELDS.map((f) => {
+  // The IOU column only comes in Buxfer's exports, so it's offered only when the file has one.
+  const mapSelects = IMPORT_FIELDS.filter((f) => f !== 'iou' || d.iouColumn).map((f) => {
     const sel = select(columnOptions, String(d.mapping[f]), { 'data-key': `map-${f}` });
     sel.addEventListener('change', () => update('mapping', { ...d.mapping, [f]: Number(sel.value) }, `map-${f}`));
     return field(`${FIELD_LABELS[f]}${['date', 'description', 'amount'].includes(f) ? ' *' : ''}`, sel);

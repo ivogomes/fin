@@ -1,8 +1,9 @@
 // Holdings of an investment account, and their buys and sells (lots).
 
-import { alphaVantageCovers, today } from './market.js';
+import { alphaVantageCovers, googleTickers, today } from './market.js';
 import { CURRENCIES, holdingHistory, holdingValue, lotGains, lotSummary, newId } from './model.js';
 import { persist } from './store.js';
+import { driveOn } from './backups.js';
 import { byName, loadHistory, priceStatus, priceUpdatedAt, refreshPrices, refreshingPrices, render, setView, state, undoable, view } from './app.js';
 import { priceCell, symbolPicker } from './entry.js';
 import {
@@ -28,6 +29,7 @@ export function openHoldingDialog(x) {
   const units = input({ type: 'number', step: 'any', min: '0', required: true, inputmode: 'decimal', value: String(x.quantity), disabled: hasLots });
   const price = input({ type: 'number', step: 'any', min: '0', inputmode: 'decimal', value: x.price == null ? null : String(x.price) });
   const source = select([['live', 'Live, from market data'], ['manual', 'Entered by hand']], x.manual ? 'manual' : 'live');
+  const google = input({ type: 'text', autocomplete: 'off', spellcheck: 'false', value: x.googleTicker ?? '', placeholder: googleTickers(x.symbol, x.mic)[0].ticker });
   const accounts = state.accounts.filter((a) => a.type === 'investment' && (!a.archived || a.id === x.accountId)).sort(byName);
   const account = select(accounts.map((a) => [a.id, a.name]), x.accountId);
   // Picking another listing fills in its ticker, name, exchange and currency.
@@ -48,7 +50,9 @@ export function openHoldingDialog(x) {
   dialog.replaceChildren(h('form', {
     onsubmit: async (e) => {
       e.preventDefault();
-      const listingChanged = symbol.value.trim().toUpperCase() !== x.symbol || (exchange.value || null) !== (x.mic ?? null);
+      const ownGoogle = google.value.trim().toUpperCase() || undefined;
+      const listingChanged = symbol.value.trim().toUpperCase() !== x.symbol || (exchange.value || null) !== (x.mic ?? null)
+        || ownGoogle !== x.googleTicker;
       Object.assign(x, {
         name: name.value.trim(),
         symbol: symbol.value.trim().toUpperCase(),
@@ -57,6 +61,7 @@ export function openHoldingDialog(x) {
         currency: currency.value.trim().toUpperCase(),
         accountId: account.value,
         manual: source.value === 'manual',
+        googleTicker: ownGoogle,
         ...(hasLots ? {} : { quantity: Number(units.value) }),
       });
       if (price.value !== '' && Number(price.value) !== x.price) {
@@ -78,7 +83,8 @@ export function openHoldingDialog(x) {
       field('Units', units, hasLots ? 'Calculated from its buys and sells. Change those under Lots.' : null),
       field(`Price per unit (${x.currency})`, price),
       field('Price', source, 'Live prices need the API keys in Settings → Market data.'),
-      field('Account', account)),
+      field('Account', account),
+      driveOn() && field('Google Finance ticker', google, 'Only when Google knows it by another ticker, e.g. CSPX:AMS for SXR8. Empty tries the usual ones.')),
     h('div', { class: 'fin-dialog-actions' },
       button('Cancel', close),
       h('button', { type: 'submit', class: 'fin-btn btn-primary' }, 'Save'))));
@@ -429,9 +435,9 @@ export function holdingsSection(account) {
         list.some((x) => !x.manual && x.priceAt) && h('p', { class: 'fin-hint fin-hint-info' }, icon('info'), h('span', {}, 'Prices aren’t live; each shows the day it’s from.')),
         button(refreshingPrices() ? 'Refreshing prices…' : 'Refresh prices', () => refreshPrices(list.filter((x) => !x.manual)), 'secondary',
           { 'data-key': 'refresh-prices', disabled: refreshingPrices(), 'aria-busy': String(refreshingPrices()) }))),
-    list.some((x) => !x.manual && alphaVantageCovers(x.mic)) && !state.settings.avApiKey && h('p', { class: 'fin-notice fin-notice-in' },
+    list.some((x) => !x.manual && alphaVantageCovers(x.mic)) && !state.settings.avApiKey && !driveOn() && h('p', { class: 'fin-notice fin-notice-in' },
       'Non-US listings are priced through Alpha Vantage. Add its free API key in Settings.'),
-    list.some((x) => !x.manual && !alphaVantageCovers(x.mic)) && !state.settings.quoteApiKey && h('p', { class: 'fin-notice fin-notice-in' },
+    list.some((x) => !x.manual && !alphaVantageCovers(x.mic)) && !state.settings.quoteApiKey && !driveOn() && h('p', { class: 'fin-notice fin-notice-in' },
       'US listings are priced through Twelve Data. Add its free API key in Settings.'),
     // Each holding is in the currency it's priced in; say so when that isn't the account's.
     list.some((x) => x.currency !== account.currency) && h('p', { class: 'fin-hint fin-pad-x' },

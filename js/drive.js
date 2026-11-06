@@ -70,7 +70,7 @@ async function call(url, opts = {}, interactive = false) {
   if (res.status === 401) { token = null; throw new Error('Google asked to sign in again.'); }
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new Error(body.error?.message || `Google Drive answered ${res.status}`);
+    throw new Error(body.error?.message || `Google answered ${res.status}`);
   }
   return res.status === 204 ? null : res.json();
 }
@@ -115,6 +115,52 @@ export async function uploadBackup(name, bytes, { interactive = false } = {}) {
   return file;
 }
 
+// ── Google Sheets, for GOOGLEFINANCE ─────────────────────────────────────────
+
+// Google Finance has no API, but a spreadsheet's GOOGLEFINANCE() can be read back through the Sheets
+// API. drive.file covers spreadsheets Fin creates, so this needs no other permission; the Google
+// Cloud project needs the Google Sheets API enabled. One "Fin quotes" spreadsheet, made the first time.
+const SHEETS = 'https://sheets.googleapis.com/v4/spreadsheets';
+const QUOTES_SHEET = 'Fin quotes';
+let quotesSheet = null;
+async function quotesSheetId() {
+  if (quotesSheet) return quotesSheet;
+  const q = encodeURIComponent(`name = '${QUOTES_SHEET}' and mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false`);
+  const found = await call(`${API}/files?q=${q}&fields=files(id)&spaces=drive`);
+  // Formulas are read in the spreadsheet's locale, which follows the Google account's: in many it's
+  // ";" between arguments, not ",". The locale is set to en_US so the formulas below read the same
+  // everywhere, also on a spreadsheet made before this was set.
+  const json = { method: 'POST', headers: { 'Content-Type': 'application/json' } };
+  const id = found.files?.[0]?.id;
+  if (id) {
+    await call(`${SHEETS}/${id}:batchUpdate`, {
+      ...json, body: JSON.stringify({ requests: [{ updateSpreadsheetProperties: { properties: { locale: 'en_US' }, fields: 'locale' } }] }),
+    });
+  }
+  quotesSheet = id ?? (await call(`${SHEETS}?fields=spreadsheetId`, {
+    ...json, body: JSON.stringify({ properties: { title: QUOTES_SHEET, locale: 'en_US' } }),
+  })).spreadsheetId;
+  return quotesSheet;
+}
+
+// Writes `rows` of formulas from A1 and returns what they compute, in the same shape. GOOGLEFINANCE
+// can answer "Loading..." at first, so the cells are read again a few times until they've settled.
+export async function evaluateInSheet(rows) {
+  const id = await quotesSheetId();
+  const width = Math.max(...rows.map((r) => r.length));
+  const range = encodeURIComponent(`A1:${String.fromCharCode(64 + width)}${rows.length}`);
+  await call(`${SHEETS}/${id}/values/${range}?valueInputOption=USER_ENTERED`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ values: rows }),
+  });
+  for (let attempt = 0; ; attempt += 1) {
+    const r = await call(`${SHEETS}/${id}/values/${range}?valueRenderOption=UNFORMATTED_VALUE`);
+    const got = rows.map((row, i) => row.map((_, j) => r.values?.[i]?.[j] ?? null));
+    if (attempt >= 4 || !got.flat().some((v) => /^loading/i.test(String(v)))) return got;
+    await new Promise((resolve) => { setTimeout(resolve, 1000); });
+  }
+}
+
 // Whether Drive can be used without asking: Google keeps the permission per Google account, not per
 // browser, so after signing in with Google (login_hint) it usually answers at once. False when
 // Google would need to show its window; then a click (interactive) is needed.
@@ -134,6 +180,7 @@ export async function disconnect() {
     google?.accounts.oauth2.revoke(token.value, () => {});
   }
   token = null;
+  quotesSheet = null;
 }
 
 // ── Signing in to Fin with Google ────────────────────────────────────────────

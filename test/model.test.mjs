@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { makeZip, readZip, crc32 } from '../js/zip.js';
+import { readXlsx } from '../js/xlsx.js';
 import {
   toMinor, formatMoney, categorize, convert, rateFor, accountBalance, plannedTransactions,
   holdingValue, investmentValue, netWorth, defaultState, withRunningBalance,
   crossConvert, batchRow, makeTransfer,
-  parseCsv, toCsv, parseAmount, parseDate, guessDateFormat, guessDecimal, guessMapping, importRows,
+  parseCsv, toCsv, parseAmount, parseDate, guessDateFormat, guessDecimal, guessMapping, findHeaderRow, importRows,
   parseStatement, statementAccount, spentIn, unbudgeted, monthsBetween, budgetProgress, addMonths, assignedIn, assignedThrough, freezePast, toBudget,
   findTransferPairs, findDuplicates, detectBuxferFile, buxferImport, isFundMovements, fundMovementsToFt,
   categoryPath, categoryResolver, categoriesOf, sortedCategories, searchCategories, assetValue, assetValuations,
@@ -1295,4 +1296,55 @@ test('budgets: envelopes, month by month, carry-over, what is left to budget', (
   assert.equal(toBudget(100000, [{ left: 20000 }, { left: 5000 }]), 75000);
   assert.equal(toBudget(100000, [{ left: -5000 }]), 105000);
   assert.equal(toBudget(10000, [{ left: 30000 }]), -20000);
+});
+
+test('xlsx: the first sheet as rows, with shared and inline strings, dates and numbers', async () => {
+  const workbook = '<workbook xmlns:r="r"><sheets><sheet name="Movimentos" sheetId="1" r:id="rId3"/></sheets></workbook>';
+  const rels = '<Relationships><Relationship Id="rId3" Type="worksheet" Target="worksheets/mov.xml"/></Relationships>';
+  const strings = '<sst><si><t>Conta: 123</t></si><si><t>Data Mov.</t></si><si><t>Descrição</t></si><si><r><t>Mont</t></r><r><t>ante</t></r></si><si><t>Café &amp; Bolo_x000D_</t></si></sst>';
+  // Style 1 is a built-in date (14), style 2 a custom one, style 3 a time alone.
+  const styles = '<styleSheet><numFmts><numFmt numFmtId="164" formatCode="dd\\.mm\\.yyyy"/><numFmt numFmtId="165" formatCode="[h]:mm"/></numFmts>'
+    + '<cellStyleXfs><xf numFmtId="14"/></cellStyleXfs><cellXfs><xf numFmtId="0"/><xf numFmtId="14"/><xf numFmtId="164"/><xf numFmtId="165"/></cellXfs>'
+    // Further down, another list reuses 164 and 165 for other things (as some banks' exports do).
+    + '<dxfs><dxf><numFmt numFmtId="164" formatCode="@"/><numFmt numFmtId="165" formatCode="yyyy"/></dxf></dxfs></styleSheet>';
+  const sheet = '<worksheet><sheetData>'
+    + '<row r="1"><c r="A1" t="s"><v>0</v></c></row>'
+    + '<row r="3"><c r="A3" t="s"><v>1</v></c><c r="B3" t="s"><v>2</v></c><c r="D3" t="s"><v>3</v></c></row>'
+    + '<row r="4"><c r="A4" s="1"><v>46331</v></c><c r="B4" t="s"><v>4</v></c><c r="D4"><v>-12.300000000000001</v></c></row>'
+    + '<row r="5"><c r="A5" s="2"><v>46332.75</v></c><c r="B5" t="inlineStr"><is><t>Salário</t></is></c><c r="C5" s="3"><v>0.5</v></c><c r="D5"><v>1500</v></c></row>'
+    + '</sheetData></worksheet>';
+  const zip = makeZip([
+    { name: 'xl/workbook.xml', data: workbook }, { name: 'xl/_rels/workbook.xml.rels', data: rels },
+    { name: 'xl/sharedStrings.xml', data: strings }, { name: 'xl/styles.xml', data: styles },
+    { name: 'xl/worksheets/mov.xml', data: sheet },
+  ]);
+  const rows = await readXlsx(zip);
+  assert.deepEqual(rows, [
+    ['Conta: 123'],
+    ['Data Mov.', 'Descrição', '', 'Montante'],
+    ['2026-11-05', 'Café & Bolo\r', '', '-12.3'],
+    ['2026-11-06', 'Salário', '0.5', '1500'],
+  ]);
+  assert.equal(await readXlsx(new TextEncoder().encode('Date,Amount\n2026-01-01,1')), null);
+  assert.equal(await readXlsx(makeZip([{ name: 'a.txt', data: 'not a workbook' }])), null);
+});
+
+test('xlsx: namespace-prefixed tags and a workbook found through the package relationships', async () => {
+  const zip = makeZip([
+    { name: '_rels/.rels', data: '<Relationships><Relationship Id="r1" Type="http://x/officeDocument" Target="/book/wb.xml"/></Relationships>' },
+    { name: 'book/wb.xml', data: '<x:workbook xmlns:x="x" xmlns:r="r"><x:sheets><x:sheet name="S" r:id="R9"/></x:sheets></x:workbook>' },
+    { name: 'book/_rels/wb.xml.rels', data: '<Relationships><Relationship Id="R9" Type="http://x/worksheet" Target="sheets/one.xml"/></Relationships>' },
+    { name: 'book/sheets/one.xml', data: '<x:worksheet xmlns:x="x"><x:sheetData><x:row><x:c r="A1" t="inlineStr"><x:is><x:t>Date</x:t></x:is></x:c><x:c r="B1"><x:v>5</x:v></x:c></x:row></x:sheetData></x:worksheet>' },
+  ]);
+  assert.deepEqual(await readXlsx(zip), [['Date', '5']]);
+});
+
+test('findHeaderRow: skips the lines about the account above the column names', () => {
+  assert.equal(findHeaderRow([['Date', 'Description', 'Amount'], ['2026-01-01', 'x', '1']]), 0);
+  assert.equal(findHeaderRow([['Conta: 123'], ['Saldo', '10'], ['Data', 'Descricao', 'Valor'], ['1', '2', '3']]), 2);
+  // Names it doesn't know: the first row about as wide as the rest.
+  assert.equal(findHeaderRow([['Banco X'], [], ['Dia', 'Texto', '', 'Euros'], ['1', 'a', 'b', '3']]), 2);
+  assert.equal(findHeaderRow([]), 0);
+  assert.equal(guessMapping(['Data Lanc.', 'Valor']).date, 0);
+  assert.deepEqual(Object.values(guessMapping(['Data Mov.', 'Data Valor', 'Descrição', 'Montante (EUR)', 'Saldo'])).slice(0, 3), [0, 2, 3]);
 });

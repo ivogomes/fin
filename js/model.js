@@ -708,9 +708,9 @@ export const IMPORT_FIELDS = ['date', 'description', 'amount', 'type', 'account'
 const HEADER_HINTS = {
   reference: /^(id|transaction id|reference|ref|referencia)$/,
   iou: /^(iou|ious)$/,
-  date: /^(date|data|fecha|datum|booking date|transaction date)$/,
+  date: /^(date|data|fecha|datum|booking date|transaction date|data (do )?mov\.?|data (do )?movimento|data (da )?operacao|data (de )?lanc(\.|amento))$/,
   description: /^(description|descricao|payee|name|merchant|details|descritivo)$/,
-  amount: /^(amount|valor|montante|value|quantia|importe|betrag)$/,
+  amount: /^(amount|valor|montante|value|quantia|importe|betrag)( \((eur|usd|€|\$)\))?$/,
   type: /^(type|tipo)$/,
   account: /^(account|conta|account name)$/,
   category: /^(category|categoria|tags|tag)$/,
@@ -722,6 +722,19 @@ const HEADER_HINTS = {
 export function guessMapping(header) {
   const names = header.map((h) => normalize(h));
   return Object.fromEntries(IMPORT_FIELDS.map((f) => [f, names.findIndex((n) => HEADER_HINTS[f].test(n))]));
+}
+
+// Where the column names are: bank exports (spreadsheets especially) often start with a few lines
+// about the account before them. The first row naming two of date, description and amount; failing
+// that, the first row about as wide as the widest of the first 30 (the lines above are narrower; one
+// cell short, as a header may leave a column unnamed).
+export function findHeaderRow(rows) {
+  const top = rows.slice(0, 30);
+  const named = top.findIndex((r) => ['date', 'description', 'amount'].filter((f) => guessMapping(r)[f] >= 0).length >= 2);
+  if (named >= 0) return named;
+  const width = (r) => r.filter((c) => String(c).trim() !== '').length;
+  const widest = Math.max(0, ...top.map(width));
+  return Math.max(0, top.findIndex((r) => width(r) >= widest - 1));
 }
 
 // ── Bank statements (OFX, CAMT) ──────────────────────────────────────────────

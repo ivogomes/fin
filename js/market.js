@@ -1,6 +1,7 @@
 // Market data. FX comes from Frankfurter (ECB reference rates, free, no key, CORS-enabled).
 // Stock and ETF quotes come from Twelve Data, which needs a free API key set in Settings: Yahoo and
 // most other free quote feeds block browser requests, so there is no key-less option from a static page.
+// With Google Drive connected, Google Finance (through a spreadsheet) prices what those can't.
 
 import { BASE } from './model.js';
 
@@ -112,6 +113,57 @@ export async function fetchQuote(symbol, apiKey, mic) {
   const data = await res.json();
   if (data.status === 'error' || !data.close) throw new Error(data.message || `No quote for ${symbol}`);
   return { name: data.name, currency: data.currency, price: Number(data.close), date: data.datetime?.slice(0, 10) || null };
+}
+
+// Google Finance, alongside the providers above: GOOGLEFINANCE() in a spreadsheet of the user's
+// (drive.js evaluateInSheet, passed in as `evaluate`). Current prices only, as Google doesn't let
+// history be read this way. The prefixes below are Google's codes for each MIC; an unknown MIC
+// leaves the ticker bare (fine for US ones).
+const GOOGLE_PREFIX = {
+  XNAS: 'NASDAQ', XNYS: 'NYSE', ARCX: 'NYSEARCA', XASE: 'NYSEAMERICAN', BATS: 'BATS',
+  XETR: 'ETR', XFRA: 'FRA', XLON: 'LON', XPAR: 'EPA', XAMS: 'AMS', XBRU: 'EBR', XLIS: 'ELI',
+  XMIL: 'BIT', XMAD: 'BME', XSWX: 'SWX', XWBO: 'VIE', XSTO: 'STO', XCSE: 'CPH', XHEL: 'HEL',
+  XOSL: 'OSL', XTSE: 'TSE', XTSX: 'CVE', XASX: 'ASX', XHKG: 'HKG', XTKS: 'TYO',
+};
+// Google no longer prices many European ETFs in a spreadsheet on some exchanges (Xetra, Milan) but
+// does on others (VWCE:AMS works where ETR:VWCE doesn't). A listing on one of these is also tried on
+// the others, in this order, and taken only when it trades in the holding's currency.
+const EURO_EXCHANGES = ['AMS', 'EPA', 'ETR', 'FRA', 'BIT', 'EBR', 'ELI', 'BME', 'VIE'];
+
+// The tickers to try for a listing, best first: the one set on the holding (`own`: Google sometimes
+// knows a fund by another ticker, SXR8 on Xetra as CSPX:AMS), its own exchange (Google takes
+// EXCHANGE:TICKER and, for some listings, only TICKER:EXCHANGE), then the same ticker on the other
+// euro exchanges.
+export function googleTickers(symbol, mic, own) {
+  if (own) return [{ ticker: own, home: true }];
+  const home = GOOGLE_PREFIX[mic];
+  if (!home) return [{ ticker: symbol, home: true }];
+  const both = (p) => [`${p}:${symbol}`, `${symbol}:${p}`];
+  const others = EURO_EXCHANGES.includes(home) ? EURO_EXCHANGES.filter((p) => p !== home) : [];
+  return [...both(home).map((ticker) => ({ ticker, home: true })), ...others.flatMap(both).map((ticker) => ({ ticker, home: false }))];
+}
+
+// Returns { currency, price, date, ticker }: `ticker` is the one Google answered for. London listings
+// come in pence (GBX), turned into pounds here. `currency` is the holding's, for other exchanges;
+// `own` the holding's own Google ticker, if set.
+export async function fetchQuoteGoogle(symbol, mic, currency, evaluate, own) {
+  const candidates = googleTickers(symbol, mic, own);
+  const rows = await evaluate(candidates.map(({ ticker }) => {
+    const t = JSON.stringify(ticker);
+    return [`=GOOGLEFINANCE(${t},"price")`, `=GOOGLEFINANCE(${t},"currency")`, `=TEXT(GOOGLEFINANCE(${t},"tradetime"),"yyyy-mm-dd")`];
+  }));
+  const quotes = rows.map(([price, cur, date], i) => {
+    const pence = cur === 'GBX';
+    return {
+      ...candidates[i],
+      price: pence ? Number(price) / 100 : Number(price),
+      currency: pence ? 'GBP' : (/^[A-Z]{3}$/.test(cur) ? cur : undefined),
+      date: /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : null,
+    };
+  });
+  const q = quotes.find((x) => x.price > 0 && (x.home || (currency && x.currency === currency)));
+  if (!q) throw new Error(`Google Finance has no price for ${candidates[0].ticker}`);
+  return { price: q.price, currency: q.currency, date: q.date, ticker: q.ticker };
 }
 
 // Funds (named by ISIN) come from EODHD, through the database's fund_data function (schema.sql),

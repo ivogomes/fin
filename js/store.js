@@ -62,12 +62,13 @@ const TABLES = {
       id: x.id, account_id: x.accountId, symbol: x.symbol, mic: x.mic ?? null, exchange: x.exchange ?? null,
       name: x.name ?? null, currency: x.currency, quantity: x.quantity, price: x.price ?? null,
       price_at: x.priceAt ?? null, manual: Boolean(x.manual), price_error: x.priceError ?? null, source: x.source ?? null,
-      price_history: x.priceHistory ?? null, price_date: x.priceDate ?? null,
+      price_history: x.priceHistory ?? null, price_date: x.priceDate ?? null, google_ticker: x.googleTicker || null,
     }),
     from: (r) => ({
       id: r.id, accountId: r.account_id, symbol: r.symbol, mic: r.mic, exchange: r.exchange, name: r.name,
       currency: r.currency, quantity: r.quantity, price: r.price, priceAt: r.price_at, manual: r.manual,
       priceError: r.price_error ?? undefined, source: r.source, priceHistory: r.price_history ?? undefined, priceDate: r.price_date ?? undefined,
+      googleTicker: r.google_ticker ?? undefined,
     }),
   },
   schedules: {
@@ -164,7 +165,7 @@ export const missingTables = () => [...missing];
 // app, which asks for schema.sql to be run again.
 const NEW_COLUMNS = {
   accounts: ['credit_limit', 'card_network', 'statement_day', 'due_day', 'pay_from', 'low_balance', 'is_main', 'interest_rate',
-    'interest_every', 'interest_tax', 'investment_kind', 'opened_on', 'closed_on', 'institution', 'last_four', 'exclude_totals', 'loan_payments', 'loan_first', 'loan_changes'], categories: ['parent_id'], transactions: ['category_ids', 'kind', 'splits', 'holding_id'], settings: ['fx', 'last_backup_at', 'backup_every', 'eodhd_api_key', 'hidden_suggestions'], holdings: ['price_history', 'price_date'], schedules: ['subscription', 'category_ids'], assets: ['loan_id'], budgets: ['assigned'] };
+    'interest_every', 'interest_tax', 'investment_kind', 'opened_on', 'closed_on', 'institution', 'last_four', 'exclude_totals', 'loan_payments', 'loan_first', 'loan_changes'], categories: ['parent_id'], transactions: ['category_ids', 'kind', 'splits', 'holding_id'], settings: ['fx', 'last_backup_at', 'backup_every', 'eodhd_api_key', 'hidden_suggestions'], holdings: ['price_history', 'price_date', 'google_ticker'], schedules: ['subscription', 'category_ids'], assets: ['loan_id'], budgets: ['assigned'] };
 let schemaOutdated = false;
 export const needsSchemaUpdate = () => schemaOutdated || missing.size > 0;
 // A database function the app calls doesn't take its arguments yet (schema.sql not run again).

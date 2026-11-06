@@ -3,9 +3,9 @@ import {
   signInWithGoogle, signOut,
 } from './cloud.js';
 import { renderAssets } from './assets.js';
-import { driveConfigured, renderGoogleButton } from './drive.js';
+import { driveConfigured, evaluateInSheet, renderGoogleButton } from './drive.js';
 import {
-  FUND_MIC, alphaVantageCovers, fetchHistory, fetchQuote, fetchQuoteAV, fetchRate, fetchRateRange,
+  FUND_MIC, alphaVantageCovers, fetchHistory, fetchQuote, fetchQuoteAV, fetchQuoteGoogle, fetchRate, fetchRateRange,
   fundHistory, fundQuote, today,
 } from './market.js';
 import { ACCOUNT_TYPES, ACCOUNT_TYPE_LABELS, convert, investmentValueFrom, newId, rateFor } from './model.js';
@@ -203,6 +203,15 @@ export const priceStatus = new Map();
 export const priceUpdatedAt = new Map();
 export const refreshingPrices = () => [...priceStatus.values()].some((s) => s === 'waiting' || s === 'loading');
 
+// A holding's price from Google Finance, in the holding's currency: a ticker set on the holding may
+// trade in another (CSPX:AMS is in USD where SXR8 is in EUR), converted at today's rate.
+async function googleQuote(x) {
+  const q = await fetchQuoteGoogle(x.symbol, x.mic, x.currency, evaluateInSheet, x.googleTicker);
+  if (!q.currency || !x.currency || q.currency === x.currency) return q;
+  const [from, to] = await Promise.all([fetchRate(q.currency), fetchRate(x.currency)]);
+  return { ...q, price: (q.price * from) / to, currency: x.currency, ticker: `${q.ticker}, from ${q.currency}` };
+}
+
 export async function refreshPrices(only, { quiet = false } = {}) {
   const targets = (only ?? state.holdings).filter((x) => !['waiting', 'loading'].includes(priceStatus.get(x.id)));
   if (!targets.length) return;
@@ -215,15 +224,26 @@ export async function refreshPrices(only, { quiet = false } = {}) {
     mark(x, 'loading');
     try {
       // Funds go to EODHD (through the database); non-US listings to Alpha Vantage when a key is
-      // set; everything else to Twelve Data.
+      // set; everything else to Twelve Data. With Google Drive connected, Google Finance is asked
+      // too, and the price from the later trading day wins (on the same day, the provider above).
       const viaAV = alphaVantageCovers(x.mic) && state.settings.avApiKey;
       const fund = x.mic === FUND_MIC;
-      const q = fund ? await fundQuote(x.symbol, fundCall)
-        : viaAV ? await fetchQuoteAV(x.symbol, x.mic, state.settings.avApiKey)
-          : await fetchQuote(x.symbol, state.settings.quoteApiKey, x.mic);
+      const [main, google] = await Promise.allSettled([
+        fund ? fundQuote(x.symbol, fundCall)
+          : viaAV ? fetchQuoteAV(x.symbol, x.mic, state.settings.avApiKey)
+            : fetchQuote(x.symbol, state.settings.quoteApiKey, x.mic),
+        !fund && driveOn() ? googleQuote(x) : Promise.reject(null),
+      ]);
+      const useGoogle = google.status === 'fulfilled'
+        && (main.status === 'rejected' || (google.value.date ?? '') > (main.value.date ?? ''));
+      if (!useGoogle && main.status === 'rejected') {
+        throw new Error([main.reason.message, google.reason?.message].filter(Boolean).join('; '));
+      }
+      const q = useGoogle ? google.value : main.value;
+      const source = useGoogle ? `Google Finance (${google.value.ticker})` : fund ? 'EODHD' : viaAV ? 'Alpha Vantage' : 'Twelve Data';
       Object.assign(x, {
         price: q.price, name: x.name ?? q.name, currency: q.currency ?? x.currency,
-        source: fund ? 'EODHD' : viaAV ? 'Alpha Vantage' : 'Twelve Data', priceAt: new Date().toISOString(), priceDate: q.date,
+        source, priceAt: new Date().toISOString(), priceDate: q.date,
       });
       delete x.priceError;
       priceUpdatedAt.set(x.id, Date.now());
@@ -270,7 +290,7 @@ export async function loadHistory(list) {
 }
 
 export function stalePrices() {
-  const priced = (x) => (x.mic === FUND_MIC ? Boolean(state.settings.eodhdApiKey) : Boolean(state.settings.quoteApiKey || state.settings.avApiKey));
+  const priced = (x) => (x.mic === FUND_MIC ? Boolean(state.settings.eodhdApiKey) : Boolean(state.settings.quoteApiKey || state.settings.avApiKey || driveOn()));
   return state.holdings.filter((x) => !x.manual && priced(x) && (!x.priceAt || x.priceAt.slice(0, 10) !== today() || x.priceError));
 }
 // Runs the database's fund_data (EODHD for funds; see market.js).

@@ -203,6 +203,8 @@ alter table holdings add column if not exists price_history jsonb;
 alter table budgets add column if not exists assigned jsonb not null default '{}';
 -- The trading day a fetched price is from (price_at is when it was fetched).
 alter table holdings add column if not exists price_date date;
+-- The ticker Google Finance knows a holding by, when it isn't the usual one (SXR8 on Xetra is CSPX:AMS there).
+alter table holdings add column if not exists google_ticker text;
 -- Backups: when one was last downloaded, and how many days between reminders (0 = none).
 -- Credit cards: the credit limit (cents, in the account's currency), to show what's left.
 alter table accounts add column if not exists credit_limit bigint;
