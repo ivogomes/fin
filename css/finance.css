@@ -344,6 +344,11 @@ body {
   color: var(--tint-ink);
 }
 .fin-group-icon .fin-icon { width: 16px; height: 16px; }
+/* The account page's title, after its type's icon (or a card's network mark). */
+.fin-account-title { display: flex; align-items: center; gap: 12px; overflow-wrap: anywhere; }
+.fin-account-title .fin-card-mark--title { flex: none; margin-right: 0; }
+.fin-group-icon--title { width: 36px; height: 36px; border-radius: 10px; }
+.fin-group-icon--title .fin-icon { width: 20px; height: 20px; }
 .fin-group-label { flex: 1 1 auto; min-width: 0; }
 .fin-group-head .fin-num { font-size: 13px; font-weight: 600; color: var(--f-text); }
 .fin-group-head .fin-num.fin-neg { color: var(--f-neg); }
@@ -1261,6 +1266,7 @@ a.fin-break-link:focus-visible { outline: none; box-shadow: var(--f-ring); borde
 }
 .fin-bulk strong { margin-right: 4px; color: var(--f-accent-strong); }
 .fin-bulk .fin-input-sm { max-width: 13rem; }
+.fin-bulk-rename { display: flex; align-items: center; gap: 6px; }
 
 /* ── Messages with actions (Undo, rule offers) ────────── */
 .fin-toast {
@@ -1426,6 +1432,18 @@ a.fin-break-link:focus-visible { outline: none; box-shadow: var(--f-ring); borde
   position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
 }
 .fin-settings-page > .fin-card { margin-top: 20px; }
+/* A list with its "add" form (categories, rules): the form on top, or on the right of the list
+   where both fit, staying in view while the list scrolls. */
+.fin-manage { container-type: inline-size; margin-top: 20px; }
+.fin-manage-grid > .fin-card { margin-top: 0; } /* the wrapper has the space above */
+.fin-manage-grid > .fin-card + .fin-card { margin-top: 20px; }
+.fin-manage-add .fin-grid { margin-bottom: 14px; }
+@container (min-width: 50rem) {
+  .fin-manage-grid { display: grid; grid-template-columns: minmax(0, 1fr) 19rem; gap: 20px; align-items: start; }
+  .fin-manage-grid > .fin-card + .fin-card { margin-top: 0; }
+  .fin-manage-add { grid-column: 2; grid-row: 1; position: sticky; top: 80px; } /* below the sticky tool header (64px) */
+  .fin-manage-add .fin-grid { grid-template-columns: 1fr; }
+}
 
 .fin-rules { margin: 0 0 18px; padding-left: 22px; }
 .fin-rules li { padding: 8px 0; border-bottom: 1px solid var(--f-border); }

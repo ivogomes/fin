@@ -8,12 +8,12 @@ import {
   isFundMovements, lotSummary, newId, normalize, parseCsv, parseStatement, sortedCategories,
   splitsOf, statementAccount, toCsv,
 } from './model.js';
-import { missingTables, persist } from './store.js';
+import { missingTables, persist, transactionsComplete } from './store.js';
 import { accountValue, byName, refreshRates, render, setView, showToast, state, view } from './app.js';
 import { personName } from './ious.js';
 import { isXls, readXls } from './xls.js';
 import { readXlsx } from './xlsx.js';
-import { accountLabel, holdingOf } from './transactions.js';
+import { accountLabel, holdingOf, needEverything } from './transactions.js';
 import {
   button, catLabel, category, field, h, input, money, say, select, shortDate, signed, tone,
 } from './ui.js';
@@ -34,13 +34,29 @@ export const FIELD_LABELS = {
 // Reading a file can fail in ways that leave nothing on screen, so the reason shows as a toast.
 const tell = (message) => { say(message); showToast(message, [], { timeout: 20000 }); };
 
-export async function readImportFile(file) {
+// The files the transaction import takes.
+export const IMPORT_ACCEPT = '.csv,.xlsx,.xls,.ofx,.qfx,.xml,.txt,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/x-ofx,application/xml,text/xml';
+
+// `accountId`: imported from that account's page, so its rows go there (unless a CSV row names
+// another account), and the preview shows on that page (accountImport) rather than in Settings:
+// going to another section loads a new page, which would lose the file just read.
+export async function readImportFile(file, { accountId = null } = {}) {
   try {
-    await readImport(file);
+    await readImport(file, accountId);
   } catch (err) {
     tell(`Couldn’t read ${file.name}: ${err.message}`);
+    return;
+  }
+  if (accountId && importDraft) {
+    importDraft.returnTo = accountId;
+    render(importDraft.statement ? 'imp-acc' : 'map-date');
   }
 }
+
+// The import's preview on the account page it was started from. Like Settings → Import, it needs
+// every transaction loaded, to leave out ones already there.
+export const accountImport = (account) => importDraft?.returnTo === account.id
+  && (transactionsComplete() ? importSection() : needEverything());
 
 // An Excel workbook's first sheet as rows, like a CSV's: .xlsx, or the older binary .xls. Null for
 // anything else (some banks' ".xls" is really text, tab-separated or UTF-16, read as a CSV).
@@ -49,7 +65,7 @@ export async function readSheet(file) {
   return isXls(bytes) ? readXls(bytes) : readXlsx(bytes);
 }
 
-async function readImport(file) {
+async function readImport(file, accountId) {
   const sheet = await readSheet(file);
   if (sheet && !sheet.length) { tell(`The first sheet of ${file.name} is empty.`); return; }
   const text = sheet ? '' : await readText(file);
@@ -60,7 +76,7 @@ async function readImport(file) {
     importDraft = {
       fileName: file.name, header: statement.header, body: statement.body, mapping: statement.mapping,
       dateFormat: 'ymd', decimal: '.', statement,
-      defaultAccountId: account?.id ?? (view.name === 'account' ? view.id : null) ?? state.accounts[0]?.id ?? '',
+      defaultAccountId: accountId ?? account?.id ?? (view.name === 'account' ? view.id : null) ?? state.accounts[0]?.id ?? '',
     };
     render('imp-acc');
     say(`Read ${statement.body.length} transactions from ${file.name}.${account ? ` They go to ${account.name}.` : ' Choose the account they go to.'}`);
@@ -76,7 +92,7 @@ async function readImport(file) {
     fileName: file.name, header, body, mapping, iouColumn: mapping.iou >= 0,
     dateFormat: mapping.date >= 0 ? guessDateFormat(column('date')) : 'dmy',
     decimal: mapping.amount >= 0 ? guessDecimal(column('amount')) : '.',
-    defaultAccountId: view.id ?? state.accounts[0]?.id ?? '',
+    defaultAccountId: accountId ?? view.id ?? state.accounts[0]?.id ?? '',
   };
   render('map-date');
   say(`Read ${body.length} rows from ${file.name}. Check the columns, then import.`);
@@ -316,7 +332,7 @@ export function ftSection() {
 export function importSection() {
   const head = h('h3', { id: 'import-h', class: 'fin-label' }, 'Import transactions');
   if (!importDraft) {
-    const file = input({ type: 'file', accept: '.csv,.xlsx,.xls,.ofx,.qfx,.xml,.txt,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/x-ofx,application/xml,text/xml', 'data-key': 'import-file' });
+    const file = input({ type: 'file', accept: IMPORT_ACCEPT, 'data-key': 'import-file' });
     file.addEventListener('change', () => file.files[0] && readImportFile(file.files[0]));
     return h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'import-h' }, head,
       h('p', { class: 'fin-hint' }, 'A bank statement as OFX or QFX, or as CAMT.053 or CAMT.052 (the XML many European banks export), or any CSV or Excel (.xlsx or .xls) file with a date, a description and an amount. For a CSV or Excel file you choose which column is which. Either way you see a preview before anything is saved.'),
@@ -399,11 +415,12 @@ export function importSection() {
         state.people.push(...res.newPeople);
         state.ious.push(...res.ious);
         importDraft = null;
-        persist(); render('import-file');
+        persist(); render(d.returnTo ? 'tx-import' : 'import-file');
         say(`Imported ${res.transactions.length} transactions.`);
         await refreshRates(); // prices USD rows at their own dates
       }, 'primary', { disabled: !preview?.transactions.length }),
-      button('Choose another file', () => { importDraft = null; render('import-file'); })));
+      button('Choose another file', () => { importDraft = null; render('import-file'); }),
+      d.returnTo && button('Cancel', () => { importDraft = null; render('tx-import'); })));
 }
 
 export function download(name, rows) {

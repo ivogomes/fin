@@ -95,26 +95,43 @@ export function accountSection() {
     h('div', { class: 'fin-actions fin-mt' }, button('Sign out', () => signOutNow(), 'secondary', { 'data-key': 'sign-out' })));
 }
 
+export let editingRuleId = null; // the rule being edited in its row
+
 export function rulesSection() {
   const pattern = input({ type: 'text', required: true, autocomplete: 'off', 'data-key': 'rule-add' });
   const match = select([['contains', 'contains'], ['starts', 'starts with'], ['equals', 'is exactly']], 'contains');
   const ruleCat = select(catOptions(), sortedCategories(state.categories)[0]?.id);
-  const matchLabel = { contains: 'contains', starts: 'starts with', equals: 'is exactly' };
+  const MATCHES = [['contains', 'contains'], ['starts', 'starts with'], ['equals', 'is exactly']];
+  const matchLabel = Object.fromEntries(MATCHES);
   const move = (i, d) => {
     const j = i + d;
     if (j < 0 || j >= state.rules.length) return;
     [state.rules[i], state.rules[j]] = [state.rules[j], state.rules[i]];
     persist(); render();
   };
-  return h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'settings-h' },
-    h('p', { class: 'fin-hint' }, 'Checked top to bottom. The first rule that matches the description sets the category. Case and accents are ignored.'),
-    state.rules.length === 0 ? h('p', { class: 'fin-empty' }, 'No rules yet.') :
-      h('ol', { class: 'fin-rules' }, state.rules.map((r, i) => h('li', {},
-        h('span', {}, `If description ${matchLabel[r.match]} `, h('strong', {}, `“${r.pattern}”`), ' → ', catLabel(r.categoryId) || 'Unknown'),
-        h('span', { class: 'fin-actions' },
-          button('↑', () => move(i, -1), 'secondary fin-btn-sm', { 'aria-label': `Move rule ${r.pattern} up`, disabled: i === 0 }),
-          button('↓', () => move(i, 1), 'secondary fin-btn-sm', { 'aria-label': `Move rule ${r.pattern} down`, disabled: i === state.rules.length - 1 }),
-          button('Delete', () => { state.rules = state.rules.filter((x) => x.id !== r.id); persist(); render('rule-add'); }, 'danger fin-btn-sm', { 'aria-label': `Delete rule ${r.pattern}` }))))),
+  // A rule's row as a form, like a category's: Save, or Cancel (also Escape).
+  const editRow = (r) => {
+    const how = select(MATCHES, r.match, { 'data-key': 'rule-edit-match' });
+    const text = input({ type: 'text', required: true, autocomplete: 'off', value: r.pattern, 'data-key': 'rule-edit-text' });
+    const cat = select(catOptions(), r.categoryId);
+    const cancel = () => { editingRuleId = null; render(`rule-edit-${r.id}`); };
+    return h('li', { class: 'fin-cat-editing' }, h('form', {
+      class: 'fin-cat-form',
+      onkeydown: (e) => { if (e.key === 'Escape') { e.preventDefault(); cancel(); } },
+      onsubmit: (e) => {
+        e.preventDefault();
+        Object.assign(r, { match: how.value, pattern: text.value.trim(), categoryId: cat.value });
+        editingRuleId = null;
+        persist(); render(`rule-edit-${r.id}`); say('Rule saved.');
+      },
+    },
+      field('Description', how), field('Text', text), field('Category', cat),
+      h('div', { class: 'fin-actions' },
+        h('button', { type: 'submit', class: 'fin-btn btn-primary fin-btn-sm' }, 'Save'),
+        button('Cancel', cancel, 'secondary fin-btn-sm'))));
+  };
+  const addForm = h('section', { class: 'fin-card fin-pad fin-manage-add', 'aria-labelledby': 'rule-add-h' },
+    h('h3', { id: 'rule-add-h', class: 'fin-label' }, 'New rule'),
     h('form', {
       onsubmit: (e) => {
         e.preventDefault();
@@ -123,18 +140,33 @@ export function rulesSection() {
       },
     },
       h('div', { class: 'fin-grid' }, field('Description', match), field('Text', pattern), field('Category', ruleCat)),
-      h('div', { class: 'fin-actions' },
-        h('button', { type: 'submit', class: 'fin-btn btn-primary' }, 'Add rule'),
-        button('Re-apply to uncategorized', () => {
-          let n = 0;
-          for (const t of state.transactions) {
-            if (t.transferId || categoriesOf(t).length) continue;
-            const id = categorize(t.description, state.rules);
-            if (id) { t.categoryIds = [id]; n += 1; }
-          }
-          persist(); render(); say(`Categorized ${n} transaction(s).`);
-        }))));
+      h('button', { type: 'submit', class: 'fin-btn btn-primary' }, 'Add rule')));
+  return manageLayout(addForm, h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'rules-h' },
+    h('h3', { id: 'rules-h', class: 'fin-label' }, `Rules (${state.rules.length})`),
+    h('p', { class: 'fin-hint' }, 'Checked top to bottom. The first rule that matches the description sets the category. Case and accents are ignored.'),
+    state.rules.length === 0 ? h('p', { class: 'fin-empty' }, 'No rules yet.') :
+      h('ol', { class: 'fin-rules' }, state.rules.map((r, i) => (editingRuleId === r.id ? editRow(r) : h('li', {},
+        h('span', {}, `If description ${matchLabel[r.match]} `, h('strong', {}, `“${r.pattern}”`), ' → ', catLabel(r.categoryId) || 'Unknown'),
+        h('span', { class: 'fin-actions' },
+          button('Edit', () => { editingRuleId = r.id; render('rule-edit-text'); }, 'secondary fin-btn-sm',
+            { 'aria-label': `Edit rule ${r.pattern}`, 'data-key': `rule-edit-${r.id}` }),
+          button('↑', () => move(i, -1), 'secondary fin-btn-sm', { 'aria-label': `Move rule ${r.pattern} up`, disabled: i === 0 }),
+          button('↓', () => move(i, 1), 'secondary fin-btn-sm', { 'aria-label': `Move rule ${r.pattern} down`, disabled: i === state.rules.length - 1 }),
+          button('Delete', () => { state.rules = state.rules.filter((x) => x.id !== r.id); persist(); render('rule-add'); }, 'danger fin-btn-sm', { 'aria-label': `Delete rule ${r.pattern}` })))))),
+    button('Re-apply to uncategorized', () => {
+      let n = 0;
+      for (const t of state.transactions) {
+        if (t.transferId || categoriesOf(t).length) continue;
+        const id = categorize(t.description, state.rules);
+        if (id) { t.categoryIds = [id]; n += 1; }
+      }
+      persist(); render(); say(`Categorized ${n} transaction(s).`);
+    })));
 }
+
+// A list with its "add" form: the form first (on top), and beside the list, on its right, where
+// there's room for both.
+const manageLayout = (form, list) => h('div', { class: 'fin-manage' }, h('div', { class: 'fin-manage-grid' }, form, list));
 
 export function marketSection() {
   const key = input({ type: 'password', autocomplete: 'off', value: state.settings.quoteApiKey });
@@ -406,13 +438,9 @@ export function categoriesSection() {
 
   const newName = input({ type: 'text', required: true, autocomplete: 'off', 'data-key': 'cat-add' });
   const newParent = select(topOptions(), '');
-  return h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'cats-h' },
-    h('h3', { id: 'cats-h', class: 'fin-label' }, `Categories (${state.categories.length})`),
-    h('p', { class: 'fin-hint' }, 'A category can sit under another, one level deep, and is shown as “Parent / Child”. A transaction can have several. The number is how many transactions use it.'),
-    h('ul', { class: 'fin-cat-tree' }, tops.map((p) => h('li', {},
-      h('ul', { class: 'fin-cat-family' }, row(p), childrenOf(p.id).sort((a, b) => a.name.localeCompare(b.name)).map(row))))),
+  const addForm = h('section', { class: 'fin-card fin-pad fin-manage-add', 'aria-labelledby': 'cat-add-h' },
+    h('h3', { id: 'cat-add-h', class: 'fin-label' }, 'New category'),
     h('form', {
-      class: 'fin-mt',
       onsubmit: (e) => {
         e.preventDefault();
         const parentId = newParent.value || null;
@@ -423,6 +451,11 @@ export function categoriesSection() {
         persist(); render('cat-add'); say(`Added ${catLabel(cat.id)}.`);
       },
     },
-      h('div', { class: 'fin-grid' }, field('New category', newName), field('Under', newParent)),
+      h('div', { class: 'fin-grid' }, field('Name', newName), field('Under', newParent)),
       h('button', { type: 'submit', class: 'fin-btn btn-primary' }, 'Add category')));
+  return manageLayout(addForm, h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'cats-h' },
+    h('h3', { id: 'cats-h', class: 'fin-label' }, `Categories (${state.categories.length})`),
+    h('p', { class: 'fin-hint' }, 'A category can sit under another, one level deep, and is shown as “Parent / Child”. A transaction can have several. The number is how many transactions use it.'),
+    h('ul', { class: 'fin-cat-tree' }, tops.map((p) => h('li', {},
+      h('ul', { class: 'fin-cat-family' }, row(p), childrenOf(p.id).sort((a, b) => a.name.localeCompare(b.name)).map(row)))))));
 }

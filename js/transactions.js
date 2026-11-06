@@ -19,6 +19,7 @@ import {
   totalsOf, txPage, undoable, view,
 } from './app.js';
 import { comboField, descriptionCombo, floatingList, openTxDialog } from './entry.js';
+import { IMPORT_ACCEPT, readImportFile } from './imports.js';
 import { inEur } from './insights.js';
 import { personName } from './ious.js';
 import { pageLink } from './overview.js';
@@ -26,7 +27,7 @@ import { FORECAST_DAYS, daysFromToday, openScheduleDialog, subscriptionChip, upc
 import {
   button, catLabel, catOptions, category, field, h, hueOf, icon, iconButton, input, latestRate,
   flag, isPhone, loader, money, monthLabel, num, say, select, shortDate, signed, status, tone,
-  typeSwitch,
+  TX_TYPES, typeSwitch,
 } from './ui.js';
 
 // ── learning rules from manual categories ────────────────────────────────────
@@ -282,6 +283,41 @@ export function bulkBar(pageRows) {
       for (const t of categorizable) if (!splitsOf(t) && !categoriesOf(t).includes(id)) t.categoryIds = [...categoriesOf(t), id];
     });
   } });
+  // A new description for them all, with earlier ones suggested (to merge spellings of one payee).
+  const renameCombo = descriptionCombo(descIndex, {
+    label: 'Rename the selected transactions', accountOf: () => null,
+    onAccept: (e) => { renameCombo.box.value = e.description; },
+  });
+  renameCombo.box.classList.add('fin-input-sm');
+  renameCombo.box.placeholder = 'Rename to…';
+  renameCombo.box.dataset.key = 'bulk-rename';
+  const rename = h('form', { class: 'fin-bulk-rename', onsubmit: (e) => {
+    e.preventDefault();
+    const to = renameCombo.box.value.trim();
+    if (!to) return;
+    undoable(`${picked.length} transaction${picked.length === 1 ? '' : 's'} renamed to “${to}”.`, ['transactions'], () => {
+      for (const t of picked) t.description = to;
+    });
+  } }, renameCombo.el, h('button', { type: 'submit', class: 'fin-btn secondary fin-btn-sm' }, 'Rename'));
+  // A new type, as in the edit form: the amount (and a split's parts) take its sign. Transfers and
+  // opening balances are left as they are; a dividend set here has no holding (the edit form adds one).
+  const retypable = categorizable.filter((t) => t.kind !== 'opening');
+  const setType = select([['', 'Set type…'], ...['expense', 'income', 'refund', 'dividend'].map((k) => [k, TX_TYPES[k][1]])], '', {
+    class: 'fin-input fin-input-sm', 'aria-label': 'Set the type of the selected transactions', 'data-key': 'bulk-type',
+    onchange: (e) => {
+      const kind = e.target.value;
+      if (!kind) return;
+      const sign = kind === 'expense' ? -1 : 1;
+      undoable(`${retypable.length} transaction${retypable.length === 1 ? '' : 's'} set to ${TX_TYPES[kind][1].toLowerCase()}.`, ['transactions'], () => {
+        for (const t of retypable) {
+          t.amount = Math.abs(t.amount) * sign;
+          if (t.splits) t.splits = t.splits.map((p) => ({ ...p, amount: Math.abs(p.amount) * sign }));
+          t.kind = kind === 'refund' || kind === 'dividend' ? kind : undefined;
+          if (kind !== 'dividend') t.holdingId = undefined;
+        }
+      });
+    },
+  });
   return h('div', { class: 'fin-bulk', role: 'region', 'aria-label': 'Selected transactions' },
     h('strong', {}, `${picked.length} selected`),
     picked.length < pageRows.length && button(`Select all ${pageRows.length} on this page`, () => { pageRows.forEach((t) => selected.add(t.id)); render('bulk-clear'); }, 'secondary fin-btn-sm'),
@@ -290,6 +326,8 @@ export function bulkBar(pageRows) {
     categorizable.length > 0 && button('Remove categories', () => undoable(`Categories removed from ${categorizable.length} transaction${categorizable.length === 1 ? '' : 's'}.`, ['transactions'], () => {
       for (const t of categorizable) { t.categoryIds = []; delete t.splits; }
     }), 'secondary fin-btn-sm'),
+    retypable.length > 0 && setType,
+    rename,
     button('Delete', () => deleteTransactions(new Set(selected)), 'danger fin-btn-sm'),
     button('Clear selection', () => { selected.clear(); render(); }, 'secondary fin-btn-sm', { 'data-key': 'bulk-clear' }));
 }
@@ -562,6 +600,14 @@ export function renderWhenIdle() {
 }
 let idleTimer = null;
 
+// Import into this account: picks a file, then shows the import's preview (Settings → Import) with
+// the account chosen, and comes back here after.
+function importButton(account) {
+  const file = input({ type: 'file', accept: IMPORT_ACCEPT, hidden: true, 'aria-hidden': 'true', tabindex: '-1' });
+  file.addEventListener('change', () => file.files[0] && readImportFile(file.files[0], { accountId: account.id }));
+  return [file, button('Import…', () => file.click(), 'secondary', { 'data-key': 'tx-import' })];
+}
+
 export function transactionsSection(account) {
   const scope = `acc:${account.id}`;
   const f = filterOf(scope);
@@ -608,6 +654,7 @@ export function transactionsSection(account) {
     h('div', { class: 'fin-card-head' },
       h('h3', { id: 'tx-h', class: 'fin-label' }, 'Transactions ', h('span', { class: 'fin-count' }, filtered ? (ready ? `${total} of ${totals.past}` : '…') : String(totals.past))),
       h('div', { class: 'fin-actions' },
+        importButton(account),
         button('Schedule…', () => openScheduleDialog(null, { accountId: account.id }), 'secondary', { 'data-key': 'up-add', 'aria-haspopup': 'dialog' }),
         button('Add transactions', () => openTxDialog('multi', account), 'primary', { 'data-key': 'tx-add', 'aria-haspopup': 'dialog' }))),
     filterBar(scope),

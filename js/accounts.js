@@ -17,6 +17,7 @@ import { accountSinceYesterday, ask, insightsPanel, investmentInsights, runMap, 
 import { FORECAST_DAYS, daysFromToday, openScheduleDialog } from './schedules.js';
 import { loanInsights, nextPaymentCard, openAdvanceDialog, openChangeDialog } from './loans.js';
 import { accountName, fetchTransactions, transactionsSection } from './transactions.js';
+import { accountImport } from './imports.js';
 import {
   button, dialog, field, flag, h, icon, input, latestRate, money, monthLabel, num, readPref, say, select,
   fullDate, shortDate, signed, tone, writePref,
@@ -425,7 +426,11 @@ export function renderAccount(account) {
   return h('div', {},
     h('div', { class: 'fin-account-head' },
       h('div', {},
-        h('h2', { class: 'fin-title' }, cardMark(account, 'fin-card-mark--title'), account.name),
+        // The type's icon, as in the account list; a credit card has its card mark instead.
+        h('h2', { class: 'fin-title fin-account-title' },
+          account.type === 'credit' ? cardMark(account, 'fin-card-mark--title')
+            : h('span', { class: `fin-group-icon fin-group-icon--title fin-group--${account.type}`, 'aria-hidden': 'true' }, icon(`type-${account.type}`)),
+          h('span', {}, account.name)),
         h('p', { class: 'fin-meta' }, [
           ACCOUNT_TYPE_LABELS[account.type] + (account.investmentKind ? `, ${INVESTMENT_KINDS[account.investmentKind].toLowerCase()}` : ''),
           account.currency,
@@ -538,7 +543,7 @@ export function renderAccount(account) {
       : accountTab(account) === 'insights'
         ? (account.type === 'investment' ? investmentInsights([account]) : account.type === 'loan' ? loanInsights(account)
           : insightsPanel(new Set([account.id]), { spendingOnly: account.type === 'credit', balanceOf: account }))
-        : [account.type === 'investment' && holdingsSection(account), transactionsSection(account)]);
+        : [accountImport(account), account.type === 'investment' && holdingsSection(account), transactionsSection(account)]);
 }
 
 // The balance ahead, months out: what's scheduled (loan payments included), transactions dated
