@@ -161,6 +161,22 @@ create table if not exists goals (
   primary key (user_id, id)
 );
 
+-- Budget envelopes: what's assigned a month to a category (its children without an envelope of
+-- their own included), in EUR, from start_month. `assigned` has the months set to something other
+-- than the default amount. With rollover, what's left at the end of a month (or overspent) stays in
+-- the envelope; without, it goes back to be budgeted.
+create table if not exists budgets (
+  user_id uuid not null default auth.uid() references auth.users on delete cascade,
+  id text not null,
+  category_id text not null,
+  amount bigint not null,              -- minor units (cents) in EUR, a month, by default
+  assigned jsonb not null default '{}', -- { "YYYY-MM": minor units }
+  rollover boolean not null default false,
+  start_month text not null,           -- YYYY-MM
+  position int not null default 0,
+  primary key (user_id, id)
+);
+
 -- One row per user: API keys for market data and the last account viewed.
 create table if not exists settings (
   user_id uuid primary key default auth.uid() references auth.users on delete cascade,
@@ -183,6 +199,8 @@ alter table transactions add column if not exists kind text;
 alter table settings add column if not exists fx jsonb not null default '{}';
 -- Weekly closing prices per holding, { date: price }, loaded once and kept, for charts over time.
 alter table holdings add column if not exists price_history jsonb;
+-- Budgets set month by month.
+alter table budgets add column if not exists assigned jsonb not null default '{}';
 -- The trading day a fetched price is from (price_at is when it was fetched).
 alter table holdings add column if not exists price_date date;
 -- Backups: when one was last downloaded, and how many days between reminders (0 = none).
@@ -634,7 +652,7 @@ $$;
 do $$
 declare t text;
 begin
-  foreach t in array array['accounts', 'categories', 'rules', 'transactions', 'holdings', 'schedules', 'people', 'ious', 'snapshots', 'lots', 'assets', 'goals', 'settings'] loop
+  foreach t in array array['accounts', 'categories', 'rules', 'transactions', 'holdings', 'schedules', 'people', 'ious', 'snapshots', 'lots', 'assets', 'goals', 'budgets', 'settings'] loop
     execute format('alter table %I enable row level security', t);
     execute format('drop policy if exists own_rows on %I', t);
     execute format(

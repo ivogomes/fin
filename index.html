@@ -37,15 +37,15 @@
   <nav aria-label="Sections" class="fin-nav">
     <a class="fin-btn secondary" data-nav="overview" href="./" hidden>Overview</a>
     <a class="fin-btn secondary" data-nav="accounts" href="./?account=" hidden>Accounts</a>
-    <a class="fin-btn secondary" data-nav="assets" href="./?page=assets" hidden>Assets</a>
-    <a class="fin-btn secondary" data-nav="search" href="./?page=search" hidden>Search</a>
     <a class="fin-btn secondary" data-nav="scheduled" href="./?page=scheduled" hidden>Scheduled</a>
     <a class="fin-btn secondary" data-nav="insights" href="./?page=insights" hidden>Insights</a>
+    <a class="fin-btn secondary" data-nav="assets" href="./?page=assets" hidden>Assets</a>
     <a class="fin-btn secondary" data-nav="ious" href="./?page=ious" hidden>IOUs</a>
   </nav>
-  <button type="button" id="cmd-open" class="fin-cmd-open" aria-haspopup="dialog" aria-keyshortcuts="Control+K Meta+K" title="Go to anything (Ctrl+K)" hidden>
+  <!-- The search bar: opens Go to, where Enter searches the transactions (Search isn't in the menu). -->
+  <button type="button" id="cmd-open" class="fin-cmd-open" aria-haspopup="dialog" aria-keyshortcuts="Control+K Meta+K" aria-label="Search transactions, or go to an account or page" title="Search, or go to anything (Ctrl+K)" hidden>
     <svg class="fin-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M10.5 4a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13Z"/><path d="m15.5 15.5 5 5"/></svg>
-    <span class="fin-cmd-open-label">Go to…</span>
+    <span class="fin-cmd-open-label">Search…</span>
     <kbd class="fin-cmd-open-key" aria-hidden="true">Ctrl K</kbd>
   </button>
   <button type="button" id="hide-amounts" class="fin-hide-toggle" aria-pressed="false" aria-label="Hide amounts" title="Hide amounts (Alt+H)" hidden>
@@ -87,8 +87,8 @@
       <svg class="fin-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h.01M12 12h.01M19 12h.01" stroke-width="3"/></svg>
       <span>More</span></button>
     <div id="more-menu" class="fin-more-menu" role="group" aria-label="More sections" hidden>
-      <a class="fin-me-item" data-nav="assets" href="./?page=assets" hidden>Assets</a>
       <a class="fin-me-item" data-nav="scheduled" href="./?page=scheduled" hidden>Scheduled</a>
+      <a class="fin-me-item" data-nav="assets" href="./?page=assets" hidden>Assets</a>
       <a class="fin-me-item" data-nav="ious" href="./?page=ious" hidden>IOUs</a>
     </div>
   </div>

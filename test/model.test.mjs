@@ -6,6 +6,7 @@ import {
   holdingValue, investmentValue, netWorth, defaultState, withRunningBalance,
   crossConvert, batchRow, makeTransfer,
   parseCsv, toCsv, parseAmount, parseDate, guessDateFormat, guessDecimal, guessMapping, importRows,
+  parseStatement, statementAccount, spentIn, unbudgeted, monthsBetween, budgetProgress, addMonths, assignedIn, assignedThrough, freezePast, toBudget,
   findTransferPairs, findDuplicates, detectBuxferFile, buxferImport, isFundMovements, fundMovementsToFt,
   categoryPath, categoryResolver, categoriesOf, sortedCategories, searchCategories, assetValue, assetValuations,
   parseBuxferIou, iouSign, iouType, personBalances, personHistory,
@@ -1189,4 +1190,109 @@ test('goals: how far along, when reached at the pace, what a target date takes',
   assert.equal(g.onTrack, false);
   assert.equal(goalProgress({ saved: 1200000, target: 1000000 }, '2026-11-05').share, 1);
   assert.equal(goalProgress({ saved: 0, target: 1000000 }, '2026-11-05').reachBy, null);
+});
+
+test('bank statements: OFX (SGML and XML) and CAMT become import rows', () => {
+  const sgml = [
+    'OFXHEADER:100', 'DATA:OFXSGML', 'CHARSET:1252', '',
+    '<OFX><BANKMSGSRSV1><STMTTRNRS><STMTRS><CURDEF>EUR',
+    '<BANKACCTFROM><BANKID>0035<ACCTID>PT50003500001234567891234<ACCTTYPE>CHECKING</BANKACCTFROM>',
+    '<BANKTRANLIST>',
+    '<STMTTRN><TRNTYPE>DEBIT<DTPOSTED>20261103120000[0:GMT]<TRNAMT>-12,50<FITID>1<NAME>Pingo Doce<MEMO>Compra 1234</STMTTRN>',
+    '<STMTTRN><TRNTYPE>CREDIT<DTPOSTED>20261101<TRNAMT>1500.00<FITID>2<MEMO>Salário &amp; prémio</STMTTRN>',
+    '</BANKTRANLIST></STMTRS></STMTTRNRS></BANKMSGSRSV1></OFX>',
+  ].join('\r\n');
+  const ofx = parseStatement(sgml);
+  assert.equal(ofx.format, 'OFX');
+  assert.equal(ofx.currency, 'EUR');
+  assert.equal(ofx.accountNumber, 'PT50003500001234567891234');
+  assert.deepEqual(ofx.body, [
+    ['2026-11-03', 'Pingo Doce', '-12.50', 'Compra 1234', 'EUR'],
+    ['2026-11-01', 'Salário & prémio', '1500.00', '', 'EUR'],
+  ]);
+  const xml = '<?xml version="1.0"?><OFX><CREDITCARDMSGSRSV1><CCSTMTTRNRS><CCSTMTRS><CURDEF>USD</CURDEF><CCACCTFROM><ACCTID>4111</ACCTID></CCACCTFROM><BANKTRANLIST><STMTTRN><DTPOSTED>20260215</DTPOSTED><TRNAMT>-9.99</TRNAMT><NAME>Netflix</NAME></STMTTRN></BANKTRANLIST></CCSTMTRS></CCSTMTTRNRS></CREDITCARDMSGSRSV1></OFX>';
+  assert.deepEqual(parseStatement(xml).body, [['2026-02-15', 'Netflix', '-9.99', '', 'USD']]);
+
+  const camt = `<?xml version="1.0" encoding="UTF-8"?>
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:camt.053.001.08"><BkToCstmrStmt><Stmt>
+  <Acct><Id><IBAN>DE89370400440532013000</IBAN></Id><Ccy>EUR</Ccy></Acct>
+  <Bal><Amt Ccy="EUR">100.00</Amt></Bal>
+  <Ntry><Amt Ccy="EUR">42.10</Amt><CdtDbtInd>DBIT</CdtDbtInd><BookgDt><Dt>2026-10-30</Dt></BookgDt>
+    <NtryDtls><TxDtls><AmtDtls><TxAmt><Amt Ccy="EUR">42.10</Amt></TxAmt></AmtDtls>
+      <RltdPties><Cdtr><Pty><Nm>Stadtwerke</Nm></Pty></Cdtr><CdtrAcct><Id><IBAN>X</IBAN></Id></CdtrAcct></RltdPties>
+      <RmtInf><Ustrd>Strom Oktober</Ustrd></RmtInf></TxDtls></NtryDtls></Ntry>
+  <Ntry><Amt Ccy="EUR">2000</Amt><CdtDbtInd>CRDT</CdtDbtInd><BookgDt><DtTm>2026-10-31T08:00:00</DtTm></BookgDt>
+    <AddtlNtryInf>Gehalt</AddtlNtryInf></Ntry>
+</Stmt></BkToCstmrStmt></Document>`;
+  const c = parseStatement(camt);
+  assert.equal(c.format, 'CAMT');
+  assert.equal(c.accountNumber, 'DE89370400440532013000');
+  assert.deepEqual(c.body, [
+    ['2026-10-30', 'Stadtwerke', '-42.10', 'Strom Oktober', 'EUR'],
+    ['2026-10-31', 'Gehalt', '2000', '', 'EUR'],
+  ]);
+  // Namespace prefixes (camt.052) read the same.
+  assert.equal(parseStatement(camt.replace(/<(\/?)(?!\?)/g, '<$1ns2:').replace('BkToCstmrStmt', 'BkToCstmrAcctRpt').replace('</ns2:BkToCstmrStmt', '</ns2:BkToCstmrAcctRpt')).body.length, 2);
+  assert.equal(parseStatement('Date,Amount\n2026-01-01,1'), null);
+
+  // Imported like a CSV: rules, duplicates skipped on a second import.
+  const accounts = [{ id: 'a', name: 'Bank', currency: 'EUR', lastFour: '3000' }, { id: 'b', name: 'Other', currency: 'EUR', lastFour: '9999' }];
+  assert.equal(statementAccount(accounts, c.accountNumber).id, 'a');
+  assert.equal(statementAccount(accounts, '12'), null);
+  let n = 0;
+  const opts = { mapping: c.mapping, dateFormat: 'ymd', decimal: '.', defaultAccountId: 'a' };
+  const ctx = { id: () => `t${++n}`, accounts, categories: [], rules: [], transactions: [], people: [] };
+  const first = importRows(c.body, opts, ctx);
+  assert.deepEqual(first.transactions.map((t) => [t.date, t.amount, t.description, t.memo]), [
+    ['2026-10-30', -4210, 'Stadtwerke', 'Strom Oktober'], ['2026-10-31', 200000, 'Gehalt', ''],
+  ]);
+  assert.equal(importRows(c.body, opts, { ...ctx, transactions: first.transactions }).duplicates, 2);
+});
+
+test('budgets: envelopes, month by month, carry-over, what is left to budget', () => {
+  const categories = [{ id: 'food', parentId: null }, { id: 'groc', parentId: 'food' }, { id: 'eat', parentId: 'food' }, { id: 'fun', parentId: null }];
+  const spend = [{ cat: 'food', amount: 1000 }, { cat: 'groc', amount: 20000 }, { cat: 'eat', amount: -500 }, { cat: 'fun', amount: 3000 }, { cat: null, amount: 700 }];
+  assert.equal(spentIn('food', spend, categories), 20500);
+  // A child with its own envelope isn't counted in its parent's.
+  assert.equal(spentIn('food', spend, categories, new Set(['food', 'groc'])), 500);
+  assert.equal(spentIn('groc', spend, categories), 20000);
+  assert.equal(unbudgeted([{ categoryId: 'food' }], spend, categories), 3700);
+  assert.equal(unbudgeted([{ categoryId: 'groc' }], spend, categories), 4200);
+
+  assert.equal(monthsBetween('2026-11', '2027-01'), 3);
+  assert.equal(monthsBetween('2026-11', '2026-10'), 0);
+  assert.equal(addMonths('2026-11', 2), '2027-01');
+  assert.equal(addMonths('2026-01', -1), '2025-12');
+
+  // Assigned: the default, a month set otherwise, nothing before it started.
+  const b = { amount: 30000, rollover: false, startMonth: '2026-09', assigned: { '2026-10': 10000 } };
+  assert.equal(assignedIn(b, '2026-08'), 0);
+  assert.equal(assignedIn(b, '2026-09'), 30000);
+  assert.equal(assignedIn(b, '2026-10'), 10000);
+  assert.equal(assignedThrough(b, '2026-11'), 70000);
+  // A new default keeps the past as it was.
+  assert.deepEqual(freezePast(b, '2026-11'), { '2026-09': 30000, '2026-10': 10000 });
+
+  assert.deepEqual(budgetProgress(b, { month: '2026-11', spent: 10000, before: 99999, dayShare: 0.5 }),
+    { assigned: 30000, spent: 10000, carry: 0, available: 30000, left: 20000, share: 1 / 3, over: false, ahead: false });
+  assert.equal(budgetProgress(b, { month: '2026-11', spent: 20000, dayShare: 0.5 }).ahead, true);
+  assert.equal(budgetProgress(b, { month: '2026-11', spent: 20000 }).ahead, false); // a month that's over
+  const over = budgetProgress(b, { month: '2026-11', spent: 35000 });
+  assert.equal(over.over, true);
+  assert.equal(over.share, 1);
+  assert.equal(over.left, -5000);
+
+  // Carry-over: 400.00 assigned in September and October, 350.00 spent: November has 350.00.
+  const roll = { ...b, rollover: true };
+  assert.equal(budgetProgress(roll, { month: '2026-11', spent: 0, before: 35000 }).available, 35000);
+  // Overspent before: less this month, possibly nothing.
+  assert.equal(budgetProgress(roll, { month: '2026-11', spent: 0, before: 60000 }).carry, -20000);
+  assert.equal(budgetProgress(roll, { month: '2026-11', spent: 100, before: 100000 }).share, 1);
+  // Its first month carries nothing.
+  assert.equal(budgetProgress(roll, { month: '2026-09', spent: 0, before: 0 }).carry, 0);
+
+  // To budget: the money there less what the envelopes hold; an overspent envelope holds less than nothing.
+  assert.equal(toBudget(100000, [{ left: 20000 }, { left: 5000 }]), 75000);
+  assert.equal(toBudget(100000, [{ left: -5000 }]), 105000);
+  assert.equal(toBudget(10000, [{ left: 30000 }]), -20000);
 });

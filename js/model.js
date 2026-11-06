@@ -98,7 +98,7 @@ export function scaleSplits(splits, total) {
   });
 }
 
-// Category ids sorted so parents come before their children and each family stays together.
+// Categories sorted so parents come before their children and each family stays together.
 export function sortedCategories(categories) {
   const byName = (a, b) => a.name.localeCompare(b.name);
   const top = categories.filter((c) => !c.parentId || !categories.some((p) => p.id === c.parentId)).sort(byName);
@@ -272,6 +272,82 @@ export function goalProgress({ saved, target, monthly = 0, targetDate = null }, 
   }
   return { share, left, reachBy, needed, onTrack: targetDate ? left === 0 || (reachBy != null && reachBy <= targetDate) : null };
 }
+
+// ── Budgets ──────────────────────────────────────────────────────────────────
+// Envelope budgeting. A budget is an envelope for a category: { id, categoryId, amount (EUR minor
+// units assigned a month by default), assigned ({ 'YYYY-MM': amount } for months set otherwise),
+// rollover, startMonth ('YYYY-MM') }. A budget on a parent category also takes the spending of its
+// children that have no envelope of their own. What isn't in an envelope is "to budget": the money
+// in the everyday accounts less what the envelopes hold.
+
+// The account types whose money is budgeted (not savings, investments or loans: money moved to
+// them leaves what's to budget, like spending).
+export const BUDGET_ACCOUNT_TYPES = new Set(['cash', 'checking', 'credit']);
+
+// Spending under a category from insight totals' `spend` rows ({ cat, amount }, refunds already
+// taken off): its own and its children's, except children in `budgeted` (their own envelopes).
+export function spentIn(categoryId, spend, categories, budgeted = new Set()) {
+  const parentOf = new Map(categories.map((c) => [c.id, c.parentId ?? null]));
+  return spend.reduce((sum, r) => sum + (r.cat === categoryId || (r.cat && !budgeted.has(r.cat) && parentOf.get(r.cat) === categoryId) ? r.amount : 0), 0);
+}
+
+// Spending that no envelope takes: its category has none, nor does its parent.
+export function unbudgeted(budgets, spend, categories) {
+  const parentOf = new Map(categories.map((c) => [c.id, c.parentId ?? null]));
+  const covered = new Set(budgets.map((b) => b.categoryId));
+  return spend.filter((r) => !covered.has(r.cat) && !covered.has(parentOf.get(r.cat))).reduce((sum, r) => sum + r.amount, 0);
+}
+
+// Months from `from` to `to` ('YYYY-MM'), both counted; 0 when `to` comes first.
+export const monthsBetween = (from, to) => {
+  const index = (ym) => Number(ym.slice(0, 4)) * 12 + Number(ym.slice(5, 7));
+  return Math.max(0, index(to) - index(from) + 1);
+};
+export const addMonths = (ym, n) => {
+  const i = Number(ym.slice(0, 4)) * 12 + Number(ym.slice(5, 7)) - 1 + n;
+  return `${Math.floor(i / 12)}-${String((i % 12) + 1).padStart(2, '0')}`;
+};
+
+// What's assigned to an envelope in a month: the month's own amount, else the default; nothing
+// before it started.
+export const assignedIn = (budget, month) => (month < budget.startMonth ? 0 : budget.assigned?.[month] ?? budget.amount);
+// Everything assigned to it from its first month to `month`.
+export function assignedThrough(budget, month) {
+  let sum = 0;
+  for (let m = budget.startMonth; m <= month; m = addMonths(m, 1)) sum += assignedIn(budget, m);
+  return sum;
+}
+
+// The months before `month` that use the default, set to it: what to keep when the default changes,
+// so the past stays as it was.
+export function freezePast(budget, month) {
+  const assigned = { ...budget.assigned };
+  for (let m = budget.startMonth; m < month; m = addMonths(m, 1)) if (assigned[m] == null) assigned[m] = budget.amount;
+  return assigned;
+}
+
+// How an envelope stands in `month`: what's assigned, what's `spent`, what's available (the month's
+// assignment plus, with rollover, what was left in it before, or less what was overspent: `before`
+// is what was spent from its first month to the month before), what's left, the share used (0 to
+// 1), whether it's over, and whether spending is ahead of the month's pace (`dayShare`: how much of
+// the month has gone, 1 once it's over). Without rollover, what's left at the end of a month goes
+// back to be budgeted, and so does what's overspent (it comes out of it).
+export function budgetProgress(budget, { month, spent, before = 0, dayShare = 1 }) {
+  const assigned = assignedIn(budget, month);
+  const carry = budget.rollover && month > budget.startMonth ? assignedThrough(budget, addMonths(month, -1)) - before : 0;
+  const available = assigned + carry;
+  const left = available - spent;
+  return {
+    assigned, spent, carry, available, left,
+    share: available > 0 ? Math.max(0, Math.min(1, spent / available)) : spent > 0 ? 1 : 0,
+    over: left < 0,
+    ahead: left >= 0 && dayShare < 1 && spent > available * dayShare,
+  };
+}
+
+// What's left to budget: the money in the everyday accounts (`cash`, EUR) less what the envelopes
+// hold at the end of the month (their `left`, from budgetProgress).
+export const toBudget = (cash, progresses) => cash - progresses.reduce((sum, p) => sum + p.left, 0);
 
 // The monthly payment that pays `owed` off in `months` at `rate` % a year (rounded up to the cent,
 // so the last payment is never more than the others).
@@ -646,6 +722,81 @@ const HEADER_HINTS = {
 export function guessMapping(header) {
   const names = header.map((h) => normalize(h));
   return Object.fromEntries(IMPORT_FIELDS.map((f) => [f, names.findIndex((n) => HEADER_HINTS[f].test(n))]));
+}
+
+// ── Bank statements (OFX, CAMT) ──────────────────────────────────────────────
+
+// A bank's statement file → the same rows a CSV import reads: { format, accountNumber, currency,
+// header, body, mapping }, dates as YYYY-MM-DD and signed amounts with a point. Null when the text
+// is neither. OFX (and Quicken's QFX) comes as SGML (1.x, leaf tags left open) or XML (2.x); CAMT is
+// ISO 20022 XML, an end-of-day statement (camt.053) or an intraday report (camt.052).
+export function parseStatement(text) {
+  const src = String(text).replace(/^﻿/, '');
+  if (/<OFX>/i.test(src)) return ofxStatement(src);
+  if (/camt\.05[234]|<(\w+:)?BkToCstmr(Stmt|AcctRpt|DbtCdtNtfctn)\b/.test(src)) return camtStatement(src);
+  return null;
+}
+
+const STATEMENT_HEADER = ['Date', 'Description', 'Amount', 'Memo', 'Currency'];
+const STATEMENT_MAPPING = Object.fromEntries(IMPORT_FIELDS.map((f) => [f, STATEMENT_HEADER.findIndex((n) => HEADER_HINTS[f].test(normalize(n)))]));
+const decodeXml = (s) => String(s ?? '').replace(/&(#x[\da-f]+|#\d+|amp|lt|gt|quot|apos);/gi, (_, e) => (
+  e[0] === '#' ? String.fromCodePoint(e[1].toLowerCase() === 'x' ? parseInt(e.slice(2), 16) : Number(e.slice(1)))
+    : { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" }[e.toLowerCase()])).replace(/\s+/g, ' ').trim();
+// "-12,50" or "12.50" → "-12.50" (some European banks write OFX amounts with a comma).
+const pointAmount = (s) => String(s ?? '').trim().replace(/\s/g, '').replace(/,(\d{1,2})$/, '.$1').replace(/^\+/, '');
+const statementOf = (format, accountNumber, currency, rows) => ({
+  format, accountNumber, currency, header: STATEMENT_HEADER, mapping: STATEMENT_MAPPING,
+  body: rows.filter((r) => r.date && r.amount !== '' && !Number.isNaN(Number(r.amount)))
+    .map((r) => [r.date, r.description || r.memo || '(no description)', r.amount, r.description && r.memo !== r.description ? r.memo : '', currency]),
+});
+
+function ofxStatement(src) {
+  // A leaf's value: up to its closing tag (XML) or the next tag or line (SGML).
+  const leaf = (block, tag) => decodeXml(block.match(new RegExp(`<${tag}>([^<\\r\\n]*)`, 'i'))?.[1]);
+  const rows = [...src.matchAll(/<STMTTRN>([\s\S]*?)<\/STMTTRN>/gi)].map(([, b]) => {
+    const d = leaf(b, 'DTPOSTED');
+    const name = leaf(b, 'NAME') || leaf(b, 'PAYEE');
+    return {
+      date: /^\d{8}/.test(d) ? `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}` : null,
+      amount: pointAmount(leaf(b, 'TRNAMT')), description: name, memo: leaf(b, 'MEMO'),
+    };
+  });
+  return statementOf('OFX', leaf(src, 'ACCTID'), (leaf(src, 'CURDEF') || BASE).toUpperCase(), rows);
+}
+
+function camtStatement(xml) {
+  const src = xml.replace(/<(\/?)[\w.-]+:/g, '<$1'); // namespace prefixes off: <ns2:Ntry> → <Ntry>
+  const first = (block, path) => {
+    let b = block;
+    for (const tag of path.split('/')) {
+      const m = b?.match(new RegExp(`<${tag}(?:\\s[^>]*)?>([\\s\\S]*?)</${tag}>`));
+      b = m?.[1];
+    }
+    return b == null ? '' : decodeXml(b);
+  };
+  const acct = src.match(/<Acct>([\s\S]*?)<\/Acct>/)?.[1] ?? '';
+  const rows = [...src.matchAll(/<Ntry>([\s\S]*?)<\/Ntry>/g)].map(([, b]) => {
+    const debit = first(b, 'CdtDbtInd') === 'DBIT';
+    // The other party: who was paid on a debit, who paid on a credit (newer versions wrap it in <Pty>).
+    const party = debit ? (first(b, 'Cdtr/Pty/Nm') || first(b, 'Cdtr/Nm')) : (first(b, 'Dbtr/Pty/Nm') || first(b, 'Dbtr/Nm'));
+    const info = [...b.matchAll(/<Ustrd>([\s\S]*?)<\/Ustrd>/g)].map((m) => decodeXml(m[1])).join(' ') || first(b, 'AddtlNtryInf');
+    const amount = pointAmount(first(b, 'Amt'));
+    return {
+      date: (first(b, 'BookgDt/Dt') || first(b, 'BookgDt/DtTm') || first(b, 'ValDt/Dt')).slice(0, 10) || null,
+      amount: amount && debit ? `-${amount.replace(/^-/, '')}` : amount,
+      description: party || info, memo: info,
+    };
+  });
+  return statementOf('CAMT', first(acct, 'IBAN') || first(acct, 'Othr/Id'), (first(acct, 'Ccy') || BASE).toUpperCase(), rows);
+}
+
+// The account a statement belongs to: the one whose last four digits end its account number, when
+// only one does.
+export function statementAccount(accounts, accountNumber) {
+  const digits = String(accountNumber ?? '').replace(/\D/g, '');
+  if (digits.length < 4) return null;
+  const found = accounts.filter((a) => !a.archived && a.lastFour && digits.endsWith(a.lastFour));
+  return found.length === 1 ? found[0] : null;
 }
 
 // Turns CSV rows into transactions. Accounts and categories are matched by name (case and accents
@@ -1920,6 +2071,7 @@ export function defaultState() {
     lots: [],
     assets: [],
     goals: [],
+    budgets: [],
     categories: ids.map((id, i) => ({ id, name: names[i], parentId: null })),
     rules: [
       { id: 'r-lunch', pattern: 'lunch', match: 'contains', categoryId: 'meals' },

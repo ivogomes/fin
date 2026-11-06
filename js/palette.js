@@ -17,11 +17,12 @@ import { h, hideAmounts, input, money } from './ui.js';
 export const cmdDialog = document.getElementById('cmd-dialog');
 export const cmdOpen = document.getElementById('cmd-open');
 export const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
-cmdOpen.title = `Go to anything (${isMac ? '⌘K' : 'Ctrl+K'})`;
+cmdOpen.title = `Search, or go to anything (${isMac ? '⌘K' : 'Ctrl+K'})`;
 cmdOpen.querySelector('kbd').textContent = isMac ? '⌘K' : 'Ctrl K';
 
-// Everything the palette offers: pages, accounts, settings pages and actions, plus searching the
-// transactions for what's typed. `words` are extra terms it can be found by.
+// Everything the palette offers: searching the transactions for what's typed (first, so Enter
+// searches: it's the header's search bar), pages, accounts, settings pages and actions. `words` are
+// extra terms it can be found by.
 export function paletteItems(query) {
   const go = (v) => () => { setView(v); render(); };
   const items = [];
@@ -32,8 +33,10 @@ export function paletteItems(query) {
     { group: 'Pages', label: 'Search transactions', words: 'find filter', run: go({ name: 'search' }) },
     { group: 'Pages', label: 'Scheduled', words: 'recurring bills reminders', run: go({ name: 'scheduled' }) },
     { group: 'Pages', label: 'Subscriptions', words: 'recurring netflix spotify streaming cancel', run: go({ name: 'scheduled', tab: 'subscriptions' }) },
-    { group: 'Pages', label: 'Insights: income and spending', words: 'charts categories budget', run: go({ name: 'insights' }) },
+    { group: 'Pages', label: 'Insights: income and spending', words: 'charts categories', run: go({ name: 'insights' }) },
     { group: 'Pages', label: 'Insights: net worth', words: 'wealth history allocation', run: go({ name: 'insights', tab: 'networth' }) },
+    { group: 'Pages', label: 'Insights: investments', words: 'portfolio holdings stocks etf return xirr dividends allocation', run: go({ name: 'insights', tab: 'investments' }) },
+    { group: 'Pages', label: 'Insights: budgets', words: 'budget monthly limit envelope spending', run: go({ name: 'insights', tab: 'budgets' }) },
     { group: 'Pages', label: 'Insights: goals', words: 'savings target saving for', run: go({ name: 'insights', tab: 'goals' }) },
     { group: 'Pages', label: 'Assets', words: 'home house car vehicle property value', run: go({ name: 'assets' }) },
     { group: 'Pages', label: 'IOUs', words: 'loans owe people friends', run: go({ name: 'ious' }) },
@@ -70,7 +73,7 @@ export function paletteItems(query) {
   };
   return items
     .filter((it) => it.always || words.every((w) => normalize(`${it.label} ${it.sub ?? ''} ${it.words ?? ''} ${it.group}`).includes(w)))
-    .map((it, i) => ({ it, i, r: it.always ? 3 : rank(it) }))
+    .map((it, i) => ({ it, i, r: it.always ? -1 : rank(it) }))
     .sort((a, b) => a.r - b.r || a.i - b.i)
     .map(({ it }) => it);
 }
@@ -80,7 +83,7 @@ export function openPalette() {
   const box = input({
     type: 'text', autocomplete: 'off', spellcheck: 'false', role: 'combobox', 'aria-expanded': 'true',
     'aria-controls': 'cmd-list', 'aria-autocomplete': 'list', 'aria-label': 'Go to or do',
-    placeholder: 'Go to an account or page, or type to search…',
+    placeholder: 'Search transactions, or go to an account or page…',
   });
   box.classList.add('fin-cmd-input');
   const list = h('div', { id: 'cmd-list', role: 'listbox', class: 'fin-cmd-list', 'aria-label': 'Results' });
@@ -129,7 +132,7 @@ export function openPalette() {
     list, count,
     h('p', { class: 'fin-keys fin-cmd-keys' },
       h('span', {}, h('kbd', {}, '↓'), h('kbd', {}, '↑'), ' move'),
-      h('span', {}, h('kbd', {}, 'Enter'), ' go'),
+      h('span', {}, h('kbd', {}, 'Enter'), ' search or go'),
       h('span', {}, h('kbd', {}, 'Esc'), ' close')));
   update();
   cmdDialog.showModal();

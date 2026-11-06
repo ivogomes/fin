@@ -5,8 +5,8 @@ import {
   ACCOUNT_TYPE_LABELS, IMPORT_FIELDS, IOU_TYPES, buxferImport, categoriesOf,
   categoryPath, convert, detectBuxferFile, frequencyLabel, ftImport, fundMovementsToFt,
   guessDateFormat, guessDecimal, guessMapping, holdingValue, importRows, isFtExport,
-  isFundMovements, lotSummary, newId, normalize, parseCsv, sortedCategories,
-  splitsOf, toCsv,
+  isFundMovements, lotSummary, newId, normalize, parseCsv, parseStatement, sortedCategories,
+  splitsOf, statementAccount, toCsv,
 } from './model.js';
 import { missingTables, persist } from './store.js';
 import { accountValue, byName, refreshRates, render, setView, state, view } from './app.js';
@@ -30,7 +30,21 @@ export const FIELD_LABELS = {
 };
 
 export async function readImportFile(file) {
-  const rows = parseCsv(await file.text());
+  const text = await readText(file);
+  const statement = parseStatement(text);
+  if (statement) {
+    if (!statement.body.length) { say(`That ${statement.format} file has no transactions.`); return; }
+    const account = statementAccount(state.accounts, statement.accountNumber);
+    importDraft = {
+      fileName: file.name, header: statement.header, body: statement.body, mapping: statement.mapping,
+      dateFormat: 'ymd', decimal: '.', statement,
+      defaultAccountId: account?.id ?? (view.name === 'account' ? view.id : null) ?? state.accounts[0]?.id ?? '',
+    };
+    render('imp-acc');
+    say(`Read ${statement.body.length} transactions from ${file.name}.${account ? ` They go to ${account.name}.` : ' Choose the account they go to.'}`);
+    return;
+  }
+  const rows = parseCsv(text);
   if (rows.length < 2) { say('That file has no rows to import.'); return; }
   const [header, ...body] = rows;
   const mapping = guessMapping(header);
@@ -90,7 +104,7 @@ export function previewBuxfer() {
 // ── imports: one page, three kinds ───────────────────────────────────────────
 
 export const IMPORT_KINDS = [
-  ['csv', 'Transactions (CSV)'], ['buxfer', 'From Buxfer'], ['holdings', 'Holdings'],
+  ['csv', 'Transactions'], ['buxfer', 'From Buxfer'], ['holdings', 'Holdings'],
 ];
 export const importKind = () => (IMPORT_KINDS.some(([k]) => k === view.kind) ? view.kind : 'csv');
 export function importTabs() {
@@ -194,12 +208,15 @@ export function buxferSection() {
 // → buys and sells on the holdings of one investment account.
 export let ftDraft = null;
 
-// Text from a file that may be UTF-16 (what some banks call .xls is tab-separated UTF-16 text).
+// Text from a file that may be UTF-16 (what some banks call .xls is tab-separated UTF-16 text), or
+// Windows-1252 (older bank exports and OFX files) when it isn't valid UTF-8.
 export async function readText(file) {
   const bytes = new Uint8Array(await file.arrayBuffer());
   const bom16 = bytes[0] === 0xFF && bytes[1] === 0xFE;
   const zeros = bytes.slice(0, 200).filter((b, i) => i % 2 === 1 && b === 0).length;
-  return new TextDecoder(bom16 || zeros > 40 ? 'utf-16le' : 'utf-8').decode(bytes).replace(/^\uFEFF/, '');
+  if (bom16 || zeros > 40) return new TextDecoder('utf-16le').decode(bytes).replace(/^\uFEFF/, '');
+  try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes).replace(/^\uFEFF/, ''); }
+  catch { return new TextDecoder('windows-1252').decode(bytes); }
 }
 
 export async function readFtFile(file) {
@@ -274,13 +291,13 @@ export function ftSection() {
 }
 
 export function importSection() {
-  const head = h('h3', { id: 'import-h', class: 'fin-label' }, 'Import transactions (CSV)');
+  const head = h('h3', { id: 'import-h', class: 'fin-label' }, 'Import transactions');
   if (!importDraft) {
-    const file = input({ type: 'file', accept: '.csv,text/csv', 'data-key': 'import-file' });
+    const file = input({ type: 'file', accept: '.csv,.ofx,.qfx,.xml,.txt,text/csv,application/x-ofx,application/xml,text/xml', 'data-key': 'import-file' });
     file.addEventListener('change', () => file.files[0] && readImportFile(file.files[0]));
     return h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'import-h' }, head,
-      h('p', { class: 'fin-hint' }, 'Any CSV with a date, a description and an amount, such as a bank statement. You choose which column is which and see a preview before anything is saved.'),
-      h('div', { class: 'fin-grid' }, field('CSV file', file)));
+      h('p', { class: 'fin-hint' }, 'A bank statement as OFX or QFX, or as CAMT.053 or CAMT.052 (the XML many European banks export), or any CSV with a date, a description and an amount. For a CSV you choose which column is which. Either way you see a preview before anything is saved.'),
+      h('div', { class: 'fin-grid' }, field('Statement or CSV file', file)));
   }
 
   const d = importDraft;
@@ -297,6 +314,8 @@ export function importSection() {
   dec.addEventListener('change', () => update('decimal', dec.value, 'imp-dec'));
   const acc = select([['', 'None'], ...[...state.accounts].sort(byName).map((a) => [a.id, accountLabel(a)])], d.defaultAccountId, { 'data-key': 'imp-acc' });
   acc.addEventListener('change', () => update('defaultAccountId', acc.value, 'imp-acc'));
+  const st = d.statement;
+  const target = state.accounts.find((a) => a.id === d.defaultAccountId);
 
   const required = ['date', 'description', 'amount'].filter((f) => d.mapping[f] < 0);
   let n = 0;
@@ -307,12 +326,20 @@ export function importSection() {
   const catOf = (ids) => ids.map((id) => previewCats.find((c) => c.id === id)).filter(Boolean).map((c) => categoryPath(c, previewCats)).join(', ');
 
   return h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'import-h' }, head,
-    h('p', { class: 'fin-hint' }, `${d.fileName} · ${d.body.length} rows`),
-    h('div', { class: 'fin-grid' }, mapSelects),
-    h('div', { class: 'fin-grid' },
-      field('Dates look like', dateFmt),
-      field('Decimal separator', dec),
-      field('Account for rows without one', acc, 'Rows with an Account column use that account, and unknown names become new accounts.')),
+    h('p', { class: 'fin-hint' }, st
+      ? `${d.fileName} · ${st.format} statement${st.accountNumber ? ` for ${st.accountNumber}` : ''} in ${st.currency} · ${d.body.length} transactions`
+      : `${d.fileName} · ${d.body.length} rows`),
+    st ? h('div', { class: 'fin-grid' },
+      field('Account', acc, 'Set an account’s last four digits (Edit → More details) and its statements find it by themselves.'))
+      : [
+        h('div', { class: 'fin-grid' }, mapSelects),
+        h('div', { class: 'fin-grid' },
+          field('Dates look like', dateFmt),
+          field('Decimal separator', dec),
+          field('Account for rows without one', acc, 'Rows with an Account column use that account, and unknown names become new accounts.')),
+      ],
+    st && target && target.currency !== st.currency && h('p', { class: 'fin-notice' },
+      `This statement is in ${st.currency} and ${target.name} is in ${target.currency}. Amounts are imported as they are, in ${target.currency}.`),
     required.length
       ? h('p', { class: 'fin-error', role: 'alert' }, `Choose the column for: ${required.map((f) => FIELD_LABELS[f]).join(', ')}.`)
       : h('div', { class: 'fin-import-summary', 'aria-live': 'polite' },

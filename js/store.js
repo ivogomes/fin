@@ -128,6 +128,14 @@ const TABLES = {
     to: (g, i) => ({ id: g.id, name: g.name, target: g.target, target_date: g.targetDate ?? null, account_ids: g.accountIds ?? [], position: i }),
     from: (r) => ({ id: r.id, name: r.name, target: Number(r.target), targetDate: r.target_date ?? null, accountIds: r.account_ids ?? [], position: r.position }),
   },
+  // Monthly budgets (budgets.js): a category, an amount in EUR a month, maybe carried over.
+  budgets: {
+    to: (b, i) => ({ id: b.id, category_id: b.categoryId, amount: b.amount, assigned: b.assigned ?? {}, rollover: Boolean(b.rollover), start_month: b.startMonth, position: i }),
+    from: (r) => ({
+      id: r.id, categoryId: r.category_id, amount: Number(r.amount), rollover: Boolean(r.rollover), startMonth: r.start_month, position: r.position,
+      assigned: Object.fromEntries(Object.entries(r.assigned ?? {}).map(([m, v]) => [m, Number(v)])),
+    }),
+  },
   transactions: {
     to: (t) => ({
       id: t.id, account_id: t.accountId, date: t.date, description: t.description, amount: t.amount,
@@ -145,10 +153,10 @@ const TABLES = {
   },
 };
 // Parents before children when saving; children before parents when deleting.
-const ORDER = ['categories', 'accounts', 'people', 'rules', 'holdings', 'lots', 'schedules', 'transactions', 'ious', 'snapshots', 'assets', 'goals'];
+const ORDER = ['categories', 'accounts', 'people', 'rules', 'holdings', 'lots', 'schedules', 'transactions', 'ious', 'snapshots', 'assets', 'goals', 'budgets'];
 // Tables added after the first release. If the database doesn't have one yet (schema.sql not
 // re-run), the app still loads and simply doesn't save that table.
-const OPTIONAL = new Set(['schedules', 'people', 'ious', 'snapshots', 'lots', 'assets', 'goals']);
+const OPTIONAL = new Set(['schedules', 'people', 'ious', 'snapshots', 'lots', 'assets', 'goals', 'budgets']);
 const missing = new Set();
 export const missingTables = () => [...missing];
 
@@ -156,7 +164,7 @@ export const missingTables = () => [...missing];
 // app, which asks for schema.sql to be run again.
 const NEW_COLUMNS = {
   accounts: ['credit_limit', 'card_network', 'statement_day', 'due_day', 'pay_from', 'low_balance', 'is_main', 'interest_rate',
-    'interest_every', 'interest_tax', 'investment_kind', 'opened_on', 'closed_on', 'institution', 'last_four', 'exclude_totals', 'loan_payments', 'loan_first', 'loan_changes'], categories: ['parent_id'], transactions: ['category_ids', 'kind', 'splits', 'holding_id'], settings: ['fx', 'last_backup_at', 'backup_every', 'eodhd_api_key', 'hidden_suggestions'], holdings: ['price_history', 'price_date'], schedules: ['subscription', 'category_ids'], assets: ['loan_id'] };
+    'interest_every', 'interest_tax', 'investment_kind', 'opened_on', 'closed_on', 'institution', 'last_four', 'exclude_totals', 'loan_payments', 'loan_first', 'loan_changes'], categories: ['parent_id'], transactions: ['category_ids', 'kind', 'splits', 'holding_id'], settings: ['fx', 'last_backup_at', 'backup_every', 'eodhd_api_key', 'hidden_suggestions'], holdings: ['price_history', 'price_date'], schedules: ['subscription', 'category_ids'], assets: ['loan_id'], budgets: ['assigned'] };
 let schemaOutdated = false;
 export const needsSchemaUpdate = () => schemaOutdated || missing.size > 0;
 // A database function the app calls doesn't take its arguments yet (schema.sql not run again).
@@ -221,6 +229,8 @@ export async function load({ allTransactions: everything = false, today, until }
     .sort((a, b) => (a.position ?? 0) - (b.position ?? 0)).map(TABLES.assets.from);
   state.goals = rows[ORDER.indexOf('goals')]
     .sort((a, b) => (a.position ?? 0) - (b.position ?? 0)).map(TABLES.goals.from);
+  state.budgets = rows[ORDER.indexOf('budgets')]
+    .sort((a, b) => (a.position ?? 0) - (b.position ?? 0)).map(TABLES.budgets.from);
   const s = settingsRows[0] ?? {};
   state.settings = {
     quoteApiKey: s.quote_api_key ?? '', avApiKey: s.av_api_key ?? '', eodhdApiKey: s.eodhd_api_key ?? '', lastAccountId: s.last_account_id ?? undefined,

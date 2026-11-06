@@ -2,7 +2,7 @@
    Your data isn't cached here: it always comes from the database (other origins pass straight through).
    Files are served from the cache and refreshed in the background, so a new deploy shows on the next
    visit; bump CACHE to drop everything at once. */
-const CACHE = 'finance-v123';
+const CACHE = 'finance-v125';
 const SHELL = [
   './',
   './index.html',
@@ -15,6 +15,7 @@ const SHELL = [
   './js/ious.js',
   './js/loans.js',
   './js/goals.js',
+  './js/budgets.js',
   './js/insights.js',
   './js/schedules.js',
   './js/overview.js',

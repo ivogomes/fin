@@ -536,7 +536,7 @@ export function renderAccount(account) {
     accountTabs(account),
     accountTab(account) === 'ahead' ? balanceAhead(account)
       : accountTab(account) === 'insights'
-        ? (account.type === 'investment' ? investmentInsights(account) : account.type === 'loan' ? loanInsights(account)
+        ? (account.type === 'investment' ? investmentInsights([account]) : account.type === 'loan' ? loanInsights(account)
           : insightsPanel(new Set([account.id]), { spendingOnly: account.type === 'credit', balanceOf: account }))
         : [account.type === 'investment' && holdingsSection(account), transactionsSection(account)]);
 }

@@ -164,12 +164,13 @@ body {
 .fin-me-item:hover { background: var(--f-hover); }
 .fin-me-item:focus-visible { outline: none; box-shadow: var(--f-ring); }
 
-/* Go to (Ctrl/⌘+K): a search-like button in the header that opens the palette. */
+/* The header's search bar (Ctrl/⌘+K): opens Go to, where Enter searches the transactions. */
 .fin-cmd-open {
   display: inline-flex;
   align-items: center;
   gap: 8px;
   flex: none;
+  width: 15rem;
   height: 38px;
   margin-left: 6px;
   padding: 0 10px 0 12px;
@@ -183,7 +184,9 @@ body {
 .fin-cmd-open[hidden] { display: none; }
 .fin-cmd-open:hover { background: color-mix(in srgb, var(--tool-header-ink) 16%, transparent); }
 .fin-cmd-open:focus-visible { outline: 2px solid var(--tool-header-ink); outline-offset: 2px; }
+.fin-cmd-open.is-on { box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--tool-header-ink) 45%, transparent); }
 .fin-cmd-open .fin-icon { width: 18px; height: 18px; }
+.fin-cmd-open-label { flex: 1; text-align: left; font-weight: 400; opacity: 0.8; }
 .fin-cmd-open-key {
   padding: 1px 6px;
   border: 1px solid color-mix(in srgb, var(--tool-header-ink) 35%, transparent);
@@ -2097,6 +2100,26 @@ label > .fin-flag { margin-right: 6px; }
 .fin-goal-behind { color: var(--f-text); font-weight: 500; }
 .fin-goal-accounts { display: grid; gap: 6px; }
 .fin-usage-bar[data-level="done"] { background: var(--f-pos); }
+.fin-budget-nav { align-items: center; flex-wrap: wrap; }
+.fin-budget-month { margin: 0; min-width: 9.5rem; text-align: center; }
+.fin-spacer { flex: 1; }
+.fin-budgets { list-style: none; margin: 0; padding: 0; }
+.fin-budget { padding: 14px 20px; border-top: 1px solid var(--f-border); }
+.fin-budget:first-child { border-top: 0; }
+/* Each row is its own grid, so every column has a fixed width (the actions too) for the header to line up. */
+.fin-budget-cols { display: grid; grid-template-columns: minmax(8rem, 1fr) 7.5rem 7rem 7rem 7.5rem; align-items: center; gap: 12px; }
+.fin-budget-cols > .fin-actions { flex-wrap: nowrap; justify-content: flex-end; }
+.fin-budget-th { padding-block: 10px; font-size: 13px; color: var(--f-muted); }
+.fin-budget-th + .fin-budgets .fin-budget:first-child { border-top: 1px solid var(--f-border); }
+.fin-budget-name { font-weight: 550; }
+.fin-budget-assign { width: 100%; text-align: right; }
+@media (max-width: 40rem) {
+  .fin-budget-th { display: none; }
+  .fin-budget-cols { grid-template-columns: 1fr auto; }
+  .fin-budget-cols > .fin-r { text-align: left; }
+  .fin-budget .fin-stack-label { display: inline; color: var(--f-muted); font-weight: 400; }
+}
+.fin-budget .fin-stat-note { margin-top: 6px; }
 
 /* A holdings price refresh, row by row: waiting its turn (faded), loading (the price and value
    pulse), then just updated (they flash in the accent once). Still under reduced motion. */

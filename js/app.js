@@ -55,7 +55,7 @@ export function urlOf(v) {
     q.set('page', v.name);
     if (v.name === 'settings' && v.section) q.set('section', v.section);
     if (v.name === 'settings' && v.section === 'import' && v.kind) q.set('kind', v.kind);
-    if (v.name === 'insights' && (v.tab === 'networth' || v.tab === 'goals')) q.set('tab', v.tab);
+    if (v.name === 'insights' && ['networth', 'investments', 'goals', 'budgets'].includes(v.tab)) q.set('tab', v.tab);
     if (v.name === 'scheduled' && v.tab === 'subscriptions') q.set('tab', 'subscriptions');
     if (v.name === 'ious' && v.personId) q.set('person', v.personId);
     if (v.name === 'search') {
@@ -76,7 +76,7 @@ export function viewFromUrl() {
   const page = q.get('page');
   // Net worth was its own page; it's now a tab of Insights (old links still land there).
   if (page === 'networth' || (page === 'insights' && q.get('tab') === 'networth')) return { name: 'insights', tab: 'networth' };
-  if (page === 'insights' && q.get('tab') === 'goals') return { name: 'insights', tab: 'goals' };
+  if (page === 'insights' && ['investments', 'goals', 'budgets'].includes(q.get('tab'))) return { name: 'insights', tab: q.get('tab') };
   // The imports were separate settings pages; they're now one, with a kind (old links still work).
   const oldImport = { buxfer: 'buxfer', ft: 'holdings' }[q.get('section')];
   if (page === 'settings' && oldImport) return { name: 'settings', section: 'import', kind: oldImport };
@@ -552,6 +552,8 @@ export function render(focusKey) {
     if (on) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
   });
   const inSettings = view.name === 'settings';
+  // Search has no menu item on a computer: the header's search bar stands for it.
+  document.getElementById('cmd-open').classList.toggle('is-on', view.name === 'search');
   // The More tab stands for the sections in its menu.
   moreBtn.classList.toggle('is-on', ['assets', 'scheduled', 'ious'].includes(view.name));
   // Settings live in the avatar's menu, so the avatar shows when you're in them.

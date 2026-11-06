@@ -11,6 +11,7 @@ import { missingTables, persist, transactionsComplete } from './store.js';
 import { counted } from './accounts.js';
 import { accountValue, latestClose, loadHistory, render, setView, state, totalsOf, view } from './app.js';
 import { assetsInEur } from './assets.js';
+import { renderBudgets } from './budgets.js';
 import { renderGoals } from './goals.js';
 import { pageLink } from './overview.js';
 import { chartTip, lotsOfHolding, timeChart } from './holdings.js';
@@ -279,37 +280,43 @@ export function categoryBreakdown(title, rows, total, search = null) {
     ]);
 }
 
-// What investments are made of today: a donut by holding (the biggest seven, the rest as Other) or
-// by currency, over the list with each one's value and share. `holdings` can span several accounts.
-export let allocationBy = 'holding'; // or 'currency'; kept while the page is open
+// What investments are made of today: a donut by holding (the biggest seven, the rest as Other), by
+// currency, or by account when `holdings` span several, over the list with each one's value and share.
+export let allocationBy = 'holding'; // or 'currency' or 'account'; kept while the page is open
 export function allocationCard(holdings, key) {
   const rateOf = (c) => latestRate(c) ?? 1;
   const priced = holdings.map((x) => ({ x, value: convert(holdingValue(x) ?? 0, rateOf(x.currency)) })).filter((r) => r.value > 0);
   if (!priced.length) return null;
+  const byAccount = new Set(priced.map(({ x }) => x.accountId)).size > 1;
+  const by = allocationBy === 'account' && !byAccount ? 'holding' : allocationBy;
   const groups = new Map();
   for (const { x, value } of priced) {
-    const id = allocationBy === 'currency' ? x.currency : x.id;
-    const g = groups.get(id) ?? { id, label: allocationBy === 'currency' ? x.currency : x.symbol, sub: allocationBy === 'currency' ? '' : x.name ?? '', amount: 0, n: 0 };
+    const id = by === 'currency' ? x.currency : by === 'account' ? x.accountId : x.id;
+    const g = groups.get(id) ?? {
+      id, amount: 0, n: 0,
+      label: by === 'currency' ? x.currency : by === 'account' ? state.accounts.find((a) => a.id === x.accountId)?.name ?? '' : x.symbol,
+      sub: by === 'holding' ? x.name ?? '' : '',
+    };
     g.amount += value;
     g.n += 1;
     groups.set(id, g);
   }
   const rows = [...groups.values()].sort((a, b) => b.amount - a.amount);
-  if (allocationBy === 'currency') rows.forEach((g) => { g.sub = `${g.n} holding${g.n === 1 ? '' : 's'}`; });
+  if (by !== 'holding') rows.forEach((g) => { g.sub = `${g.n} holding${g.n === 1 ? '' : 's'}`; });
   const total = rows.reduce((sum, g) => sum + g.amount, 0);
   const share = (amount) => (total > 0 ? `${Math.round((amount / total) * 100)}%` : '');
-  const slices = rows.slice(0, DONUT_SLOTS).map((g, i) => ({ label: g.sub && allocationBy === 'holding' ? `${g.label} · ${g.sub}` : g.label, amount: g.amount, slot: String(i) }));
+  const slices = rows.slice(0, DONUT_SLOTS).map((g, i) => ({ label: g.sub && by === 'holding' ? `${g.label} · ${g.sub}` : g.label, amount: g.amount, slot: String(i) }));
   const rest = rows.slice(DONUT_SLOTS).reduce((sum, g) => sum + g.amount, 0);
   if (rest > 0) slices.push({ label: 'Other', amount: rest, slot: 'other' });
-  const pick = (by) => { allocationBy = by; render(`alloc-${key}-${by}`); };
+  const pick = (b) => { allocationBy = b; render(`alloc-${key}-${b}`); };
   return h('section', { class: 'fin-card fin-pad', 'aria-labelledby': `alloc-${key}-h` },
     h('div', { class: 'fin-chart-head' },
       h('h3', { id: `alloc-${key}-h`, class: 'fin-label' }, 'Allocation today'),
       h('div', { class: 'fin-tabs fin-tabs-sm', role: 'group', 'aria-label': 'Allocation by' },
-        [['holding', 'By holding'], ['currency', 'By currency']].map(([by, label]) => h('button', {
-          type: 'button', class: 'fin-tab', 'aria-pressed': String(allocationBy === by), 'data-key': `alloc-${key}-${by}`, onclick: () => pick(by),
+        [['holding', 'By holding'], ['currency', 'By currency'], byAccount && ['account', 'By account']].filter(Boolean).map(([b, label]) => h('button', {
+          type: 'button', class: 'fin-tab', 'aria-pressed': String(by === b), 'data-key': `alloc-${key}-${b}`, onclick: () => pick(b),
         }, label)))),
-    donutChart(`Allocation ${allocationBy === 'currency' ? 'by currency' : 'by holding'}`, slices, total, { share }),
+    donutChart(`Allocation by ${by}`, slices, total, { share }),
     h('ul', { class: 'fin-break' }, rows.map((g, i) => h('li', {},
       h('div', { class: 'fin-break-row fin-break-row--dot' },
         h('span', { class: 'fin-dot', 'data-slot': i < DONUT_SLOTS ? String(i) : 'other', 'aria-hidden': 'true' }),
@@ -511,7 +518,7 @@ export function singleColumns(series, unit, range, label) {
 
 // Insights across all accounts, in two tabs sharing the period: income and spending, and net worth.
 export function renderInsights() {
-  const tab = view.tab === 'networth' || view.tab === 'goals' ? view.tab : 'spending';
+  const tab = ['networth', 'investments', 'goals', 'budgets'].includes(view.tab) ? view.tab : 'spending';
   const worth = tab === 'networth';
   const pick = (t) => { setView({ name: 'insights', ...(t !== 'spending' && { tab: t }) }); render(`ins-tab-${t}`); };
   return h('div', {},
@@ -520,12 +527,14 @@ export function renderInsights() {
         h('p', { class: 'fin-meta' }, worth
           ? 'Everything you own minus what you owe, across all accounts, in EUR.'
           : tab === 'goals' ? 'What you’re saving for, from the accounts you put toward each, in EUR.'
+            : tab === 'investments' ? 'Your open investment accounts together: value, gain, return and what they hold, in EUR.'
+            : tab === 'budgets' ? 'Give every euro in your everyday accounts a job: assign it to envelopes, month by month, in EUR.'
             : 'Income and spending across all your accounts, archived ones included.'))),
     h('div', { class: 'fin-tabs', role: 'group', 'aria-label': 'Insights view' },
-      [['spending', 'Income and spending'], ['networth', 'Net worth'], ['goals', 'Goals']].map(([t, label]) => h('button', {
+      [['spending', 'Income and spending'], ['budgets', 'Budgets'], ['networth', 'Net worth'], ['investments', 'Investments'], ['goals', 'Goals']].map(([t, label]) => h('button', {
         type: 'button', class: 'fin-tab', 'aria-pressed': String(tab === t), 'data-key': `ins-tab-${t}`, onclick: () => pick(t),
       }, label))),
-    worth ? renderNetWorth() : tab === 'goals' ? renderGoals() : insightsPanel(null));
+    worth ? renderNetWorth() : tab === 'goals' ? renderGoals() : tab === 'budgets' ? renderBudgets() : tab === 'investments' ? renderInvestments() : insightsPanel(null));
 }
 
 // ── net worth over time ──────────────────────────────────────────────────────
@@ -580,38 +589,89 @@ export function returnText(sum) {
   return null;
 }
 
-// Insights for an investment account: its value against what was put in, over the period, its
-// annual return and dividends, and each holding's value, cost, gain, dividends and return today.
-export function investmentInsights(account) {
-  const own = state.holdings.filter((x) => x.accountId === account.id);
+// Money in and out of investment accounts for their return, in EUR: an account whose holdings all
+// have buys and sells counts those, its dividends and its holdings' value today; any other counts the
+// money moved in and out of it and its value today. A dividend belongs to the account of its holding
+// when that's one of `accounts`, else to the account it landed in, so none counts twice.
+export function returnFlows(accounts, dividends) {
+  const rateOf = (c) => latestRate(c) ?? 1;
+  const ids = new Set(accounts.map((a) => a.id));
+  const holdingAccount = new Map(state.holdings.map((x) => [x.id, x.accountId]));
+  const owner = (t) => (ids.has(holdingAccount.get(t.holdingId)) ? holdingAccount.get(t.holdingId) : t.accountId);
+  const divFlows = (list) => list.map((t) => ({ date: t.date, amount: inEur(t) }));
+  return accounts.flatMap((a) => {
+    const own = state.holdings.filter((x) => x.accountId === a.id);
+    const mine = dividends.filter((t) => owner(t) === a.id);
+    if (own.length > 0 && own.every((x) => lotsOfHolding(x.id).length)) {
+      return [
+        ...own.flatMap((x) => lotFlows(lotsOfHolding(x.id)).map((f) => ({ date: f.date, amount: convert(f.amount, rateOf(x.currency)) }))),
+        ...divFlows(mine),
+        { date: today(), amount: own.reduce((sum, x) => sum + convert(holdingValue(x) ?? 0, rateOf(x.currency)), 0) },
+      ];
+    }
+    return [
+      ...state.transactions.filter((t) => t.accountId === a.id && t.date <= today() && !(t.kind === 'dividend' && owner(t) === a.id))
+        .map((t) => ({ date: t.date, amount: -inEur(t) })),
+      ...divFlows(mine.filter((t) => t.accountId !== a.id)),
+      { date: today(), amount: convert(accountValue(a), rateOf(a.currency)) },
+    ];
+  });
+}
+
+// The open investment accounts, for Insights → Investments.
+export const investmentAccounts = () => state.accounts.filter((a) => a.type === 'investment' && !a.archived);
+
+// Insights → Investments: every open investment account together.
+export function renderInvestments() {
+  const accounts = investmentAccounts();
+  if (!accounts.length) {
+    return h('section', { class: 'fin-card fin-pad' }, h('p', { class: 'fin-empty' },
+      'No investment accounts yet. Add one (Accounts → Add account, type Investment) with its holdings to see how your investments are doing.'));
+  }
+  return investmentInsights(accounts, { key: 'all' });
+}
+
+// Insights for investment accounts (one, on its own Insights tab, or several, on Insights →
+// Investments): their value against what was put in, over the period, the annual return and
+// dividends, and each holding's value, cost, gain, dividends and return today. Several accounts also
+// also get today's value, invested and gain.
+export function investmentInsights(accounts, { key = accounts[0].id } = {}) {
+  const several = accounts.length > 1 || key === 'all';
+  const ids = new Set(accounts.map((a) => a.id));
+  const own = state.holdings.filter((x) => ids.has(x.accountId));
   const ownLots = state.lots.filter((l) => own.some((x) => x.id === l.holdingId));
-  const first = [totalsOf(account.id).first, ...ownLots.map((l) => l.date)].filter(Boolean)
+  const first = [...accounts.map((a) => totalsOf(a.id).first), ...ownLots.map((l) => l.date)].filter(Boolean)
     .reduce((min, d) => (d < min ? d : min), today());
   const range = periodRange(insightsPeriod.preset, today(), { from: insightsPeriod.from, to: insightsPeriod.to, first });
   if (range.from > range.to) [range.from, range.to] = [range.to, range.from];
   const to = range.to > today() ? today() : range.to;
   const rateOf = (c) => latestRate(c) ?? 1;
-  // The account's totals at each point from the database: all of it, and without opening balances
+  // The accounts' totals at each point from the database: all of it, and without opening balances
   // (what was put in).
   const dates = historyPoints(range.from, to).ends.map((e) => e.date);
-  const runs = ask('balances_at', { p_dates: dates, p_rates: ratesArg(), p_accounts: [account.id] });
-  const paidIn = ask('balances_at', { p_dates: dates, p_rates: ratesArg(), p_accounts: [account.id], p_skip_opening: true });
-  const byLots = own.length > 0 && own.every((x) => lotsOfHolding(x.id).length);
-  // Dividends anywhere (they may land in another account), and this account's own transactions
-  // when its return comes from the money moved in.
+  const runs = ask('balances_at', { p_dates: dates, p_rates: ratesArg(), p_accounts: [...ids] });
+  const paidIn = ask('balances_at', { p_dates: dates, p_rates: ratesArg(), p_accounts: [...ids], p_skip_opening: true });
+  const holdingsOf = (a) => own.filter((x) => x.accountId === a.id);
+  const lotsBased = (a) => holdingsOf(a).length > 0 && holdingsOf(a).every((x) => lotsOfHolding(x.id).length);
+  const byLots = accounts.every(lotsBased);
+  // Dividends anywhere (they may land in another account), and the transactions of accounts whose
+  // return comes from the money moved in.
   const dividendsReady = transactionsLoaded('dividends', '&kind=eq.dividend');
-  const movesReady = byLots || transactionsLoaded(`account:${account.id}`, `&account_id=eq.${encodeURIComponent(account.id)}`);
+  const movesReady = accounts.filter((a) => !lotsBased(a))
+    .map((a) => transactionsLoaded(`account:${a.id}`, `&account_id=eq.${encodeURIComponent(a.id)}`)).every(Boolean);
   if (!runs || !paidIn || !dividendsReady || !movesReady) return h('div', { class: 'fin-insights' }, periodControls(range), loader('Working out the history…'));
-  // This account alone: not the assets, which would otherwise come along with the rest of the state.
-  const hist = netWorthHistory({ ...state, accounts: [account], assets: [] }, { from: range.from, to, today: today(), holdingsValue: holdingsValueEUR, rateOf, runs: runMap(runs), estimate: estimateOpts });
-  const invested = investedHistory(account, state, dates, rateOf, runMap(paidIn).get(account.id) ?? { values: [] });
+  // These accounts alone: not the assets, which would otherwise come along with the rest of the state.
+  const hist = netWorthHistory({ ...state, accounts, assets: [] }, { from: range.from, to, today: today(), holdingsValue: holdingsValueEUR, rateOf, runs: runMap(runs), estimate: estimateOpts });
+  const paidMap = runMap(paidIn);
+  const investedBy = new Map(accounts.map((a) => [a.id, investedHistory(a, state, dates, rateOf, paidMap.get(a.id) ?? { values: [] })]));
+  const invested = dates.map((_, i) => accounts.reduce((sum, a) => sum + investedBy.get(a.id)[i], 0));
   const pts = hist.points.map((p, i) => ({ key: p.key, date: p.date, total: p.total, investments: invested[i] }));
   const now = pts.at(-1);
   const change = now.total - pts[0].total;
 
-  // Dividends: paid by its holdings (wherever they landed) or into this account.
+  // Dividends: paid by their holdings (wherever they landed) or into these accounts.
   const ownIds = new Set(own.map((x) => x.id));
-  const dividends = state.transactions.filter((t) => t.kind === 'dividend' && t.date <= today() && (ownIds.has(t.holdingId) || t.accountId === account.id));
+  const dividends = state.transactions.filter((t) => t.kind === 'dividend' && t.date <= today() && (ownIds.has(t.holdingId) || ids.has(t.accountId)));
   const divInRange = dividends.filter((t) => t.date >= range.from && t.date <= to).reduce((sum, t) => sum + inEur(t), 0);
   const divAll = dividends.reduce((sum, t) => sum + inEur(t), 0);
   const divFlows = (list) => list.map((t) => ({ date: t.date, amount: inEur(t) }));
@@ -629,28 +689,30 @@ export function investmentInsights(account) {
     return { x, value, cost, gain: cost == null ? null : value - cost, dividends: divs.reduce((sum, t) => sum + inEur(t), 0), ret };
   }).sort((a, b) => b.value - a.value);
   const totalValue = rows.reduce((s, r) => s + r.value, 0);
-  // The account's return: from its holdings' buys and sells when every one has them, otherwise from
-  // the money moved in and out of it; dividends and today's value count as money back.
-  const flows = byLots
-    ? [...own.flatMap((x) => lotFlows(lotsOfHolding(x.id)).map((f) => ({ date: f.date, amount: convert(f.amount, rateOf(x.currency)) }))),
-      ...divFlows(dividends), { date: today(), amount: totalValue }]
-    : [...state.transactions.filter((t) => t.accountId === account.id && t.date <= today() && t.kind !== 'dividend').map((t) => ({ date: t.date, amount: -inEur(t) })),
-      ...divFlows(dividends.filter((t) => t.accountId !== account.id)), { date: today(), amount: convert(accountValue(account), rateOf(account.currency)) }];
-  const accountReturn = returnSummary(flows);
-  const yearly = returnText(accountReturn);
+  const flows = returnFlows(accounts, dividends);
+  const yearly = returnText(returnSummary(flows));
   const since = flows.map((f) => f.date).sort()[0];
+
+  // Several accounts: their value today and what was put in.
+  const valueToday = accounts.reduce((sum, a) => sum + convert(accountValue(a), rateOf(a.currency)), 0);
+  const putToday = invested.at(-1) ?? 0;
+  const tint = (v) => (v > 0 ? 'fin-pos' : v < 0 ? 'fin-neg' : '');
 
   return h('div', { class: 'fin-insights' },
     periodControls(range),
-    // Value, invested and gain are at the top of the account's page; here, what's about the period
-    // and the return.
+    // On an account, value, invested and gain are at the top of its page; here, what's about the
+    // period and the return. Several accounts have them here too.
     h('dl', { class: 'fin-stats' },
+      several && h('div', { class: 'fin-stat-key' }, h('dt', {}, 'Value today'), h('dd', {}, money(valueToday, 'EUR')),
+        h('p', { class: 'fin-stat-note' }, `${accounts.length} account${accounts.length === 1 ? '' : 's'}`)),
+      several && h('div', {}, h('dt', {}, 'Gain'), h('dd', { class: tone(valueToday - putToday) }, signed(valueToday - putToday, 'EUR')),
+        h('p', { class: 'fin-stat-note' }, `on ${money(putToday, 'EUR')} invested`, putToday > 0 ? ` · ${valueToday >= putToday ? '+' : ''}${num(((valueToday - putToday) / putToday) * 100)}%` : '')),
       h('div', {}, h('dt', {}, `Change since ${shortDate(pts[0].date)}`),
         h('dd', { class: tone(change) }, signed(change, 'EUR')),
         h('p', { class: 'fin-stat-note' }, 'value, including new money')),
       // Money-weighted (XIRR): money added late counts for less time. Over everything, not the period.
       yearly && h('div', {}, h('dt', {}, yearly.short ? 'Return' : 'Annual return'),
-        h('dd', { class: yearly.value > 0 ? 'fin-pos' : yearly.value < 0 ? 'fin-neg' : '' }, yearly.text),
+        h('dd', { class: tint(yearly.value) }, yearly.text),
         h('p', { class: 'fin-stat-note' }, yearly.short
           ? `since ${shortDate(since)}; under a year, so not made yearly`
           : `money-weighted, since ${fullDate(since)}${dividends.length ? ', with dividends' : ''}`)),
@@ -658,47 +720,51 @@ export function investmentInsights(account) {
         h('p', { class: 'fin-stat-note' }, `in this period · ${money(divAll, 'EUR')} in all`))),
     pts.length > 1
       ? h('section', { class: 'fin-card fin-pad' }, timeChart(pts.map((p) => ({ date: p.date, v: p.total })), {
-        id: `inv-${account.id}`, title: 'Value over time', unit: 'in EUR', format: (v) => money(v, 'EUR'), wide: true,
+        id: `inv-${key}`, title: 'Value over time', unit: 'in EUR', format: (v) => money(v, 'EUR'), wide: true,
         ref: pts.map((p) => ({ date: p.date, v: p.investments })), refLabel: 'Invested',
       }))
-      : h('p', { class: 'fin-notice' }, 'Pick a longer period to see the account over time.'),
+      : h('p', { class: 'fin-notice' }, `Pick a longer period to see ${several ? 'your investments' : 'the account'} over time.`),
     h('p', { class: 'fin-hint' },
       'Value is at market prices today and on days the app has recorded (once a day, when you open it). Before that, ',
       byLots
         ? (own.every((x) => latestClose(x)) ? 'it’s the units held then times that week’s closing price.' : 'it’s the units held then times the latest trade price by then; load the price history for real weekly values.')
         : hist.estimated
-          ? 'it’s an estimate: the money put in by then, plus today’s gain growing evenly from the first transaction. Adding the buys and sells (Lots, or an FT.com import) gives real values over time.'
-          : 'it’s the money put in, as there’s no record of units held; adding the buys and sells (Lots, or an FT.com import) gives real values over time.'),
-    byLots && own.some((x) => !latestClose(x)) && h('div', { class: 'fin-actions fin-mt' },
-      button(`Load price history (${own.filter((x) => !latestClose(x)).length} holding${own.filter((x) => !latestClose(x)).length === 1 ? '' : 's'})`,
-        async (e) => { e.target.disabled = true; e.target.textContent = 'Loading…'; await loadHistory(own.filter((x) => !latestClose(x))); },
-        'secondary', { 'data-key': 'load-history' }),
-      h('span', { class: 'fin-hint' }, 'One lookup per holding, with your Market data keys. It then updates itself weekly.')),
-    rows.length > 0 && h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'inv-h' },
-      h('h3', { id: 'inv-h', class: 'fin-label' }, 'Holdings today'),
+          ? `it’s ${several ? 'for accounts without buys and sells ' : ''}an estimate: the money put in by then, plus today’s gain growing evenly from the first transaction. Adding the buys and sells (Lots, or an FT.com import) gives real values over time.`
+          : `it’s ${several ? 'for accounts without buys and sells ' : ''}the money put in, as there’s no record of units held; adding the buys and sells (Lots, or an FT.com import) gives real values over time.`),
+    (() => {
+      const missing = own.filter((x) => lotsOfHolding(x.id).length && !latestClose(x));
+      return missing.length > 0 && h('div', { class: 'fin-actions fin-mt' },
+        button(`Load price history (${missing.length} holding${missing.length === 1 ? '' : 's'})`,
+          async (e) => { e.target.disabled = true; e.target.textContent = 'Loading…'; await loadHistory(missing); },
+          'secondary', { 'data-key': 'load-history' }),
+        h('span', { class: 'fin-hint' }, 'One lookup per holding, with your Market data keys. It then updates itself weekly.'));
+    })(),
+    rows.length > 0 && h('section', { class: 'fin-card fin-pad', 'aria-labelledby': `inv-${key}-h` },
+      h('h3', { id: `inv-${key}-h`, class: 'fin-label' }, 'Holdings today'),
       h('div', { class: 'fin-scroll' }, h('table', { class: 'fin-table fin-hold-ins' },
-        h('caption', { class: 'fin-sr' }, `Holdings of ${account.name}`),
+        h('caption', { class: 'fin-sr' }, several ? 'Holdings of your investment accounts' : `Holdings of ${accounts[0].name}`),
         h('thead', {}, h('tr', {}, ['Holding', 'Units', 'Value', 'Cost', 'Gain', 'Dividends', 'Return', 'Share'].map((t, i) => h('th', { scope: 'col', class: i ? 'fin-r' : null }, t)))),
         // On a phone each row stacks as a card (fin-hold-ins in finance.css), each cell in its place
         // (hi-…), the figures without their header saying what they are (fin-stack-label).
         h('tbody', {}, rows.map(({ x, value, cost, gain: g, dividends: d, ret }) => {
           const r = ret && returnText(ret);
           const label = (text) => h('span', { class: 'fin-stack-label' }, `${text} `);
+          const sub = several ? [x.name, state.accounts.find((a) => a.id === x.accountId)?.name].filter(Boolean).join(' · ') : x.name ?? '';
           return h('tr', {},
-            h('td', { class: 'hi-sym' }, x.symbol, h('span', { class: 'fin-sub' }, x.name ?? '')),
+            h('td', { class: 'hi-sym' }, x.symbol, h('span', { class: 'fin-sub' }, sub)),
             h('td', { class: 'fin-r fin-num hi-units' }, shownQty(x.quantity), h('span', { class: 'fin-stack-label' }, ' units')),
             h('td', { class: 'fin-r fin-num hi-val' }, money(value, 'EUR')),
             h('td', { class: 'fin-r fin-num fin-muted hi-cost' }, label('cost'), cost == null ? '—' : money(cost, 'EUR')),
             h('td', { class: `fin-r fin-num hi-gain ${g == null ? '' : tone(g)}` }, g == null ? '—' : signed(g, 'EUR'),
               g != null && cost > 0 && h('span', { class: 'fin-sub' }, `${g >= 0 ? '+' : ''}${num((g / cost) * 100)}%`)),
             h('td', { class: 'fin-r fin-num hi-div' }, label('Dividends'), d ? money(d, 'EUR') : '—'),
-            h('td', { class: `fin-r fin-num hi-ret ${r ? (r.value > 0 ? 'fin-pos' : r.value < 0 ? 'fin-neg' : '') : ''}` }, label('Return'), r ? r.text : '—',
+            h('td', { class: `fin-r fin-num hi-ret ${r ? tint(r.value) : ''}` }, label('Return'), r ? r.text : '—',
               r?.short && h('span', { class: 'fin-sub' }, 'under a year')),
             h('td', { class: 'fin-r fin-num fin-muted hi-share' }, totalValue ? `${Math.round((value / totalValue) * 100)}%` : '',
-              totalValue > 0 && h('span', { class: 'fin-stack-label' }, ' of the account')));
+              totalValue > 0 && h('span', { class: 'fin-stack-label' }, several ? ' of holdings' : ' of the account')));
         })))),
       h('p', { class: 'fin-hint' }, 'Return is money-weighted (XIRR) over each holding’s buys, sells and dividends, with today’s value as if sold today. It needs the holding’s buys and sells.')),
-    allocationCard(own, account.id));
+    !several && allocationCard(own, key));
 }
 
 // balances_at's answer as accountRuns gives it: Map(accountId → { last, values }).
@@ -813,8 +879,6 @@ export function renderNetWorth() {
         ? [
           h('section', { class: 'fin-card fin-pad' },
             timeChart(pts.map((p) => ({ date: p.date, v: p.total })), { id: 'nw', title: everything ? 'Total worth over time' : 'Net worth over time', unit: 'in EUR', format: (v) => money(v, 'EUR'), wide: true })),
-          pts.some((p) => p.investments) && h('section', { class: 'fin-card fin-pad' },
-            timeChart(pts.map((p) => ({ date: p.date, v: p.investments })), { id: 'nw-inv', title: 'Investments', unit: 'in EUR', format: (v) => money(v, 'EUR'), wide: true })),
         ]
         : h('p', { class: 'fin-notice' }, 'Pick a longer period to see net worth over time.'),
       h('p', { class: 'fin-hint' },
