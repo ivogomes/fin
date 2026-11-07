@@ -6,7 +6,7 @@ name: Finance keep-alive
 
 on:
   schedule:
-    - cron: '17 6 */3 * *' # every 3 days, early morning UTC
+    - cron: '17 6 */3 * *' # every 3 days, early morning (UTC)
   workflow_dispatch:
 
 permissions:
