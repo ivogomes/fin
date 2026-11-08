@@ -342,9 +342,10 @@ export function ask(name, args) {
   return undefined;
 }
 // Insights for a period (see model.js insightsFrom), or undefined while the database works it out.
+// Counts up to today: transactions dated later (scheduled ones) haven't happened yet.
 export function insightsFor(range, accountIds, onlyCategory = null) {
   const totals = ask('insight_totals', {
-    p_from: range.from, p_to: range.to, p_accounts: accountIds ? [...accountIds] : null, p_only: onlyCategory, p_rates: ratesArg(),
+    p_from: range.from, p_to: range.to > today() ? today() : range.to, p_accounts: accountIds ? [...accountIds] : null, p_only: onlyCategory, p_rates: ratesArg(),
   });
   return totals && insightsFrom(totals, { ...range, categories: state.categories });
 }
@@ -368,7 +369,7 @@ export function insightsPanel(accountIds, { spendingOnly = false, balanceOf = nu
   }
   const rate = r.savingsRate == null ? '—' : `${Math.round(r.savingsRate * 100)}%`;
   const searchFor = (cats, types) => ({
-    name: 'search', cats, types, accounts: accountIds ? [...accountIds] : [], from: range.from, to: range.to, // the same period as the totals
+    name: 'search', cats, types, accounts: accountIds ? [...accountIds] : [], from: range.from, to: range.to > today() ? today() : range.to, // the same period as the totals
   });
   const vs = (now, before) => h('p', { class: 'fin-stat-note' }, versus(now, before, prevRange));
   const avg = avgR ? {
@@ -410,7 +411,7 @@ export function insightsPanel(accountIds, { spendingOnly = false, balanceOf = nu
           categoryBreakdown('Spending by category', r.spending, r.expenses, (ids, types) => searchFor(ids, types ?? (ids[0] === '' ? ['expense', 'refund'] : []))),
           !spendingOnly && categoryBreakdown('Income by category', r.earning, r.income, (ids, types) => searchFor(ids, types ?? (ids[0] === '' ? ['income'] : [])))),
       ],
-    h('p', { class: 'fin-hint fin-mt' }, 'Transfers between your accounts and opening balances aren’t counted. Loans and repayments count only what isn’t owed back, refunds lower spending (in their first category that isn’t an income one, like a salary), and a transaction with several categories counts under its first one.'));
+    h('p', { class: 'fin-hint fin-mt' }, 'Transfers between your accounts, opening balances and transactions after today aren’t counted. Loans and repayments count only what isn’t owed back, refunds lower spending (in their first category that isn’t an income one, like a salary), and a transaction with several categories counts under its first one.'));
 }
 
 // An account's balance over a period, in its own currency, at the end of each day, week or month
