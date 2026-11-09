@@ -658,7 +658,6 @@ export function screen(title, ...body) {
   setShell(false);
   main.replaceChildren(h('div', { class: 'fin-screen' },
     h('div', { class: 'fin-screen-card' },
-      h('p', { class: 'fin-tagline-screen' }, 'Take care of your Finances'),
       h('h2', { class: 'fin-title', tabindex: '-1', id: 'screen-h' }, title), ...body),
     seaScene()));
 }
@@ -691,17 +690,11 @@ export function renderSignIn(message) {
     note.setAttribute('role', 'alert');
     note.textContent = msg;
   };
-  // With a Google client ID (config.js), "Sign in with Google" comes first; the email link stays
-  // for when Google can't be used. Both reach the same account when the email is the same.
-  const google = driveConfigured() && h('div', { class: 'fin-signin-google' },
-    h('div', { class: 'fin-google-btn' }),
-    h('p', { class: 'fin-or', 'aria-hidden': 'true' }, h('span', {}, 'or by email')));
-  screen('Sign in to Fin',
-    h('p', { class: 'fin-empty' }, google
-      ? 'Sign in with Google, or get a link by email to open on this device. No password needed.'
-      : 'We’ll email you a link. Open it on this device to sign in. No password needed.'),
-    google,
-    h('form', {
+  // With a Google client ID (config.js), "Sign in with Google" is the way in; the email link is
+  // folded away underneath, for when Google can't be used. Both reach the same account when the
+  // email is the same, but a Google login linked to another account only works through Google.
+  const google = driveConfigured() && h('div', { class: 'fin-signin-google' }, h('div', { class: 'fin-google-btn' }));
+  const form = h('form', {
       class: 'fin-signin',
       onsubmit: async (e) => {
         e.preventDefault();
@@ -719,8 +712,15 @@ export function renderSignIn(message) {
         }
       },
     },
-      field('Email', email), note,
-      h('button', { type: 'submit', class: `fin-btn ${google ? 'secondary' : 'btn-primary'}` }, 'Email me a sign-in link')));
+      field('Email', email), google ? null : note,
+      h('button', { type: 'submit', class: `fin-btn ${google ? 'secondary' : 'btn-primary'}` }, 'Email me a sign-in link'));
+  const byEmail = google && h('details', { class: 'fin-signin-email' },
+    h('summary', {}, 'Sign in with email instead'), form);
+  screen('Sign in to Fin',
+    h('p', { class: 'fin-empty' }, google
+      ? 'Sign in with your Google account. No password needed.'
+      : 'We’ll email you a link. Open it on this device to sign in. No password needed.'),
+    ...(google ? [google, h('div', { class: 'fin-signin' }, note), byEmail] : [form]));
   if (google) {
     const dark = document.documentElement.dataset.theme === 'dark'
       || (document.documentElement.dataset.theme !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
@@ -734,7 +734,7 @@ export function renderSignIn(message) {
           fail(`Google sign-in didn’t work: ${err.message}`);
         }
       },
-    }).catch(() => { google.hidden = true; }); // Google unreachable: the email link still works
+    }).catch(() => { google.hidden = true; byEmail.open = true; }); // Google unreachable: the email link still works
   }
   // With Google first, start at the heading rather than in the email box.
   (google ? document.getElementById('screen-h') : email).focus();

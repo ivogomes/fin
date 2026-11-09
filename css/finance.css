@@ -39,6 +39,8 @@ body {
 }
 
 :focus-visible { outline: 2px solid var(--f-accent); outline-offset: 2px; }
+/* Headings the code moves focus to (screen titles), so screen readers start there: no ring, as they can't be tabbed to. */
+[tabindex="-1"]:focus { outline: none; }
 
 .fin-sr {
   position: absolute;
@@ -52,7 +54,6 @@ body {
 /* ── Header: the tool's teal bar, with the sections as tabs ── */
 /* The tagline after the name: small and quiet, and left out where the header is tight. */
 .fin-tagline { align-self: flex-end; margin-bottom: 1px; font-size: 13px; font-weight: 400; opacity: 0.75; white-space: nowrap; }
-.fin-tagline-screen { margin: 2px 0 0; color: var(--f-muted); font-style: italic; }
 @media (max-width: 64rem) { .fin-tagline { display: none; } }
 .tool-header { min-height: 64px; padding-block: 10px; }
 .fin-nav {
@@ -680,7 +681,6 @@ textarea.fin-input { resize: vertical; }
   text-align: center;
 }
 .fin-screen-card > * { text-align: left; }
-.fin-screen-card > .fin-tagline-screen { text-align: center; }
 .fin-screen-card .fin-title { margin: 6px 0 0; font-size: 22px; }
 .fin-screen-card .fin-empty { margin: 6px 0 0; font-size: 14px; }
 .fin-screen-card .fin-signin { max-width: none; }
@@ -714,12 +714,14 @@ textarea.fin-input { resize: vertical; }
   .fin-screen-card { padding: 22px 20px 24px; }
 }
 .fin-signin .fin-hint:empty, .fin-signin .fin-error:empty { display: none; }
-/* "Sign in with Google" (Google draws the button itself), then a divider before the email form. */
+/* "Sign in with Google" (Google draws the button itself), then the email form folded away below. */
 .fin-signin-google { margin-top: 20px; }
 .fin-google-btn { display: flex; justify-content: center; min-height: 44px; }
-.fin-or { display: flex; align-items: center; gap: 12px; margin: 18px 0 0; color: var(--f-muted); font-size: 13px; }
-.fin-or::before, .fin-or::after { content: ''; flex: 1; border-top: 1px solid var(--f-border); }
 .fin-signin-google + .fin-signin { margin-top: 12px; }
+.fin-signin-email { margin-top: 18px; text-align: center; }
+.fin-signin-email > summary { display: inline-block; cursor: pointer; color: var(--f-muted); font-size: 13px; }
+.fin-signin-email > summary:hover { color: var(--f-text); }
+.fin-signin-email .fin-signin { margin-top: 12px; text-align: left; }
 
 /* A set of radio choices as small cards (Settings → Display). */
 .fin-choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: 8px; margin: 4px 0 8px; }
