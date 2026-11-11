@@ -4,6 +4,7 @@ import {
   categoriesOf, categorize, defaultState, findDuplicates, findTransferPairs, mergeCategory, newId, normalize,
   sortedCategories, splitsOf,
 } from './model.js';
+import { today } from './market.js';
 import { clearTables, persist, transactionsComplete } from './store.js';
 import {
   avatar, deleteTransactions, profile, refreshPrices, render, setEditingTxId, setHideAmounts, setTxPage,
@@ -92,6 +93,16 @@ export function accountSection() {
     h('div', { class: 'fin-me-who fin-me-who--page' }, avatar(p, 48),
       h('div', { class: 'fin-me-names' }, p.name && h('strong', {}, p.name), h('span', { class: p.name ? 'fin-sub' : '' }, p.email ? ['Signed in as ', p.email] : 'Signed in'))),
     h('p', { class: 'fin-hint' }, 'Your data is saved to your account and loads on any device where you sign in with this email, or with Google using the same address.'),
+    // Saved as it's changed; the PPR deduction's limit goes by age.
+    h('div', { class: 'fin-grid fin-mt' }, field('Year you were born', input({
+      type: 'number', min: '1900', max: today().slice(0, 4), step: '1', inputmode: 'numeric', 'data-key': 'birth-year',
+      value: state.settings.birthYear != null ? String(state.settings.birthYear) : null,
+      onchange: (e) => {
+        const y = Math.round(Number(e.target.value));
+        state.settings.birthYear = e.target.value && y >= 1900 ? y : null;
+        persist(); say(state.settings.birthYear ? `Saved ${state.settings.birthYear}.` : 'Year of birth cleared.');
+      },
+    }), 'For the PPR tax deduction: its limit depends on your age.')),
     h('div', { class: 'fin-actions fin-mt' }, button('Sign out', () => signOutNow(), 'secondary', { 'data-key': 'sign-out' })));
 }
 

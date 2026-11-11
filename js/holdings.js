@@ -1,6 +1,6 @@
 // Holdings of an investment account, and their buys and sells (lots).
 
-import { alphaVantageCovers, googleTickers, today } from './market.js';
+import { CRYPTO_MIC, FUND_MIC, alphaVantageCovers, googleTickers, today } from './market.js';
 import { CURRENCIES, holdingHistory, holdingValue, lotGains, lotSummary, newId } from './model.js';
 import { persist } from './store.js';
 import { driveOn } from './backups.js';
@@ -32,8 +32,10 @@ export function openHoldingDialog(x) {
   const google = input({ type: 'text', autocomplete: 'off', spellcheck: 'false', value: x.googleTicker ?? '', placeholder: googleTickers(x.symbol, x.mic)[0].ticker });
   const accounts = state.accounts.filter((a) => a.type === 'investment' && (!a.archived || a.id === x.accountId)).sort(byName);
   const account = select(accounts.map((a) => [a.id, a.name]), x.accountId);
-  // Picking another listing fills in its ticker, name, exchange and currency.
+  // Picking another listing fills in its ticker, name, exchange and currency (and a coin, its CoinGecko id).
+  let coinId = x.coinId;
   const picker = symbolPicker((r) => {
+    coinId = r.coinId;
     symbol.value = r.symbol;
     name.value = r.name;
     currency.value = r.currency;
@@ -52,7 +54,7 @@ export function openHoldingDialog(x) {
       e.preventDefault();
       const ownGoogle = google.value.trim().toUpperCase() || undefined;
       const listingChanged = symbol.value.trim().toUpperCase() !== x.symbol || (exchange.value || null) !== (x.mic ?? null)
-        || ownGoogle !== x.googleTicker;
+        || ownGoogle !== x.googleTicker || coinId !== x.coinId || currency.value.trim().toUpperCase() !== x.currency;
       Object.assign(x, {
         name: name.value.trim(),
         symbol: symbol.value.trim().toUpperCase(),
@@ -64,6 +66,7 @@ export function openHoldingDialog(x) {
         googleTicker: ownGoogle,
         ...(hasLots ? {} : { quantity: Number(units.value) }),
       });
+      if (x.mic === CRYPTO_MIC && coinId) x.coinId = coinId; else delete x.coinId;
       if (price.value !== '' && Number(price.value) !== x.price) {
         Object.assign(x, { price: Number(price.value), priceAt: new Date().toISOString(), priceDate: undefined });
       }
@@ -84,7 +87,7 @@ export function openHoldingDialog(x) {
       field(`Price per unit (${x.currency})`, price),
       field('Price', source, 'Live prices need the API keys in Settings → Market data.'),
       field('Account', account),
-      driveOn() && field('Google Finance ticker', google, 'Only when Google knows it by another ticker, e.g. CSPX:AMS for SXR8. Empty tries the usual ones.')),
+      driveOn() && x.mic !== CRYPTO_MIC && field('Google Finance ticker', google, 'Only when Google knows it by another ticker, e.g. CSPX:AMS for SXR8. Empty tries the usual ones.')),
     h('div', { class: 'fin-dialog-actions' },
       button('Cancel', close),
       h('button', { type: 'submit', class: 'fin-btn btn-primary' }, 'Save'))));
@@ -399,7 +402,7 @@ export function holdingsSection(account) {
   const list = state.holdings.filter((x) => x.accountId === account.id);
   const picker = symbolPicker();
   const qty = input({ type: 'number', step: 'any', min: '0', required: true, inputmode: 'decimal' });
-  const symField = field('Stock, ETF or fund', picker.box);
+  const symField = field('Stock, ETF, fund or crypto', picker.box);
   // field() wraps the bare input; swap in the combobox wrapper and its description.
   symField.replaceChild(picker.el, picker.box);
   picker.el.prepend(picker.box);
@@ -437,7 +440,7 @@ export function holdingsSection(account) {
           { 'data-key': 'refresh-prices', disabled: refreshingPrices(), 'aria-busy': String(refreshingPrices()) }))),
     list.some((x) => !x.manual && alphaVantageCovers(x.mic)) && !state.settings.avApiKey && !driveOn() && h('p', { class: 'fin-notice fin-notice-in' },
       'Non-US listings are priced through Alpha Vantage. Add its free API key in Settings.'),
-    list.some((x) => !x.manual && !alphaVantageCovers(x.mic)) && !state.settings.quoteApiKey && !driveOn() && h('p', { class: 'fin-notice fin-notice-in' },
+    list.some((x) => !x.manual && !alphaVantageCovers(x.mic) && x.mic !== CRYPTO_MIC && x.mic !== FUND_MIC) && !state.settings.quoteApiKey && !driveOn() && h('p', { class: 'fin-notice fin-notice-in' },
       'US listings are priced through Twelve Data. Add its free API key in Settings.'),
     // Each holding is in the currency it's priced in; say so when that isn't the account's.
     list.some((x) => x.currency !== account.currency) && h('p', { class: 'fin-hint fin-pad-x' },
@@ -518,6 +521,7 @@ export function holdingsSection(account) {
         const holding = {
           id: newId(), accountId: account.id, symbol: r.symbol, mic: r.mic, exchange: r.exchange,
           name: r.name, currency: r.currency, quantity: Number(qty.value), price: null,
+          ...(r.coinId && { coinId: r.coinId }),
         };
         state.holdings.push(holding);
         persist(); render();

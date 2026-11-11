@@ -154,6 +154,59 @@ export function searchCategories(categories, query, exclude = []) {
 // net worth also shows what's within reach without them.
 export const INVESTMENT_KINDS = { brokerage: 'Brokerage', pension: 'Pension', retirement: 'Retirement savings', crypto: 'Crypto', other: 'Other' };
 export const LOCKED_KINDS = new Set(['pension', 'retirement']);
+// Whether an account's money is locked away on `date`: a pension or retirement savings, until the
+// date it's available from (`unlocksOn`, when set).
+export const isLocked = (a, date) => a.type === 'investment' && LOCKED_KINDS.has(a.investmentKind) && !(a.unlocksOn && date >= a.unlocksOn);
+
+// Tax on investment gains when there's no rate on the account: Portugal's flat rate on capital gains.
+export const DEFAULT_GAINS_TAX = 28;
+// What an investment account would leave after tax if sold today: tax on the gain only (a loss pays
+// none), at the account's rate. Locked accounts (taxed differently, and not sellable now) get null.
+export function afterTax(account, value, gain) {
+  if (account.type !== 'investment' || LOCKED_KINDS.has(account.investmentKind) || gain == null) return null;
+  const rate = account.gainsTax ?? DEFAULT_GAINS_TAX;
+  const tax = Math.max(0, Math.round(gain * (rate / 100)));
+  return { rate, tax, value: value - tax };
+}
+
+// Portugal's IRS deduction for retirement savings (PPR): 20% of what's paid in during the year, up
+// to €400 for who turns under 35 that year, €350 from 35 to 50, €300 over 50 (all PPRs together).
+// `paid` and the figures are in cents. Without the year of birth, the €400 limit, flagged as a guess.
+export function pprDeduction(paid, year, birthYear = null) {
+  const age = birthYear ? year - birthYear : null;
+  const limit = age == null || age < 35 ? 40000 : age <= 50 ? 35000 : 30000;
+  const full = limit * 5; // what has to go in for the whole deduction
+  return { paid, limit, full, deduction: Math.min(limit, Math.round(paid * 0.2)), left: Math.max(0, full - paid), age, guessed: age == null };
+}
+
+// What went into an investment account from `from` to `to` (inclusive), in EUR cents: its buys (with
+// fees) when every holding has them, otherwise the money moved in (transfers and deposits; not the
+// opening balance, dividends or money taken out).
+export function paidInBetween(account, { transactions = [], holdings, lots }, from, to, rateOf = () => 1) {
+  const own = holdings.filter((x) => x.accountId === account.id);
+  const lotsOf = (id) => lots.filter((l) => l.holdingId === id);
+  if (own.length > 0 && own.every((x) => lotsOf(x.id).length)) {
+    return own.reduce((sum, x) => sum + lotsOf(x.id)
+      .filter((l) => l.kind !== 'sell' && l.date >= from && l.date <= to)
+      .reduce((s, l) => s + Math.round((l.quantity * l.price + (l.fees ?? 0)) * 100 * (rateOf(x.currency) ?? 1)), 0), 0);
+  }
+  return transactions
+    .filter((t) => t.accountId === account.id && t.amount > 0 && t.date >= from && t.date <= to && t.kind !== 'opening' && t.kind !== 'dividend')
+    .reduce((sum, t) => sum + Math.round(t.amount * (t.rate ?? rateOf(account.currency) ?? 1)), 0);
+}
+
+// What `value` grows to in `years` at `rate` a year (0.05 = 5%), with `yearly` more going in, spread
+// over each year (each year's money grows half a year on average). Cents in, cents out.
+export function projectValue(value, yearly, rate, years) {
+  if (years <= 0) return value;
+  const g = 1 + (rate ?? 0);
+  let v = value;
+  const whole = Math.floor(years);
+  for (let i = 0; i < whole; i += 1) v = v * g + yearly * Math.sqrt(g);
+  const part = years - whole;
+  v = v * g ** part + yearly * part * Math.sqrt(g ** part);
+  return Math.round(v);
+}
 
 // A day of the month on a given month, or its last day when the month is shorter (the 31st in June
 // is the 30th). `ym` is "YYYY-MM".
@@ -1841,8 +1894,8 @@ export function netWorthHistory({ accounts, transactions = [], snapshots = [], h
       p.total += value;
       p.byType[a.type] = (p.byType[a.type] ?? 0) + value;
       if (a.type === 'investment') p.investments += value;
-      // Pensions and retirement savings, locked away until later (in the total too).
-      if (a.type === 'investment' && LOCKED_KINDS.has(a.investmentKind)) p.locked += value;
+      // Pensions and retirement savings, locked away until they're available (in the total too).
+      if (isLocked(a, p.date)) p.locked += value;
     }
   }
   // Assets (those that count): each one's value on each date (assetValue), in EUR, apart and in the total.

@@ -3,7 +3,7 @@
 // what's scheduled into those accounts every month, and, with a date, what it takes a month to make it.
 
 import { today } from './market.js';
-import { convert, goalProgress, newId, scheduledEffect, timesAYear, toMinor } from './model.js';
+import { convert, goalProgress, isLocked, newId, scheduledEffect, timesAYear, toMinor } from './model.js';
 import { missingTables } from './store.js';
 import { accountValue, render, state, undoable } from './app.js';
 import {
@@ -13,16 +13,22 @@ import {
 // Accounts that can hold savings (not cards or loans, which are owed).
 const savingAccounts = () => state.accounts.filter((a) => !a.archived && a.type !== 'credit' && a.type !== 'loan');
 const inEur = (a, minor) => convert(minor, latestRate(a.currency) ?? 1);
+// A pension or retirement savings only counts toward a goal when it's available by the goal's date
+// (or today, without one): money you can't take out doesn't pay for an emergency or a house.
+const usableBy = (a, date) => !isLocked(a, date || today());
+const lockedText = (a) => (a.unlocksOn ? `locked until ${fullDate(a.unlocksOn)}` : 'a pension, locked until you set when it’s available');
 
 // What's in a goal's accounts today, and what goes into them a month from what's scheduled (in EUR;
 // a transfer between two of them counts as nothing).
 export function goalFigures(g) {
-  const accounts = state.accounts.filter((a) => g.accountIds.includes(a.id));
+  const chosen = state.accounts.filter((a) => g.accountIds.includes(a.id));
+  const accounts = chosen.filter((a) => usableBy(a, g.targetDate));
+  const lockedOut = chosen.filter((a) => !usableBy(a, g.targetDate));
   const saved = accounts.reduce((sum, a) => sum + inEur(a, accountValue(a)), 0);
   const now = today();
   const monthly = Math.round(state.schedules.filter((s) => !s.endDate || s.endDate >= now)
     .reduce((sum, s) => sum + accounts.reduce((acc, a) => acc + inEur(a, scheduledEffect(s, a.id)), 0) * (timesAYear(s) / 12), 0));
-  return { accounts, saved, monthly, ...goalProgress({ saved, target: g.target, monthly, targetDate: g.targetDate }, now) };
+  return { accounts, lockedOut, saved, monthly, ...goalProgress({ saved, target: g.target, monthly, targetDate: g.targetDate }, now) };
 }
 
 export function renderGoals() {
@@ -70,6 +76,8 @@ function goalCard(g) {
         'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-valuenow': String(pct),
       }, bar),
       h('p', { class: 'fin-stat-note fin-goal-pace' }, pace),
+      f.lockedOut.length > 0 && h('p', { class: 'fin-stat-note fin-goal-pace' },
+        `Not counted: ${f.lockedOut.map((a) => `${a.name} (${lockedText(a)})`).join(', ')}${g.targetDate ? ', after the goal’s date' : ''}.`),
       byDate && h('p', { class: `fin-stat-note fin-goal-pace ${f.onTrack ? '' : 'fin-goal-behind'}` }, byDate)));
 }
 
@@ -78,17 +86,26 @@ function openGoalDialog(existing = null) {
   const name = input({ type: 'text', required: true, autocomplete: 'off', value: g0.name, placeholder: 'e.g. Emergency fund, House deposit' });
   const target = input({ type: 'number', step: '0.01', min: '0.01', required: true, inputmode: 'decimal', value: g0.target != null ? String(g0.target / 100) : null });
   const by = input({ type: 'date', value: g0.targetDate ?? null });
+  // Pensions locked past the goal's date can't be picked (they'd count for nothing); the note says why.
   const boxes = savingAccounts().map((a) => {
     const box = h('input', { type: 'checkbox', value: a.id, checked: g0.accountIds.includes(a.id) });
-    return h('label', { class: 'fin-check' }, box, ` ${a.name}`, h('span', { class: 'fin-muted' }, ` · ${money(accountValue(a), a.currency)}`));
+    const note = h('span', { class: 'fin-muted' });
+    const label = h('label', { class: 'fin-check' }, box, ` ${a.name}`, h('span', { class: 'fin-muted' }, ` · ${money(accountValue(a), a.currency)}`), note);
+    label.sync = () => {
+      box.disabled = !usableBy(a, by.value);
+      note.textContent = box.disabled ? ` · ${lockedText(a)}` : '';
+    };
+    label.sync();
+    return label;
   });
+  by.addEventListener('change', () => boxes.forEach((l) => l.sync()));
   const error = h('p', { class: 'fin-error', role: 'alert' });
   const returnKey = existing ? `goal-edit-${existing.id}` : 'goal-add';
   const close = () => { dialog.close(); render(returnKey); };
   dialog.replaceChildren(h('form', {
     onsubmit: (e) => {
       e.preventDefault();
-      const accountIds = boxes.map((l) => l.querySelector('input')).filter((b) => b.checked).map((b) => b.value);
+      const accountIds = boxes.map((l) => l.querySelector('input')).filter((b) => b.checked && !b.disabled).map((b) => b.value);
       if (!accountIds.length) { error.textContent = 'Pick at least one account that goes toward it.'; boxes[0]?.querySelector('input').focus(); return; }
       const fields = { name: name.value.trim(), target: toMinor(target.value), targetDate: by.value || null, accountIds };
       dialog.close();
@@ -99,7 +116,7 @@ function openGoalDialog(existing = null) {
     h('h2', { id: 'account-dialog-h', class: 'fin-dialog-title' }, existing ? `Edit ${existing.name}` : 'Add goal'),
     h('div', { class: 'fin-grid fin-grid-2' },
       field('Name', name), field('Target (EUR)', target),
-      field('By', by, 'Optional. Shows what it takes a month to get there by then.')),
+      field('By', by, 'Optional. Shows what it takes a month to get there by then. Pensions count only if they’re available by then.')),
     h('fieldset', { class: 'fin-fieldset' }, h('legend', { class: 'fin-legend-label' }, 'Accounts that go toward it'),
       boxes.length ? h('div', { class: 'fin-goal-accounts' }, boxes) : h('p', { class: 'fin-empty' }, 'No accounts to save in yet.')),
     error,

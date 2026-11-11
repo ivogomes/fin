@@ -23,6 +23,7 @@ const TABLES = {
       statement_day: a.statementDay ?? null, due_day: a.dueDay ?? null, pay_from: a.payFrom ?? null,
       low_balance: a.lowBalance ?? null, is_main: Boolean(a.isMain),
       interest_rate: a.interestRate ?? null, interest_every: a.interestEvery ?? null, interest_tax: a.interestTax ?? null, investment_kind: a.investmentKind ?? null,
+      unlocks_on: a.unlocksOn ?? null, gains_tax: a.gainsTax ?? null,
       opened_on: a.openedOn ?? null, closed_on: a.closedOn ?? null, institution: a.institution ?? null, last_four: a.lastFour ?? null,
       exclude_totals: Boolean(a.excludeTotals),
       loan_payments: a.loanPayments ?? null, loan_first: a.loanFirst ?? null, loan_changes: a.loanChanges ?? null,
@@ -42,6 +43,8 @@ const TABLES = {
       set('interestEvery', r.interest_every);
       set('interestTax', r.interest_tax);
       set('investmentKind', r.investment_kind);
+      set('unlocksOn', r.unlocks_on);
+      set('gainsTax', r.gains_tax);
       set('openedOn', r.opened_on);
       set('closedOn', r.closed_on);
       set('institution', r.institution);
@@ -62,13 +65,13 @@ const TABLES = {
       id: x.id, account_id: x.accountId, symbol: x.symbol, mic: x.mic ?? null, exchange: x.exchange ?? null,
       name: x.name ?? null, currency: x.currency, quantity: x.quantity, price: x.price ?? null,
       price_at: x.priceAt ?? null, manual: Boolean(x.manual), price_error: x.priceError ?? null, source: x.source ?? null,
-      price_history: x.priceHistory ?? null, price_date: x.priceDate ?? null, google_ticker: x.googleTicker || null,
+      price_history: x.priceHistory ?? null, price_date: x.priceDate ?? null, google_ticker: x.googleTicker || null, coin_id: x.coinId ?? null,
     }),
     from: (r) => ({
       id: r.id, accountId: r.account_id, symbol: r.symbol, mic: r.mic, exchange: r.exchange, name: r.name,
       currency: r.currency, quantity: r.quantity, price: r.price, priceAt: r.price_at, manual: r.manual,
       priceError: r.price_error ?? undefined, source: r.source, priceHistory: r.price_history ?? undefined, priceDate: r.price_date ?? undefined,
-      googleTicker: r.google_ticker ?? undefined,
+      googleTicker: r.google_ticker ?? undefined, coinId: r.coin_id ?? undefined,
     }),
   },
   schedules: {
@@ -165,7 +168,7 @@ export const missingTables = () => [...missing];
 // app, which asks for schema.sql to be run again.
 const NEW_COLUMNS = {
   accounts: ['credit_limit', 'card_network', 'statement_day', 'due_day', 'pay_from', 'low_balance', 'is_main', 'interest_rate',
-    'interest_every', 'interest_tax', 'investment_kind', 'opened_on', 'closed_on', 'institution', 'last_four', 'exclude_totals', 'loan_payments', 'loan_first', 'loan_changes'], categories: ['parent_id'], transactions: ['category_ids', 'kind', 'splits', 'holding_id'], settings: ['fx', 'last_backup_at', 'backup_every', 'eodhd_api_key', 'hidden_suggestions'], holdings: ['price_history', 'price_date', 'google_ticker'], schedules: ['subscription', 'category_ids'], assets: ['loan_id'], budgets: ['assigned'] };
+    'interest_every', 'interest_tax', 'investment_kind', 'opened_on', 'closed_on', 'institution', 'last_four', 'exclude_totals', 'loan_payments', 'loan_first', 'loan_changes', 'unlocks_on', 'gains_tax'], categories: ['parent_id'], transactions: ['category_ids', 'kind', 'splits', 'holding_id'], settings: ['fx', 'last_backup_at', 'backup_every', 'eodhd_api_key', 'hidden_suggestions', 'birth_year'], holdings: ['price_history', 'price_date', 'google_ticker', 'coin_id'], schedules: ['subscription', 'category_ids'], assets: ['loan_id'], budgets: ['assigned'] };
 let schemaOutdated = false;
 export const needsSchemaUpdate = () => schemaOutdated || missing.size > 0;
 // A database function the app calls doesn't take its arguments yet (schema.sql not run again).
@@ -177,6 +180,7 @@ const toSettingsRow = (s) => ({
   last_backup_at: s.lastBackupAt ?? null,
   backup_every: s.backupEvery ?? 7,
   hidden_suggestions: s.hiddenSuggestions ?? [],
+  birth_year: s.birthYear ?? null,
 });
 
 let state = null;
@@ -239,6 +243,7 @@ export async function load({ allTransactions: everything = false, today, until }
     lastBackupAt: s.last_backup_at ?? null, // when a backup was last downloaded
     backupEvery: s.backup_every ?? 7, // days between backup reminders; 0 = no reminders
     hiddenSuggestions: s.hidden_suggestions ?? [], // suggested schedules turned down
+    birthYear: s.birth_year ?? null, // for the PPR deduction's age limit
   };
   snapshot();
   setSummaries(sums ?? []);

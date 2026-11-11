@@ -5,7 +5,7 @@ import {
 import { renderAssets } from './assets.js';
 import { driveConfigured, evaluateInSheet, renderGoogleButton } from './drive.js';
 import {
-  FUND_MIC, alphaVantageCovers, fetchHistory, fetchQuote, fetchQuoteAV, fetchQuoteGoogle, fetchRate, fetchRateRange,
+  CRYPTO_MIC, FUND_MIC, alphaVantageCovers, cryptoHistory, cryptoQuotes, fetchHistory, fetchQuote, fetchQuoteAV, fetchQuoteGoogle, fetchRate, fetchRateRange,
   fundHistory, fundQuote, today,
 } from './market.js';
 import { ACCOUNT_TYPES, ACCOUNT_TYPE_LABELS, convert, investmentValueFrom, newId, rateFor } from './model.js';
@@ -220,9 +220,24 @@ export async function refreshPrices(only, { quiet = false } = {}) {
   for (const x of targets) priceStatus.set(x.id, 'waiting');
   renderWhenIdle();
   const failed = [];
+  // Crypto: one CoinGecko request per currency for every coin (its free API takes few a minute).
+  const coins = targets.filter((x) => x.mic === CRYPTO_MIC && x.coinId);
+  const cryptoPrices = new Map([...new Set(coins.map((x) => x.currency))].map((cur) => [cur,
+    cryptoQuotes([...new Set(coins.filter((x) => x.currency === cur).map((x) => x.coinId))], cur)]));
+  for (const p of cryptoPrices.values()) p.catch(() => {}); // each holding reports its own failure
   for (const x of targets) {
     mark(x, 'loading');
     try {
+      if (x.mic === CRYPTO_MIC) {
+        if (!x.coinId) throw new Error('Not linked to a coin: Edit it and find the coin again');
+        const q = (await cryptoPrices.get(x.currency))[x.coinId];
+        if (!q) throw new Error(`CoinGecko has no ${x.currency} price for ${x.coinId}`);
+        Object.assign(x, { price: q.price, source: 'CoinGecko', priceAt: new Date().toISOString(), priceDate: q.date });
+        delete x.priceError;
+        priceUpdatedAt.set(x.id, Date.now());
+        mark(x, null);
+        continue;
+      }
       // Funds go to EODHD (through the database); non-US listings to Alpha Vantage when a key is
       // set; everything else to Twelve Data. With Google Drive connected, Google Finance is asked
       // too, and the price from the later trading day wins (on the same day, the provider above).
@@ -277,7 +292,9 @@ export async function loadHistory(list) {
   for (const x of list) {
     if (!x.symbol || !x.mic) { failed.push(`${x.symbol}: no exchange set (Edit the holding)`); continue; }
     try {
-      const weekly = x.mic === FUND_MIC ? await fundHistory(x.symbol, fundCall) : await fetchHistory(x.symbol, x.mic, keys);
+      const weekly = x.mic === FUND_MIC ? await fundHistory(x.symbol, fundCall)
+        : x.mic === CRYPTO_MIC ? await cryptoHistory(x.coinId, x.currency)
+          : await fetchHistory(x.symbol, x.mic, keys);
       x.priceHistory = { ...(x.priceHistory ?? {}), ...weekly };
       done += 1;
     } catch (err) {
@@ -290,7 +307,8 @@ export async function loadHistory(list) {
 }
 
 export function stalePrices() {
-  const priced = (x) => (x.mic === FUND_MIC ? Boolean(state.settings.eodhdApiKey) : Boolean(state.settings.quoteApiKey || state.settings.avApiKey || driveOn()));
+  const priced = (x) => (x.mic === FUND_MIC ? Boolean(state.settings.eodhdApiKey) : x.mic === CRYPTO_MIC ? Boolean(x.coinId)
+    : Boolean(state.settings.quoteApiKey || state.settings.avApiKey || driveOn()));
   return state.holdings.filter((x) => !x.manual && priced(x) && (!x.priceAt || x.priceAt.slice(0, 10) !== today() || x.priceError));
 }
 // Runs the database's fund_data (EODHD for funds; see market.js).

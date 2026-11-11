@@ -10,7 +10,7 @@ import {
   parseCsv, toCsv, parseAmount, parseDate, guessDateFormat, guessDecimal, guessMapping, findHeaderRow, importRows,
   parseStatement, statementAccount, spentIn, unbudgeted, monthsBetween, budgetProgress, addMonths, assignedIn, assignedThrough, freezePast, toBudget,
   findTransferPairs, findDuplicates, detectBuxferFile, buxferImport, isFundMovements, fundMovementsToFt,
-  categoryPath, categoryResolver, categoriesOf, mergeCategory, sortedCategories, searchCategories, assetValue, assetValuations,
+  categoryPath, categoryResolver, categoriesOf, mergeCategory, isLocked, afterTax, pprDeduction, paidInBetween, projectValue, sortedCategories, searchCategories, assetValue, assetValuations,
   parseBuxferIou, iouSign, iouType, personBalances, personHistory,
   periodRange, granularity, insights, completeMonths, holdingHistory, accountRuns, historyPoints, incomeCategories, REFUNDS_UNMATCHED, netWorthHistory, isFtExport, ftImport, lotSummary, lotGains, investedHistory,
   descriptionIndex, suggestDescriptions, filterTransactions, ruleSuggestion,
@@ -1454,4 +1454,55 @@ test('mergeCategory moves everything to the other category and deletes it', () =
   const d2 = { categories: [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }], transactions: [], schedules: [], rules: [], budgets: [{ id: 'x', categoryId: 'a' }] };
   assert.equal(mergeCategory(d2, 'a', 'b'), 0);
   assert.equal(d2.budgets[0].categoryId, 'b');
+});
+
+test('isLocked: pensions and retirement savings until they are available', () => {
+  const ppr = { type: 'investment', investmentKind: 'retirement', unlocksOn: '2050-01-01' };
+  assert.equal(isLocked(ppr, '2049-12-31'), true);
+  assert.equal(isLocked(ppr, '2050-01-01'), false);
+  assert.equal(isLocked({ type: 'investment', investmentKind: 'pension' }, '2099-01-01'), true);
+  assert.equal(isLocked({ type: 'investment', investmentKind: 'brokerage' }, '2026-01-01'), false);
+});
+
+test('afterTax taxes gains only, at the account rate or 28%', () => {
+  const broker = { type: 'investment', investmentKind: 'brokerage' };
+  assert.deepEqual(afterTax(broker, 150000, 50000), { rate: 28, tax: 14000, value: 136000 });
+  assert.deepEqual(afterTax(broker, 80000, -20000), { rate: 28, tax: 0, value: 80000 });
+  assert.equal(afterTax({ ...broker, gainsTax: 0 }, 150000, 50000).value, 150000);
+  assert.equal(afterTax({ type: 'investment', investmentKind: 'retirement' }, 1, 1), null);
+  assert.equal(afterTax(broker, 1, null), null);
+});
+
+test('pprDeduction: 20% of what goes in, limited by age', () => {
+  assert.deepEqual(pprDeduction(100000, 2026, 1995), { paid: 100000, limit: 40000, full: 200000, deduction: 20000, left: 100000, age: 31, guessed: false });
+  assert.equal(pprDeduction(300000, 2026, 1980).deduction, 35000); // 46: €350
+  assert.equal(pprDeduction(300000, 2026, 1970).deduction, 30000); // 56: €300
+  assert.equal(pprDeduction(300000, 2026, 1976).limit, 35000); // 50 still €350
+  assert.equal(pprDeduction(0, 2026).guessed, true);
+});
+
+test('paidInBetween: buys when every holding has them, else money moved in', () => {
+  const acc = { id: 'p', currency: 'EUR' };
+  const holdings = [{ id: 'h', accountId: 'p', currency: 'EUR' }];
+  const lots = [
+    { holdingId: 'h', kind: 'buy', date: '2025-12-31', quantity: 1, price: 100 },
+    { holdingId: 'h', kind: 'buy', date: '2026-03-01', quantity: 2, price: 50, fees: 1 },
+    { holdingId: 'h', kind: 'sell', date: '2026-04-01', quantity: 1, price: 60 },
+  ];
+  assert.equal(paidInBetween(acc, { holdings, lots }, '2026-01-01', '2026-12-31'), 10100);
+  const transactions = [
+    { accountId: 'p', date: '2026-01-05', amount: 50000, kind: 'opening' },
+    { accountId: 'p', date: '2026-02-01', amount: 10000, transferId: 't' },
+    { accountId: 'p', date: '2026-03-01', amount: 2000, kind: 'dividend' },
+    { accountId: 'p', date: '2026-04-01', amount: -3000 },
+    { accountId: 'x', date: '2026-04-01', amount: 9999 },
+  ];
+  assert.equal(paidInBetween(acc, { transactions, holdings: [], lots: [] }, '2026-01-01', '2026-12-31'), 10000);
+});
+
+test('projectValue grows the value and what goes in each year', () => {
+  assert.equal(projectValue(100000, 0, 0.05, 2), 110250);
+  assert.equal(projectValue(0, 120000, 0, 10), 1200000); // no growth: just what goes in
+  assert.equal(projectValue(100000, 0, null, 5), 100000);
+  assert.equal(projectValue(100000, 10000, 0.05, 0), 100000);
 });

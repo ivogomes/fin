@@ -3,7 +3,7 @@
 import { selectAll } from './cloud.js';
 import { today } from './market.js';
 import {
-  ACCOUNT_TYPES, ACCOUNT_TYPE_LABELS, CURRENCIES, INVESTMENT_KINDS, balanceDip, convert,
+  ACCOUNT_TYPES, ACCOUNT_TYPE_LABELS, CURRENCIES, DEFAULT_GAINS_TAX, INVESTMENT_KINDS, LOCKED_KINDS, afterTax, balanceDip, convert, paidInBetween, pprDeduction,
   crossConvert, dueAfter, investmentValueFrom, lastStatementDate, makeTransfer, newId, occurrences,
   addInterval, annuityPayment, loanInterest, loanRateAt, loanTerm, savingsInterest, scheduledEffect, toMinor,
 } from './model.js';
@@ -68,6 +68,8 @@ export function openAccountDialog(existing = null) {
   const repayFrom = select([['', 'Not set'], ...payOptions.map((x) => [x.id, x.name])], mainAccount()?.id ?? '');
   // Investments
   const kind = select([['', 'Not set'], ...Object.entries(INVESTMENT_KINDS)], a0.investmentKind ?? '');
+  const unlocksOn = input({ type: 'date', value: a0.unlocksOn ?? null });
+  const gainsTax = input({ type: 'number', step: '0.1', min: '0', max: '100', inputmode: 'decimal', placeholder: String(DEFAULT_GAINS_TAX), value: a0.gainsTax != null ? String(a0.gainsTax) : null });
   // Any account
   const institution = input({ type: 'text', autocomplete: 'off', value: a0.institution });
   const lastFour = input({ type: 'text', inputmode: 'numeric', autocomplete: 'off', maxlength: '4', pattern: '\\d{4}', value: a0.lastFour, title: 'Four digits' });
@@ -89,7 +91,10 @@ export function openAccountDialog(existing = null) {
       field('Interest rate (% a year)', rate, 'Before tax. Shows the interest it should earn.'),
       field('Interest paid', rateEvery),
       field('Tax on interest (%)', rateTax, 'Withheld from each payment, e.g. 28. The estimate is what arrives after it.')),
-    investment: group('Investment', field('Kind', kind, 'Pensions and retirement savings are shown apart from what’s within reach.')),
+    investment: group('Investment', field('Kind', kind, 'Pensions and retirement savings are shown apart from what’s within reach.'),
+      // A pension's date it can be taken out; the others' tax on gains (shown by the kind picked).
+      h('div', { 'data-kind': 'locked' }, field('Available from', unlocksOn, 'When you can take it out, e.g. at retirement. It counts as within reach from then, and its Insights tab estimates what it will be worth.')),
+      h('div', { 'data-kind': 'open' }, field('Tax on gains (%)', gainsTax, `What selling would cost in tax on the gain. Empty: ${DEFAULT_GAINS_TAX}%, Portugal’s rate.`))),
     loan: group('Loan',
       !existing && field('Amount owed', owed, 'What’s left to pay today. It becomes the opening balance, below zero.'),
       field('Interest rate (% a year)', loanRate, existing && a0.loanChanges?.some((c) => c.rate != null)
@@ -108,6 +113,12 @@ export function openAccountDialog(existing = null) {
       field('Opened on', openedOn), field('Closed on', closedOn, 'Net worth counts it until then.'),
       h('label', { class: 'fin-check fin-check-field' }, exclude, ' Leave out of totals (net worth and its group)')));
   const syncType = () => { for (const [t, el] of Object.entries(sections)) el.hidden = type.value !== t; };
+  const syncKind = () => {
+    sections.investment.querySelector('[data-kind="locked"]').hidden = !LOCKED_KINDS.has(kind.value);
+    sections.investment.querySelector('[data-kind="open"]').hidden = LOCKED_KINDS.has(kind.value);
+  };
+  kind.addEventListener('change', syncKind);
+  syncKind();
   type.addEventListener('change', syncType);
   syncType();
 
@@ -128,6 +139,8 @@ export function openAccountDialog(existing = null) {
       interestEvery: t === 'savings' && rate.value !== '' ? Number(rateEvery.value) : null,
       interestTax: t === 'savings' && rate.value !== '' && rateTax.value !== '' ? Number(rateTax.value) : null,
       investmentKind: (t === 'investment' && kind.value) || null,
+      unlocksOn: (t === 'investment' && LOCKED_KINDS.has(kind.value) && unlocksOn.value) || null,
+      gainsTax: t === 'investment' && !LOCKED_KINDS.has(kind.value) && gainsTax.value !== '' ? Number(gainsTax.value) : null,
       loanPayments: t === 'loan' && loanCount.value !== '' ? Math.max(1, Math.round(Number(loanCount.value))) : null,
       loanFirst: (t === 'loan' && loanFirst.value) || null,
       institution: institution.value.trim() || null, lastFour: lastFour.value.trim() || null,
@@ -382,6 +395,24 @@ export function accountAlerts(only = null) {
       });
     }
   }
+  // November and December: PPRs short of this year's full IRS deduction. Only when what went in is
+  // known for all of them (their buys, or every transaction loaded), so it never nags by mistake.
+  const pprs = state.accounts.filter((a) => !a.archived && a.investmentKind === 'retirement');
+  const lotsBased = (a) => {
+    const own = state.holdings.filter((x) => x.accountId === a.id);
+    return own.length > 0 && own.every((x) => state.lots.some((l) => l.holdingId === x.id));
+  };
+  if (pprs.length && today().slice(5, 7) >= '11' && (!only || pprs.includes(only)) && (transactionsComplete() || pprs.every(lotsBased))) {
+    const year = today().slice(0, 4);
+    const paid = pprs.reduce((sum, a) => sum + paidInBetween(a, state, `${year}-01-01`, today(), (c) => latestRate(c) ?? 1), 0);
+    const d = pprDeduction(paid, Number(year), state.settings.birthYear);
+    if (d.left > 0) {
+      out.push({
+        account: pprs[0], level: 'due',
+        text: `PPR: ${money(d.left, 'EUR')} more by 31 December gets this year’s full ${money(d.limit, 'EUR')} IRS deduction (${money(d.deduction, 'EUR')} so far).`,
+      });
+    }
+  }
   for (const p of cardPayments()) {
     if (only && p.card.id !== only.id && p.from?.id !== only.id) continue;
     const days = Math.round((Date.parse(p.date) - Date.parse(today())) / 864e5);
@@ -417,6 +448,16 @@ export function renderWelcome() {
     button('Add account', () => openAccountDialog(), 'primary'));
 }
 
+// An investment account's gain: from its holdings' buys and sells when every one has them (what
+// they cost), otherwise its value less the money put in. Null without holdings.
+export function investmentGain(account, value = accountValue(account)) {
+  if (account.type !== 'investment') return null;
+  const inv = investmentValueFrom(account, state.holdings, totalsOf(account.id).balance, (c) => latestRate(c) ?? 1);
+  if (!inv?.hasHoldings) return null;
+  const hg = holdingsGain(account);
+  return hg ? { gain: hg.gain, base: hg.cost, fromLots: true } : { gain: value - inv.invested, base: inv.invested, fromLots: false };
+}
+
 export function renderAccount(account) {
   const value = accountValue(account);
   const inv = account.type === 'investment'
@@ -438,6 +479,7 @@ export function renderAccount(account) {
           account.isMain && 'Main account',
           account.openedOn && `Opened ${monthLabel(account.openedOn.slice(0, 7))}`,
           account.closedOn && `Closed ${fullDate(account.closedOn)}`,
+          LOCKED_KINDS.has(account.investmentKind) && account.unlocksOn && `${account.unlocksOn > today() ? 'Available from' : 'Available since'} ${fullDate(account.unlocksOn)}`,
           account.excludeTotals && 'Not in totals',
           account.archived && 'Archived',
         ].filter(Boolean).join(' · '))),
@@ -512,16 +554,18 @@ export function renderAccount(account) {
       // account's transactions) instead.
       ...(() => {
         if (!inv?.hasHoldings) return [];
-        const hg = holdingsGain(account);
-        const gain = hg ? hg.gain : value - inv.invested;
-        const base = hg ? hg.cost : inv.invested;
+        const { gain, base, fromLots: hg } = investmentGain(account, value);
+        // What selling it all today would leave after tax on the gain (brokerage, crypto…; not pensions).
+        const net = afterTax(account, value, gain);
         return [h('div', {}, h('dt', {}, 'Invested'), h('dd', { class: 'fin-num' }, money(base, account.currency)),
           h('p', { class: 'fin-stat-note' }, hg ? 'what the holdings cost' : 'money put in')),
         h('div', {}, h('dt', {}, 'Gain'),
           h('dd', { class: `fin-num ${tone(gain)}` }, signed(gain, account.currency)),
           h('p', { class: 'fin-stat-note' }, base > 0
             ? `${gain >= 0 ? '+' : ''}${num((gain / base) * 100)}% on what ${hg ? 'the holdings cost' : 'was put in'}`
-            : hg ? 'on what the holdings cost' : 'value less what was put in'))];
+            : hg ? 'on what the holdings cost' : 'value less what was put in')),
+        net?.tax > 0 && h('div', {}, h('dt', {}, 'After tax'), h('dd', { class: 'fin-num' }, money(net.value, account.currency)),
+          h('p', { class: 'fin-stat-note' }, `if sold today: ${money(net.tax, account.currency)} tax, ${num(net.rate)}% of the gain`))];
       })(),
       // A credit card's latest statement: what it said, what's left to pay and by when.
       statementCard(account),

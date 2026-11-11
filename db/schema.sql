@@ -205,6 +205,8 @@ alter table budgets add column if not exists assigned jsonb not null default '{}
 alter table holdings add column if not exists price_date date;
 -- The ticker Google Finance knows a holding by, when it isn't the usual one (SXR8 on Xetra is CSPX:AMS there).
 alter table holdings add column if not exists google_ticker text;
+-- Crypto (mic 'CRYPTO'): the coin's CoinGecko id ("bitcoin"), which prices it; the symbol is its ticker.
+alter table holdings add column if not exists coin_id text;
 -- Backups: when one was last downloaded, and how many days between reminders (0 = none).
 -- Credit cards: the credit limit (cents, in the account's currency), to show what's left.
 alter table accounts add column if not exists credit_limit bigint;
@@ -254,6 +256,12 @@ alter table accounts add column if not exists interest_every integer;
 alter table accounts add column if not exists interest_tax double precision;
 -- Investments: brokerage, pension, retirement, crypto or other.
 alter table accounts add column if not exists investment_kind text;
+-- Investments: when a pension or retirement savings becomes available (within reach from then), and
+-- the tax on gains (percent; empty means 28) for the others.
+alter table accounts add column if not exists unlocks_on date;
+alter table accounts add column if not exists gains_tax double precision;
+-- Your year of birth: the PPR tax deduction's limit depends on your age.
+alter table settings add column if not exists birth_year integer;
 -- Any account: when it was opened and closed, the bank, the last four digits of its number (to
 -- match imports), whether it counts in totals, and a colour (0–7).
 alter table accounts add column if not exists opened_on date;

@@ -2,6 +2,7 @@
 // Stock and ETF quotes come from Twelve Data, which needs a free API key set in Settings: Yahoo and
 // most other free quote feeds block browser requests, so there is no key-less option from a static page.
 // With Google Drive connected, Google Finance (through a spreadsheet) prices what those can't.
+// Crypto comes from CoinGecko's public API (free, no key, CORS-enabled).
 
 import { BASE } from './model.js';
 
@@ -188,17 +189,62 @@ export async function fundQuote(isin, call) {
   return { price: Number(last.close), date: last.date || null };
 }
 
-// Weekly prices (the last of each week), { 'YYYY-MM-DD': price }, as far back as EODHD goes.
-export async function fundHistory(isin, call) {
-  const rows = await call({ p_isin: isin, p_kind: 'prices', p_from: '2000-01-01' });
+// Daily prices ([{ date, close }]) as weekly ones (the last of each week), { 'YYYY-MM-DD': price }.
+function weekly(rows) {
   const byWeek = new Map();
-  for (const r of Array.isArray(rows) ? rows : []) {
+  for (const r of rows) {
     if (!(Number(r.close) > 0)) continue;
     const d = new Date(`${r.date}T00:00:00Z`);
     const monday = new Date(d - ((d.getUTCDay() + 6) % 7) * 864e5).toISOString().slice(0, 10);
     const had = byWeek.get(monday);
     if (!had || r.date > had[0]) byWeek.set(monday, [r.date, Number(r.close)]);
   }
-  if (!byWeek.size) throw new Error(`EODHD has no history for ${isin}`);
   return Object.fromEntries(byWeek.values());
+}
+
+// Weekly prices (the last of each week), { 'YYYY-MM-DD': price }, as far back as EODHD goes.
+export async function fundHistory(isin, call) {
+  const rows = await call({ p_isin: isin, p_kind: 'prices', p_from: '2000-01-01' });
+  const out = weekly(Array.isArray(rows) ? rows : []);
+  if (!Object.keys(out).length) throw new Error(`EODHD has no history for ${isin}`);
+  return out;
+}
+
+// Crypto, from CoinGecko. A coin is known by CoinGecko's id ("bitcoin"), kept on the holding as
+// `coinId`; its ticker (BTC) is only shown. Priced in the holding's currency (EUR, USD…). The public
+// API allows a few requests a minute, so refreshes ask once for every coin.
+const COINGECKO = 'https://api.coingecko.com/api/v3';
+export const CRYPTO_MIC = 'CRYPTO';
+async function geckoJson(url, signal) {
+  const res = await fetch(url, { signal });
+  if (res.status === 429) throw new Error('CoinGecko is busy (too many requests a minute). Try again in a minute.');
+  if (!res.ok) throw new Error(`CoinGecko unavailable (${res.status})`);
+  return res.json();
+}
+
+// Coins matching a name or ticker ("bitcoin", "eth"), biggest first, as search results.
+export async function cryptoSearch(query, signal) {
+  const { coins = [] } = await geckoJson(`${COINGECKO}/search?query=${encodeURIComponent(query)}`, signal);
+  return coins.slice(0, 5).map((c) => ({
+    symbol: String(c.symbol).toUpperCase(), name: c.name, exchange: 'Crypto (CoinGecko)', mic: CRYPTO_MIC,
+    type: 'Crypto', country: '', currency: 'EUR', coinId: c.id,
+  }));
+}
+
+// Today's prices for several coins at once: { coinId → { price, date } } in `currency`; a coin
+// CoinGecko doesn't price is left out.
+export async function cryptoQuotes(coinIds, currency) {
+  const cur = currency.toLowerCase();
+  const data = await geckoJson(`${COINGECKO}/simple/price?ids=${encodeURIComponent(coinIds.join(','))}&vs_currencies=${cur}&include_last_updated_at=true`);
+  return Object.fromEntries(Object.entries(data).filter(([, v]) => v[cur] > 0).map(([id, v]) => [id, {
+    price: v[cur], date: v.last_updated_at ? new Date(v.last_updated_at * 1000).toISOString().slice(0, 10) : null,
+  }]));
+}
+
+// Weekly prices for the last year, { 'YYYY-MM-DD': price }: the public API goes back 365 days.
+export async function cryptoHistory(coinId, currency) {
+  const { prices = [] } = await geckoJson(`${COINGECKO}/coins/${encodeURIComponent(coinId)}/market_chart?vs_currency=${currency.toLowerCase()}&days=365&interval=daily`);
+  const out = weekly(prices.map(([ms, close]) => ({ date: new Date(ms).toISOString().slice(0, 10), close })));
+  if (!Object.keys(out).length) throw new Error(`CoinGecko has no history for ${coinId}`);
+  return out;
 }

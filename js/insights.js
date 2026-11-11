@@ -3,12 +3,12 @@
 import { rpc, selectAll } from './cloud.js';
 import { today } from './market.js';
 import {
-  ACCOUNT_TYPES, ACCOUNT_TYPE_LABELS, DIVIDENDS, LOCKED_KINDS, PERIODS, REFUNDS_UNMATCHED,
-  completeMonths, convert, historyPoints, holdingValue, insightsFrom, investedHistory, lotFlows,
-  lotSummary, netWorthHistory, periodRange, returnSummary,
+  ACCOUNT_TYPES, ACCOUNT_TYPE_LABELS, DIVIDENDS, PERIODS, REFUNDS_UNMATCHED, afterTax,
+  completeMonths, convert, historyPoints, holdingValue, insightsFrom, investedHistory, isLocked, lotFlows,
+  lotSummary, netWorthHistory, paidInBetween, periodRange, pprDeduction, projectValue, returnSummary,
 } from './model.js';
 import { missingTables, persist, transactionsComplete } from './store.js';
-import { counted } from './accounts.js';
+import { counted, investmentGain } from './accounts.js';
 import { accountValue, latestClose, loadHistory, render, setView, state, totalsOf, view } from './app.js';
 import { assetsInEur } from './assets.js';
 import { renderBudgets } from './budgets.js';
@@ -620,6 +620,29 @@ export function returnFlows(accounts, dividends) {
   });
 }
 
+// Portugal's PPR deduction for this year: what went into the retirement savings accounts among
+// `accounts` since 1 January, the deduction that gives, and what more would get all of it. On one
+// account's tab, other PPRs aren't counted (the limit is for all of them), so it says where to look.
+export function pprCard(accounts) {
+  const pprs = accounts.filter((a) => a.investmentKind === 'retirement');
+  if (!pprs.length) return null;
+  const year = today().slice(0, 4);
+  const paid = pprs.reduce((sum, a) => sum + paidInBetween(a, state, `${year}-01-01`, today(), (c) => latestRate(c) ?? 1), 0);
+  const d = pprDeduction(paid, Number(year), state.settings.birthYear);
+  const others = state.accounts.some((a) => !a.archived && a.investmentKind === 'retirement' && !pprs.includes(a));
+  const bar = h('span', { class: 'fin-usage-bar', 'data-level': d.left === 0 ? 'done' : 'ok' });
+  bar.style.setProperty('--used', `${Math.min(100, Math.round((paid / d.full) * 100))}%`);
+  return h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'ppr-h' },
+    h('h3', { id: 'ppr-h', class: 'fin-label' }, `PPR tax deduction, ${year}`),
+    h('p', { class: 'fin-goal-figures' }, h('strong', {}, money(d.deduction, 'EUR')), ` of ${money(d.limit, 'EUR')} off your IRS`),
+    h('span', { class: 'fin-usage', 'aria-hidden': 'true' }, bar),
+    h('p', { class: 'fin-hint fin-goal-pace' },
+      `${money(paid, 'EUR')} paid in this year. The deduction is 20% of it, up to ${money(d.limit, 'EUR')}${d.guessed ? '' : ` at ${d.age}`}. `,
+      d.left > 0 ? `${money(d.left, 'EUR')} more by 31 December gets all of it.` : 'That’s all of it.',
+      d.guessed && [' ', pageLink('Set your year of birth', { name: 'settings', section: 'account' }, 'fin-link'), ': the limit is lower from 35.'],
+      others && ' Your other PPRs count toward the same limit: Insights → Investments has them together.'));
+}
+
 // The open investment accounts, for Insights → Investments.
 export const investmentAccounts = () => state.accounts.filter((a) => a.type === 'investment' && !a.archived);
 
@@ -699,6 +722,16 @@ export function investmentInsights(accounts, { key = accounts[0].id } = {}) {
   const valueToday = accounts.reduce((sum, a) => sum + convert(accountValue(a), rateOf(a.currency)), 0);
   const putToday = invested.at(-1) ?? 0;
   const tint = (v) => (v > 0 ? 'fin-pos' : v < 0 ? 'fin-neg' : '');
+  // One locked account with a date it's available from: what it may be worth by then, at its return
+  // so far and with what went in over the last year going in every year.
+  const unlock = !several && isLocked(accounts[0], today()) && accounts[0].unlocksOn ? (() => {
+    const a = accounts[0];
+    const yearAgo = `${Number(today().slice(0, 4)) - 1}${today().slice(4)}`;
+    const yearly = paidInBetween(a, state, yearAgo, today(), rateOf);
+    const rate = returnSummary(flows).annual;
+    const years = (Date.parse(a.unlocksOn) - Date.parse(today())) / (365.25 * 864e5);
+    return { date: a.unlocksOn, yearly, rate, value: projectValue(convert(accountValue(a), rateOf(a.currency)), yearly, rate, years) };
+  })() : null;
 
   return h('div', { class: 'fin-insights' },
     periodControls(range),
@@ -719,7 +752,13 @@ export function investmentInsights(accounts, { key = accounts[0].id } = {}) {
           ? `since ${shortDate(since)}; under a year, so not made yearly`
           : `money-weighted, since ${fullDate(since)}${dividends.length ? ', with dividends' : ''}`)),
       dividends.length > 0 && h('div', {}, h('dt', {}, 'Dividends'), h('dd', { class: 'fin-pos' }, money(divInRange, 'EUR')),
-        h('p', { class: 'fin-stat-note' }, `in this period · ${money(divAll, 'EUR')} in all`))),
+        h('p', { class: 'fin-stat-note' }, `in this period · ${money(divAll, 'EUR')} in all`)),
+      unlock && h('div', {}, h('dt', {}, `By ${monthLabel(unlock.date.slice(0, 7))}`), h('dd', {}, `≈ ${money(unlock.value, 'EUR')}`),
+        h('p', { class: 'fin-stat-note' }, [
+          unlock.rate != null ? `at ${num(unlock.rate * 100)}% a year, its return so far` : 'without growth (under a year of history)',
+          unlock.yearly > 0 ? `with ${money(unlock.yearly, 'EUR')} a year going in, as over the last year` : 'with nothing more going in',
+        ].join(', ')))),
+    pprCard(accounts),
     pts.length > 1
       ? h('section', { class: 'fin-card fin-pad' }, timeChart(pts.map((p) => ({ date: p.date, v: p.total })), {
         id: `inv-${key}`, title: 'Value over time', unit: 'in EUR', format: (v) => money(v, 'EUR'), wide: true,
@@ -835,7 +874,12 @@ export function renderNetWorth() {
   const start = pts[0];
   const change = now.total - start.total;
   const reachOf = (p) => p.total - p.locked - (p.assets ?? 0);
-  const hasReach = pts.some((p) => p.locked || p.assets);
+  // Tax due today if the investments within reach were sold (on their gains, at each one's rate).
+  const gainsTax = state.accounts.filter((a) => a.type === 'investment' && !a.archived && inTotals(a)).reduce((sum, a) => {
+    const value = accountValue(a);
+    return sum + convert(afterTax(a, value, investmentGain(a, value)?.gain)?.tax ?? 0, latestRate(a.currency) ?? 1);
+  }, 0);
+  const hasReach = pts.some((p) => p.locked || p.assets) || gainsTax > 0;
   const allSwitch = leftOut && h('label', { class: 'fin-switch fin-nw-all' },
     h('input', {
       type: 'checkbox', role: 'switch', checked: everything, 'data-key': 'nw-all',
@@ -876,7 +920,10 @@ export function renderNetWorth() {
             pageLink('See them', { name: 'assets' }, 'fin-link fin-link-sm'))),
         // Within reach: net worth less pensions and assets, from the same point of the history.
         hasReach && h('div', {}, h('dt', {}, 'Within reach'), h('dd', {}, money(reachOf(now), 'EUR')),
-          h('p', { class: 'fin-stat-note' }, `without ${[now.locked > 0 && `${money(now.locked, 'EUR')} in pensions`, now.assets > 0 && `${money(now.assets, 'EUR')} in assets`].filter(Boolean).join(' and ')}`))),
+          h('p', { class: 'fin-stat-note' }, [
+            (now.locked > 0 || now.assets > 0) && `without ${[now.locked > 0 && `${money(now.locked, 'EUR')} in pensions`, now.assets > 0 && `${money(now.assets, 'EUR')} in assets`].filter(Boolean).join(' and ')}`,
+            gainsTax > 0 && `${money(reachOf(now) - gainsTax, 'EUR')} after ${money(gainsTax, 'EUR')} tax on investment gains`,
+          ].filter(Boolean).join(' · ')))),
       pts.length > 1
         ? [
           h('section', { class: 'fin-card fin-pad' },

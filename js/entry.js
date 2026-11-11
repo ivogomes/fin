@@ -1,7 +1,7 @@
 // Adding transactions: the quick-entry grid and the single form, with description suggestions and
 // the category picker.
 
-import { fundSearch, isIsin, searchSymbols, today } from './market.js';
+import { cryptoSearch, fundSearch, isIsin, searchSymbols, today } from './market.js';
 import {
   addInterval, batchRow, categorize, crossConvert, frequencyLabel, makeTransfer, newId, normalize,
   suggestDescriptions, toMinor,
@@ -454,7 +454,7 @@ export function symbolPicker(onPick) {
   const box = input({
     type: 'text', autocomplete: 'off', spellcheck: 'false', role: 'combobox',
     'aria-autocomplete': 'list', 'aria-expanded': 'false', 'aria-controls': listId,
-    placeholder: 'Ticker, name or fund ISIN, e.g. VWCE, Apple or LU0109981661',
+    placeholder: 'Ticker, name, fund ISIN or coin, e.g. VWCE, Apple, LU0109981661 or Bitcoin',
   });
   const listbox = h('ul', { id: listId, role: 'listbox', class: 'fin-options', hidden: true, 'aria-label': 'Matches' });
   const note = h('p', { class: 'fin-hint', 'aria-live': 'polite' });
@@ -474,7 +474,7 @@ export function symbolPicker(onPick) {
   const choose = (r) => {
     chosen = r;
     box.value = `${r.symbol} · ${r.name}`;
-    note.textContent = `${r.exchange} (${r.country}) · ${r.type} · priced in ${r.currency}${r.currencyGuessed ? ' (EODHD doesn’t say which currency, so this is a guess: check it with Edit once added)' : ''}`;
+    note.textContent = `${r.exchange}${r.country ? ` (${r.country})` : ''} · ${r.type} · priced in ${r.currency}${r.currencyGuessed ? ' (EODHD doesn’t say which currency, so this is a guess: check it with Edit once added)' : ''}`;
     open(false);
     onPick?.(r);
   };
@@ -485,7 +485,7 @@ export function symbolPicker(onPick) {
       onclick: () => choose(r),
     },
       h('span', { class: 'fin-option-main' }, h('strong', {}, r.symbol), ` ${r.name}`),
-      h('span', { class: 'fin-sub' }, `${r.exchange} · ${r.country} · ${r.type} · ${r.currency}`))));
+      h('span', { class: 'fin-sub' }, [r.exchange, r.country, r.type, r.currency].filter(Boolean).join(' · ')))));
     active = -1;
     open(results.length > 0);
   };
@@ -495,8 +495,14 @@ export function symbolPicker(onPick) {
     try {
       // An ISIN (a fund): ask EODHD what it is; listings from Twelve Data's search follow.
       const fund = isIsin(q) && state.settings.eodhdApiKey ? await fundSearch(q.toUpperCase(), fundCall).catch(() => null) : null;
-      const listings = await searchSymbols(q, inflight.signal).catch((err) => { if (fund && err.name !== 'AbortError') return []; throw err; });
-      results = fund ? [fund, ...listings] : listings;
+      // Coins from CoinGecko alongside: the top three, first when one is named exactly what was typed
+      // ("bitcoin", "ETH"), otherwise after the listings (so "Apple" finds the shares first).
+      const [listed, coins] = await Promise.allSettled([searchSymbols(q, inflight.signal), cryptoSearch(q, inflight.signal)]);
+      if (listed.status === 'rejected' && coins.status === 'rejected' && !fund) throw listed.reason;
+      const crypto = coins.status === 'fulfilled' ? coins.value.slice(0, 3) : [];
+      const listings = listed.status === 'fulfilled' ? listed.value : [];
+      const exact = crypto.some((c) => [c.symbol, c.name].some((s) => s.toLowerCase() === q.toLowerCase()));
+      results = [...(fund ? [fund] : []), ...(exact ? [...crypto, ...listings] : [...listings, ...crypto])];
       note.textContent = results.length ? `${results.length} matches. Use the arrow keys to choose.` : 'No matches.';
       paint();
     } catch (err) {
