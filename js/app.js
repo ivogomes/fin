@@ -390,11 +390,15 @@ export const backToAccounts = () => h('button', {
 }, h('span', { 'aria-hidden': 'true' }, '‹ '), 'Accounts');
 
 // Credit card networks, and a small mark for each beside the card's name (simple drawings of the
-// brands' marks, not their artwork). Screen readers get the network's name.
-export const CARD_NETWORKS = { visa: 'Visa', mastercard: 'Mastercard' };
+// brands' marks, not their artwork). Screen readers get the network's name. A card with no network
+// set gets a plain card: a stripe and a chip, in the page's own colours.
+export const CARD_NETWORKS = {
+  visa: 'Visa', mastercard: 'Mastercard', maestro: 'Maestro', amex: 'American Express',
+  discover: 'Discover', diners: 'Diners Club', jcb: 'JCB', unionpay: 'UnionPay',
+};
 export function cardMark(account, extra = '') {
-  const n = account.type === 'credit' && CARD_NETWORKS[account.cardNetwork] ? account.cardNetwork : null;
-  if (!n) return null;
+  if (account.type !== 'credit') return null;
+  const n = CARD_NETWORKS[account.cardNetwork] ? account.cardNetwork : 'generic';
   const NS = 'http://www.w3.org/2000/svg';
   const el = (tag, attrs, ...kids) => {
     const e = document.createElementNS(NS, tag);
@@ -402,18 +406,38 @@ export function cardMark(account, extra = '') {
     e.append(...kids);
     return e;
   };
-  const svg = el('svg', { viewBox: '0 0 24 16', class: `fin-card-mark ${extra}`.trim(), role: 'img', 'aria-label': CARD_NETWORKS[n] });
-  if (n === 'visa') {
-    svg.append(el('rect', { width: 24, height: 16, rx: 2.5, class: 'fin-visa-bg' }),
-      el('text', { x: 12, y: 11, 'text-anchor': 'middle', class: 'fin-visa-text' }, 'VISA'));
-  } else {
-    const clip = `mc-${newId().slice(0, 6)}`;
-    svg.append(el('rect', { width: 24, height: 16, rx: 2.5, class: 'fin-mc-bg' }),
+  const svg = el('svg', { viewBox: '0 0 24 16', class: `fin-card-mark ${extra}`.trim(), role: 'img', 'aria-label': CARD_NETWORKS[n] ?? 'Credit card' });
+  const bg = (cls) => el('rect', { width: 24, height: 16, rx: 2.5, class: cls });
+  const word = (text, cls, x = 12) => el('text', { x, y: 11, 'text-anchor': 'middle', class: cls }, text);
+  // Two overlapping circles, their overlap in a third colour (Mastercard, Maestro).
+  const rings = (prefix) => {
+    const clip = `${prefix}-${newId().slice(0, 6)}`;
+    return [bg(`fin-${prefix}-bg`),
       el('clipPath', { id: clip }, el('circle', { cx: 9.5, cy: 8, r: 5 })),
-      el('circle', { cx: 9.5, cy: 8, r: 5, class: 'fin-mc-red' }),
-      el('circle', { cx: 14.5, cy: 8, r: 5, class: 'fin-mc-yellow' }),
-      el('circle', { cx: 14.5, cy: 8, r: 5, class: 'fin-mc-orange', 'clip-path': `url(#${clip})` }));
-  }
+      el('circle', { cx: 9.5, cy: 8, r: 5, class: `fin-${prefix}-left` }),
+      el('circle', { cx: 14.5, cy: 8, r: 5, class: `fin-${prefix}-right` }),
+      el('circle', { cx: 14.5, cy: 8, r: 5, class: `fin-${prefix}-mid`, 'clip-path': `url(#${clip})` })];
+  };
+  const marks = {
+    generic: () => [el('rect', { x: 0.5, y: 0.5, width: 23, height: 15, rx: 2, class: 'fin-generic-bg' }),
+      el('rect', { x: 0.5, y: 3.5, width: 23, height: 2.5, class: 'fin-generic-stripe' }),
+      el('rect', { x: 3.5, y: 8.5, width: 5, height: 3.5, rx: 0.8, class: 'fin-generic-chip' })],
+    visa: () => [bg('fin-visa-bg'), word('VISA', 'fin-visa-text')],
+    mastercard: () => rings('mc'),
+    maestro: () => rings('maestro'),
+    amex: () => [bg('fin-amex-bg'), word('AMEX', 'fin-amex-text')],
+    discover: () => [bg('fin-discover-bg'), word('DISC', 'fin-discover-text', 9.5),
+      el('circle', { cx: 19.5, cy: 8, r: 2.6, class: 'fin-discover-dot' })],
+    diners: () => [bg('fin-diners-bg'), el('circle', { cx: 12, cy: 8, r: 5.5, class: 'fin-diners-ring' }),
+      el('rect', { x: 9, y: 4.5, width: 2, height: 7, class: 'fin-diners-bg' }),
+      el('rect', { x: 13, y: 4.5, width: 2, height: 7, class: 'fin-diners-bg' })],
+    jcb: () => [bg('fin-jcb-bg'), ...[['J', 'blue'], ['C', 'red'], ['B', 'green']].flatMap(([letter, colour], i) => [
+      el('rect', { x: 3 + i * 6.25, y: 3, width: 5.5, height: 10, rx: 1.5, class: `fin-jcb-${colour}` }),
+      el('text', { x: 5.75 + i * 6.25, y: 10.5, 'text-anchor': 'middle', class: 'fin-jcb-text' }, letter)])],
+    unionpay: () => [bg('fin-unionpay-bg'), ...['red', 'blue', 'teal'].map((colour, i) =>
+      el('polygon', { points: [[5 + i * 5.5, 3], [10 + i * 5.5, 3], [8 + i * 5.5, 13], [3 + i * 5.5, 13]].join(' '), class: `fin-unionpay-${colour}` }))],
+  };
+  svg.append(...marks[n]());
   return svg;
 }
 
@@ -880,20 +904,20 @@ export function paintMe() {
   meBtn.replaceChildren(avatar(p, 32));
   meBtn.setAttribute('aria-label', `Your account, ${p.name || p.email || 'signed in'}`);
   meBtn.title = p.name && p.email ? `${p.name} (${p.email})` : p.name || p.email;
-  const item = (label, run) => h('button', { type: 'button', class: 'fin-me-item', onclick: () => { openMe(false); run(); } }, label);
+  const item = (ic, label, run) => h('button', { type: 'button', class: 'fin-me-item', onclick: () => { openMe(false); run(); } }, icon(ic), label);
   meMenu.replaceChildren(
     h('div', { class: 'fin-me-who' }, avatar(p, 40),
       h('div', { class: 'fin-me-names' }, p.name && h('strong', {}, p.name), p.email && h('span', { class: 'fin-sub' }, p.email))),
     // On phones the header keeps only the logo, save status and this button, so Go to and Hide
     // amounts move in here (CSS shows them on phones only).
-    h('button', { type: 'button', class: 'fin-me-item fin-me-phone', onclick: () => { openMe(false); openPalette(); } }, 'Go to…'),
+    h('button', { type: 'button', class: 'fin-me-item fin-me-phone', onclick: () => { openMe(false); openPalette(); } }, icon('search'), 'Go to…'),
     h('button', { type: 'button', class: 'fin-me-item fin-me-phone', onclick: () => { openMe(false); setHideAmounts(!hideAmounts); } },
-      hideAmounts ? 'Show amounts' : 'Hide amounts'),
+      icon(hideAmounts ? 'eye' : 'eye-off'), hideAmounts ? 'Show amounts' : 'Hide amounts'),
     h('button', {
       type: 'button', class: 'fin-me-item', 'aria-current': view.name === 'settings' ? 'page' : null,
       onclick: () => { openMe(false); view = { name: 'settings' }; render(); },
-    }, 'Settings'),
-    item('Sign out', () => signOutNow()));
+    }, icon('sliders'), 'Settings'),
+    item('sign-out', 'Sign out', () => signOutNow()));
 }
 meBtn.addEventListener('click', () => {
   if (meMenu.hidden) paintMe(); // "Hide amounts" or "Show amounts", as it is now

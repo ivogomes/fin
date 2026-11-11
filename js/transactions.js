@@ -473,7 +473,7 @@ export function txTable(rows, { caption, showBalance = false, showAccount = fals
         h('td', { class: 'fin-nowrap c-date' }, quickCell(t, 'date', label,
           h('time', { datetime: t.date }, shortDate(t.date)))),
         h('td', { class: `fin-r fin-num c-amt ${tone(t.amount)}` }, quickCell(t, 'amount', label,
-          t.kind === 'refund' && h('span', { class: 'fin-refund', title: 'Refund' }, icon('refund'), h('span', { class: 'fin-sr' }, 'Refund: ')),
+          kindMark(t),
           signed(t.amount, cur))),
         showBalance && h('td', { class: 'fin-r fin-num fin-muted c-bal' }, t.balance == null ? '' : money(t.balance, cur)),
         h('td', { class: 'c-desc' }, quickCell(t, 'description', label, t.description),
@@ -770,14 +770,13 @@ export function accountLabel(a, { currency = false } = {}) {
   return extra.length ? `${a.name} (${extra.join(', ')})` : a.name;
 }
 export const accountName = (id) => { const a = state.accounts.find((x) => x.id === id); return a ? accountLabel(a) : 'a deleted account'; };
-// The same in a badge or a table cell: a card's network mark before its name (the mark names the
-// network for screen readers); a card with no network set says "credit card" in words.
+// The same in a badge or a table cell: a card's mark before its name (the mark names the network,
+// or "credit card", for screen readers).
 export function accountBadge(id) {
   const a = state.accounts.find((x) => x.id === id);
   if (!a) return ['a deleted account'];
   if (a.type !== 'credit') return [a.name];
-  const mark = cardMark(a, 'fin-card-mark--tag');
-  return mark ? [mark, a.name] : [accountLabel(a)];
+  return [cardMark(a, 'fin-card-mark--tag'), a.name];
 }
 // Accounts you can pick in a form: the active ones, plus `keep` even if it is archived.
 export const pickableAccounts = (keep) => state.accounts.filter((a) => !a.archived || a.id === keep).sort(byName);
@@ -1101,6 +1100,14 @@ export function categoryPicker(selected, { label, compact = false, onChange, pla
     el: wrap, box: combo.box, value: () => [...ids], refresh: () => paint(),
     set: (next) => { ids.splice(0, ids.length, ...next.filter((id) => category(id))); paint(); onChange?.([...ids], ''); },
   };
+}
+
+// A transaction's kind, as an icon before its amount (named for screen readers): a transfer, a
+// refund, a dividend or an opening balance. Other transactions have none. Takes a schedule too.
+const KIND_MARKS = { refund: ['refund', 'Refund'], dividend: ['coin', 'Dividend'], opening: ['flag', 'Opening balance'] };
+export function kindMark(t) {
+  const [ic, label] = t.transferId || t.kind === 'transfer' ? ['transfer', 'Transfer'] : KIND_MARKS[t.kind] ?? [];
+  return ic ? h('span', { class: 'fin-kind', title: label }, icon(ic), h('span', { class: 'fin-sr' }, `${label}: `)) : null;
 }
 
 // Categories as chips that only show (no × or menu): a schedule's in a list, a suggestion's.

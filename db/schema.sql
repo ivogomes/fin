@@ -208,7 +208,7 @@ alter table holdings add column if not exists google_ticker text;
 -- Backups: when one was last downloaded, and how many days between reminders (0 = none).
 -- Credit cards: the credit limit (cents, in the account's currency), to show what's left.
 alter table accounts add column if not exists credit_limit bigint;
--- Credit cards: the card network ('visa' or 'mastercard'), shown as a small mark by the name.
+-- Credit cards: the card network ('visa', 'mastercard', 'amex'… see CARD_NETWORKS in js/app.js), shown as a small mark by the name.
 alter table accounts add column if not exists card_network text;
 alter table settings add column if not exists last_backup_at timestamptz;
 alter table settings add column if not exists backup_every integer not null default 7;

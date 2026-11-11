@@ -14,7 +14,7 @@ import { decimal2, importKind, importPage, importTabs, setBuxferDraft, setImport
 import { pageLink } from './overview.js';
 import { accountName, catChips, needEverything } from './transactions.js';
 import {
-  NUMBER_FORMATS, button, isPhone, catLabel, catOptions, category, field, h, hideAmounts, input,
+  NUMBER_FORMATS, button, isPhone, catLabel, catOptions, category, field, h, hideAmounts, icon, input,
   numberFormat, say, select, setNumberFormat, shortDate, signed, writePref,
 } from './ui.js';
 
@@ -22,18 +22,18 @@ import {
 
 // Settings are split into pages; while in Settings the left panel lists them instead of the accounts.
 export const SETTINGS_PAGES = [
-  { key: 'categories', label: 'Categories', group: 'Organise', needsAll: true, render: () => categoriesSection() },
-  { key: 'rules', label: 'Category rules', group: 'Organise', needsAll: true, render: () => rulesSection() },
-  { key: 'market', label: 'Market data', group: 'Prices', render: () => marketSection() },
-  { key: 'backup', label: 'Backup and restore', group: 'Data', needsAll: true, render: () => backupSection() },
+  { key: 'categories', icon: 'tag', label: 'Categories', group: 'Organise', needsAll: true, render: () => categoriesSection() },
+  { key: 'rules', icon: 'bolt', label: 'Category rules', group: 'Organise', needsAll: true, render: () => rulesSection() },
+  { key: 'market', icon: 'type-investment', label: 'Market data', group: 'Prices', render: () => marketSection() },
+  { key: 'backup', icon: 'cloud-up', label: 'Backup and restore', group: 'Data', needsAll: true, render: () => backupSection() },
   // One page for every import, with the kind picked at the top (holdings don't need every transaction).
-  { key: 'import', label: 'Import', group: 'Data', needsAll: () => importKind() !== 'holdings', render: () => importPage() },
-  { key: 'link', label: 'Link transfers', group: 'Data', needsAll: true, render: () => linkTransfersSection() },
-  { key: 'duplicates', label: 'Duplicates', group: 'Data', needsAll: true, render: () => duplicatesSection() },
-  { key: 'export', label: 'Export', group: 'Data', needsAll: true, render: () => exportSection() },
-  { key: 'delete', label: 'Delete all data', group: 'Data', render: () => deleteAllSection() },
-  { key: 'display', label: 'Display', group: 'Account', render: () => displaySection() },
-  { key: 'account', label: 'Your account', group: 'Account', render: () => accountSection() },
+  { key: 'import', icon: 'import', label: 'Import', group: 'Data', needsAll: () => importKind() !== 'holdings', render: () => importPage() },
+  { key: 'link', icon: 'link', label: 'Link transfers', group: 'Data', needsAll: true, render: () => linkTransfersSection() },
+  { key: 'duplicates', icon: 'copy', label: 'Duplicates', group: 'Data', needsAll: true, render: () => duplicatesSection() },
+  { key: 'export', icon: 'export', label: 'Export', group: 'Data', needsAll: true, render: () => exportSection() },
+  { key: 'delete', icon: 'trash', label: 'Delete all data', group: 'Data', render: () => deleteAllSection() },
+  { key: 'display', icon: 'monitor', label: 'Display', group: 'Account', render: () => displaySection() },
+  { key: 'account', icon: 'person', label: 'Your account', group: 'Account', render: () => accountSection() },
 ];
 export let settingsPage = 'categories'; // remembered while the page stays open
 
@@ -74,7 +74,7 @@ export function renderSettingsNav({ list = false } = {}) {
           type: 'button', class: `fin-account${p.key === 'delete' ? ' fin-account-danger' : ''}`,
           'data-key': `set-${p.key}`, 'aria-current': p.key === current ? 'page' : null,
           onclick: () => openSettings(p.key, `set-${p.key}`),
-        }, h('span', { class: 'fin-account-name' }, p.label)))))))),
+        }, h('span', { class: 'fin-account-name' }, h('span', { class: 'fin-set-icon' }, icon(p.icon)), p.label)))))))),
   ];
 }
 

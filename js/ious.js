@@ -3,7 +3,7 @@
 import { today } from './market.js';
 import { IOU_KINDS, IOU_TYPES, newId, normalize, personBalances, personHistory, toMinor } from './model.js';
 import { persist } from './store.js';
-import { render, setView, state, undoable, view } from './app.js';
+import { avatar, render, setView, state, undoable, view } from './app.js';
 import { accountLabel, accountName, pickableAccounts } from './transactions.js';
 import {
   button, dialog, field, h, iconButton, input, money, readPref, say, select, shortDate, signed,
@@ -14,6 +14,13 @@ import {
 
 export const personName = (id) => state.people.find((p) => p.id === id)?.name ?? 'Someone';
 // What a balance means, from your side.
+// A person's initials in a circle, in a colour of their own (the same one every time).
+const personAvatar = (p, size) => {
+  const a = avatar({ name: p.name }, size);
+  a.classList.add('fin-person-avatar');
+  a.dataset.hue = String([...p.id].reduce((n, ch) => (n * 31 + ch.charCodeAt(0)) % 9973, 0) % 8);
+  return a;
+};
 export const owesText = (minor) => (minor > 0 ? 'owes you' : minor < 0 ? 'you owe' : 'settled');
 
 // Lend, get paid back, borrow or pay back. With an account, the money also moves there as a
@@ -117,7 +124,7 @@ export function renderIous() {
             type: 'button', class: 'fin-row', 'data-key': `person-${p.id}`,
             onclick: () => { setView({ name: 'ious', personId: p.id }); render('person-h'); },
           },
-            h('span', { class: 'fin-row-name' }, p.name),
+            h('span', { class: 'fin-row-name' }, personAvatar(p, 32), p.name),
             h('span', { class: `fin-num ${bal > 0 ? 'fin-pos' : bal < 0 ? 'fin-neg' : 'fin-muted'}` },
               bal ? `${owesText(bal)} ${money(Math.abs(bal), 'EUR')}` : 'settled')));
         }))));
@@ -132,7 +139,7 @@ export function renderPerson(personId) {
     h('div', { class: 'fin-bar' }, button('‹ All people', back, 'secondary fin-btn-sm')),
     h('div', { class: 'fin-account-head' },
       h('div', {},
-        h('h2', { class: 'fin-title', id: 'person-h', tabindex: '-1', 'data-key': 'person-h' }, p.name),
+        h('h2', { class: 'fin-title fin-account-title', id: 'person-h', tabindex: '-1', 'data-key': 'person-h' }, personAvatar(p, 40), h('span', {}, p.name)),
         h('p', { class: 'fin-meta' }, bal ? `${p.name} ${owesText(bal)} ${money(Math.abs(bal), 'EUR')}` : 'All settled')),
       h('div', { class: 'fin-actions' },
         button('Add an IOU', () => openIouDialog({ personId, kind: bal > 0 ? 'repaid' : 'lent' }), 'primary', { 'data-key': 'iou-add' }),

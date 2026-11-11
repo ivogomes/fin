@@ -640,6 +640,7 @@ export function interestCard(account, value) {
 // Accounts whose balance is worth looking ahead at (not cards, loans or investments).
 const hasAhead = (account) => !['credit', 'loan', 'investment'].includes(account.type);
 const TAB_LABELS = { transactions: 'Transactions', insights: 'Insights', ahead: 'Balance ahead' };
+const TAB_ICONS = { transactions: 'list', insights: 'bars', ahead: 'ahead' };
 export const accountTab = (account) => (view.tab === 'insights' || (view.tab === 'ahead' && hasAhead(account)) ? view.tab : 'transactions');
 export function accountTabs(account) {
   const tab = accountTab(account);
@@ -647,7 +648,7 @@ export function accountTabs(account) {
   return h('div', { class: 'fin-tabs', role: 'group', 'aria-label': 'Account view' },
     ['transactions', 'insights', hasAhead(account) && 'ahead'].filter(Boolean).map((t) => h('button', {
       type: 'button', class: 'fin-tab', 'aria-pressed': String(tab === t), 'data-key': `tab-${t}`, onclick: () => pick(t),
-    }, TAB_LABELS[t])));
+    }, icon(TAB_ICONS[t]), TAB_LABELS[t])));
 }
 
 // Only one page of rows is put in the DOM. The running balance is still worked out over all of the

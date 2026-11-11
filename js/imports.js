@@ -15,7 +15,7 @@ import { isXls, readXls } from './xls.js';
 import { readXlsx } from './xlsx.js';
 import { accountLabel, holdingOf, needEverything } from './transactions.js';
 import {
-  button, catLabel, category, field, h, input, money, say, select, shortDate, signed, tone,
+  button, catLabel, category, field, h, icon, input, money, say, select, shortDate, signed, tone,
 } from './ui.js';
 
 // ── CSV import and export ────────────────────────────────────────────────────
@@ -145,6 +145,7 @@ export function previewBuxfer() {
 export const IMPORT_KINDS = [
   ['csv', 'Transactions'], ['buxfer', 'From Buxfer'], ['holdings', 'Holdings'],
 ];
+const IMPORT_ICONS = { csv: 'list', buxfer: 'import', holdings: 'type-investment' };
 export const importKind = () => (IMPORT_KINDS.some(([k]) => k === view.kind) ? view.kind : 'csv');
 export function importTabs() {
   const current = importKind();
@@ -152,7 +153,7 @@ export function importTabs() {
     IMPORT_KINDS.map(([k, label]) => h('button', {
       type: 'button', class: 'fin-tab', 'aria-pressed': String(current === k), 'data-key': `imp-${k}`,
       onclick: () => { setView({ name: 'settings', section: 'import', kind: k }); render(`imp-${k}`); say(`Import ${label.toLowerCase()}.`); },
-    }, label)));
+    }, icon(IMPORT_ICONS[k]), label)));
 }
 export function importPage() {
   const kind = importKind();

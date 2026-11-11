@@ -151,7 +151,9 @@ body {
 .fin-me-names { display: flex; flex-direction: column; min-width: 0; }
 .fin-me-names > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fin-me-item {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 10px;
   width: 100%;
   padding: 8px 10px;
   border: 0;
@@ -164,6 +166,8 @@ body {
   cursor: pointer;
 }
 .fin-me-item:hover { background: var(--f-hover); }
+.fin-me-item .fin-icon { flex: none; color: var(--f-muted); }
+.fin-me-item[aria-current="page"] .fin-icon { color: inherit; }
 .fin-me-item:focus-visible { outline: none; box-shadow: var(--f-ring); }
 
 /* The header's search bar (Ctrl/⌘+K): opens Go to, where Enter searches the transactions. */
@@ -347,6 +351,10 @@ body {
   color: var(--tint-ink);
 }
 .fin-group-icon .fin-icon { width: 16px; height: 16px; }
+/* Settings pages in the side panel: a plain line icon before each (the danger one takes its red). */
+.fin-set-icon { display: inline-flex; flex: none; margin-right: 10px; color: var(--f-muted); vertical-align: -3px; }
+.fin-set-icon .fin-icon { width: 16px; height: 16px; }
+.fin-account[aria-current="page"] .fin-set-icon, .fin-account-danger .fin-set-icon { color: inherit; }
 /* The account page's title, after its type's icon (or a card's network mark). */
 .fin-account-title { display: flex; align-items: center; gap: 12px; overflow-wrap: anywhere; }
 .fin-account-title .fin-card-mark--title { flex: none; margin-right: 0; }
@@ -866,7 +874,8 @@ textarea.fin-input { resize: vertical; }
 .fin-tag--iou::before { content: '↺'; font-size: 13px; }
 .fin-tag--iou:hover { text-decoration: underline; }
 
-/* Category chips: one colour per top-level category (data-hue 0–7), shared by its children. */
+/* Category chips: one colour per top-level category (data-hue 0–7), shared by its children.
+   IOU people's initials take the same colours (one per person). */
 .fin-cats { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
 .fin-cats-compact { min-width: 12rem; }
 .fin-cat-chip {
@@ -883,36 +892,37 @@ textarea.fin-input { resize: vertical; }
   white-space: nowrap;
 }
 .fin-cat-dot { --chip-ink: #0F5E6B; }
+.fin-person-avatar { --chip-bg: #E2F0F1; --chip-ink: #0F5E6B; background: var(--chip-bg); color: var(--chip-ink); }
 /* A category's name in a transaction list: a link to its transactions in Search. */
 .fin-cat-link { color: inherit; text-decoration: none; border-radius: 4px; }
 .fin-cat-link:hover { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
 .fin-cat-link:focus-visible { outline: 2px solid var(--f-accent); outline-offset: 2px; }
-:is(.fin-cat-chip, .fin-cat-dot)[data-hue="1"] { --chip-bg: #E6EEFB; --chip-ink: #2A4F9E; }
-:is(.fin-cat-chip, .fin-cat-dot)[data-hue="2"] { --chip-bg: #EFE9FB; --chip-ink: #5B3FA6; }
-:is(.fin-cat-chip, .fin-cat-dot)[data-hue="3"] { --chip-bg: #FBE8F1; --chip-ink: #9E2D66; }
-:is(.fin-cat-chip, .fin-cat-dot)[data-hue="4"] { --chip-bg: #FDECE1; --chip-ink: #9E4719; }
-:is(.fin-cat-chip, .fin-cat-dot)[data-hue="5"] { --chip-bg: #FBF2D9; --chip-ink: #82600C; }
-:is(.fin-cat-chip, .fin-cat-dot)[data-hue="6"] { --chip-bg: #E3F3E8; --chip-ink: #1D6B3C; }
-:is(.fin-cat-chip, .fin-cat-dot)[data-hue="7"] { --chip-bg: #ECEFF1; --chip-ink: #44535D; }
+:is(.fin-cat-chip, .fin-cat-dot, .fin-person-avatar)[data-hue="1"] { --chip-bg: #E6EEFB; --chip-ink: #2A4F9E; }
+:is(.fin-cat-chip, .fin-cat-dot, .fin-person-avatar)[data-hue="2"] { --chip-bg: #EFE9FB; --chip-ink: #5B3FA6; }
+:is(.fin-cat-chip, .fin-cat-dot, .fin-person-avatar)[data-hue="3"] { --chip-bg: #FBE8F1; --chip-ink: #9E2D66; }
+:is(.fin-cat-chip, .fin-cat-dot, .fin-person-avatar)[data-hue="4"] { --chip-bg: #FDECE1; --chip-ink: #9E4719; }
+:is(.fin-cat-chip, .fin-cat-dot, .fin-person-avatar)[data-hue="5"] { --chip-bg: #FBF2D9; --chip-ink: #82600C; }
+:is(.fin-cat-chip, .fin-cat-dot, .fin-person-avatar)[data-hue="6"] { --chip-bg: #E3F3E8; --chip-ink: #1D6B3C; }
+:is(.fin-cat-chip, .fin-cat-dot, .fin-person-avatar)[data-hue="7"] { --chip-bg: #ECEFF1; --chip-ink: #44535D; }
 @media (prefers-color-scheme: dark) {
-  :where(:root:not([data-theme="light"])) :is(.fin-cat-chip, .fin-cat-dot) { --chip-bg: rgb(91 191 181 / 0.16); --chip-ink: #8AD8CF; }
-  :where(:root:not([data-theme="light"])) :is(.fin-cat-chip, .fin-cat-dot)[data-hue="1"] { --chip-bg: rgb(110 150 240 / 0.18); --chip-ink: #A9C2F7; }
-  :where(:root:not([data-theme="light"])) :is(.fin-cat-chip, .fin-cat-dot)[data-hue="2"] { --chip-bg: rgb(160 130 240 / 0.18); --chip-ink: #C7B5F6; }
-  :where(:root:not([data-theme="light"])) :is(.fin-cat-chip, .fin-cat-dot)[data-hue="3"] { --chip-bg: rgb(240 120 170 / 0.16); --chip-ink: #F2A9C9; }
-  :where(:root:not([data-theme="light"])) :is(.fin-cat-chip, .fin-cat-dot)[data-hue="4"] { --chip-bg: rgb(245 150 90 / 0.16); --chip-ink: #F5B78F; }
-  :where(:root:not([data-theme="light"])) :is(.fin-cat-chip, .fin-cat-dot)[data-hue="5"] { --chip-bg: rgb(230 190 80 / 0.16); --chip-ink: #EBCB7C; }
-  :where(:root:not([data-theme="light"])) :is(.fin-cat-chip, .fin-cat-dot)[data-hue="6"] { --chip-bg: rgb(90 200 130 / 0.16); --chip-ink: #93DDAE; }
-  :where(:root:not([data-theme="light"])) :is(.fin-cat-chip, .fin-cat-dot)[data-hue="7"] { --chip-bg: rgb(160 175 185 / 0.16); --chip-ink: #BAC6CD; }
+  :where(:root:not([data-theme="light"])) :is(.fin-cat-chip, .fin-cat-dot, .fin-person-avatar) { --chip-bg: rgb(91 191 181 / 0.16); --chip-ink: #8AD8CF; }
+  :where(:root:not([data-theme="light"])) :is(.fin-cat-chip, .fin-cat-dot, .fin-person-avatar)[data-hue="1"] { --chip-bg: rgb(110 150 240 / 0.18); --chip-ink: #A9C2F7; }
+  :where(:root:not([data-theme="light"])) :is(.fin-cat-chip, .fin-cat-dot, .fin-person-avatar)[data-hue="2"] { --chip-bg: rgb(160 130 240 / 0.18); --chip-ink: #C7B5F6; }
+  :where(:root:not([data-theme="light"])) :is(.fin-cat-chip, .fin-cat-dot, .fin-person-avatar)[data-hue="3"] { --chip-bg: rgb(240 120 170 / 0.16); --chip-ink: #F2A9C9; }
+  :where(:root:not([data-theme="light"])) :is(.fin-cat-chip, .fin-cat-dot, .fin-person-avatar)[data-hue="4"] { --chip-bg: rgb(245 150 90 / 0.16); --chip-ink: #F5B78F; }
+  :where(:root:not([data-theme="light"])) :is(.fin-cat-chip, .fin-cat-dot, .fin-person-avatar)[data-hue="5"] { --chip-bg: rgb(230 190 80 / 0.16); --chip-ink: #EBCB7C; }
+  :where(:root:not([data-theme="light"])) :is(.fin-cat-chip, .fin-cat-dot, .fin-person-avatar)[data-hue="6"] { --chip-bg: rgb(90 200 130 / 0.16); --chip-ink: #93DDAE; }
+  :where(:root:not([data-theme="light"])) :is(.fin-cat-chip, .fin-cat-dot, .fin-person-avatar)[data-hue="7"] { --chip-bg: rgb(160 175 185 / 0.16); --chip-ink: #BAC6CD; }
   :where(:root:not([data-theme="light"])) .fin-tag--iou { background: rgb(230 190 80 / 0.16); color: #EBCB7C; }
 }
-:where(:root[data-theme="dark"]) :is(.fin-cat-chip, .fin-cat-dot) { --chip-bg: rgb(91 191 181 / 0.16); --chip-ink: #8AD8CF; }
-:where(:root[data-theme="dark"]) :is(.fin-cat-chip, .fin-cat-dot)[data-hue="1"] { --chip-bg: rgb(110 150 240 / 0.18); --chip-ink: #A9C2F7; }
-:where(:root[data-theme="dark"]) :is(.fin-cat-chip, .fin-cat-dot)[data-hue="2"] { --chip-bg: rgb(160 130 240 / 0.18); --chip-ink: #C7B5F6; }
-:where(:root[data-theme="dark"]) :is(.fin-cat-chip, .fin-cat-dot)[data-hue="3"] { --chip-bg: rgb(240 120 170 / 0.16); --chip-ink: #F2A9C9; }
-:where(:root[data-theme="dark"]) :is(.fin-cat-chip, .fin-cat-dot)[data-hue="4"] { --chip-bg: rgb(245 150 90 / 0.16); --chip-ink: #F5B78F; }
-:where(:root[data-theme="dark"]) :is(.fin-cat-chip, .fin-cat-dot)[data-hue="5"] { --chip-bg: rgb(230 190 80 / 0.16); --chip-ink: #EBCB7C; }
-:where(:root[data-theme="dark"]) :is(.fin-cat-chip, .fin-cat-dot)[data-hue="6"] { --chip-bg: rgb(90 200 130 / 0.16); --chip-ink: #93DDAE; }
-:where(:root[data-theme="dark"]) :is(.fin-cat-chip, .fin-cat-dot)[data-hue="7"] { --chip-bg: rgb(160 175 185 / 0.16); --chip-ink: #BAC6CD; }
+:where(:root[data-theme="dark"]) :is(.fin-cat-chip, .fin-cat-dot, .fin-person-avatar) { --chip-bg: rgb(91 191 181 / 0.16); --chip-ink: #8AD8CF; }
+:where(:root[data-theme="dark"]) :is(.fin-cat-chip, .fin-cat-dot, .fin-person-avatar)[data-hue="1"] { --chip-bg: rgb(110 150 240 / 0.18); --chip-ink: #A9C2F7; }
+:where(:root[data-theme="dark"]) :is(.fin-cat-chip, .fin-cat-dot, .fin-person-avatar)[data-hue="2"] { --chip-bg: rgb(160 130 240 / 0.18); --chip-ink: #C7B5F6; }
+:where(:root[data-theme="dark"]) :is(.fin-cat-chip, .fin-cat-dot, .fin-person-avatar)[data-hue="3"] { --chip-bg: rgb(240 120 170 / 0.16); --chip-ink: #F2A9C9; }
+:where(:root[data-theme="dark"]) :is(.fin-cat-chip, .fin-cat-dot, .fin-person-avatar)[data-hue="4"] { --chip-bg: rgb(245 150 90 / 0.16); --chip-ink: #F5B78F; }
+:where(:root[data-theme="dark"]) :is(.fin-cat-chip, .fin-cat-dot, .fin-person-avatar)[data-hue="5"] { --chip-bg: rgb(230 190 80 / 0.16); --chip-ink: #EBCB7C; }
+:where(:root[data-theme="dark"]) :is(.fin-cat-chip, .fin-cat-dot, .fin-person-avatar)[data-hue="6"] { --chip-bg: rgb(90 200 130 / 0.16); --chip-ink: #93DDAE; }
+:where(:root[data-theme="dark"]) :is(.fin-cat-chip, .fin-cat-dot, .fin-person-avatar)[data-hue="7"] { --chip-bg: rgb(160 175 185 / 0.16); --chip-ink: #BAC6CD; }
 :where(:root[data-theme="dark"]) .fin-tag--iou { background: rgb(230 190 80 / 0.16); color: #EBCB7C; }
 /* A chip with no × (one that only shows) is padded evenly, the same height as one with it. */
 .fin-cat-chip:not(:has(.fin-cat-x)) { padding: 2px 10px; min-height: 22px; }
@@ -968,12 +978,16 @@ input.fin-cat-add:focus { width: 10rem; border-style: solid; border-color: var(-
 }
 
 /* ── Refunds ──────────────────────────────────────────── */
-.fin-refund { display: inline-flex; vertical-align: -3px; margin-right: 6px; color: var(--f-muted); }
-.fin-refund .fin-icon { width: 15px; height: 15px; }
+/* A transaction's kind before its amount (transfer, refund, dividend, opening balance). */
+.fin-kind { display: inline-flex; vertical-align: -3px; margin-right: 6px; color: var(--f-muted); }
+.fin-kind .fin-icon { width: 15px; height: 15px; }
 
 /* ── Account view tabs ────────────────────────────────── */
 .fin-tabs { display: flex; gap: 4px; margin: 28px 0 0; border-bottom: 1px solid var(--f-border); }
 .fin-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
   margin-bottom: -1px;
   padding: 10px 14px;
   border: 0;
@@ -984,6 +998,9 @@ input.fin-cat-add:focus { width: 10rem; border-style: solid; border-color: var(-
   cursor: pointer;
 }
 .fin-tab:hover { color: var(--f-text); }
+.fin-tab .fin-icon { flex: none; width: 16px; height: 16px; }
+/* Phones: no room for them beside five tabs' labels. */
+@media (max-width: 40rem) { .fin-tab .fin-icon { display: none; } }
 .fin-tab[aria-pressed="true"] { color: var(--f-accent-strong); border-bottom-color: var(--f-accent); }
 .fin-tabs + .fin-card, .fin-tabs + .fin-insights { margin-top: 20px; }
 
@@ -1142,17 +1159,39 @@ a.fin-break-link:focus-visible { outline: none; box-shadow: var(--f-ring); borde
 
 /* A credit card's limit used: a thin bar under "Available" (the note beside it says the same). */
 .fin-usage { display: block; height: 6px; margin-top: 8px; border-radius: 3px; background: var(--f-surface-2); border: 1px solid var(--f-border); overflow: hidden; }
-/* Card network marks beside a credit card's name (Visa, Mastercard), in their brand colours. */
+/* Card network marks beside a credit card's name (Visa, Mastercard, Amex…), in their brand colours. */
 .fin-card-mark { width: 24px; height: 16px; flex: none; margin-right: 8px; vertical-align: -3px; border-radius: 2.5px; }
 .fin-card-mark--title { width: 36px; height: 24px; margin-right: 12px; vertical-align: -2px; }
 /* In a badge or a table cell (a transfer's other account, search results): smaller, beside the name. */
 .fin-card-mark--tag { width: 18px; height: 12px; margin: 0 5px 0 1px; vertical-align: -2px; border-radius: 2px; }
+.fin-generic-bg { fill: var(--f-surface-2); stroke: var(--f-border-strong); stroke-width: 1; }
+.fin-generic-stripe, .fin-generic-chip { fill: var(--f-muted); }
 .fin-visa-bg { fill: #1A1F71; }
 .fin-visa-text { fill: #FFFFFF; font: italic 800 7.5px var(--font-sans); letter-spacing: 0.2px; }
 .fin-mc-bg { fill: #252525; }
-.fin-mc-red { fill: #EB001B; }
-.fin-mc-yellow { fill: #F79E1B; }
-.fin-mc-orange { fill: #FF5F00; }
+.fin-mc-left { fill: #EB001B; }
+.fin-mc-right { fill: #F79E1B; }
+.fin-mc-mid { fill: #FF5F00; }
+.fin-maestro-bg { fill: #252525; }
+.fin-maestro-left { fill: #EB001B; }
+.fin-maestro-right { fill: #0099DF; }
+.fin-maestro-mid { fill: #6C6BBD; }
+.fin-amex-bg { fill: #006FCF; }
+.fin-amex-text { fill: #FFFFFF; font: 800 6.5px var(--font-sans); letter-spacing: 0.1px; }
+.fin-discover-bg { fill: #FFFFFF; stroke: #D0D0D0; stroke-width: 1; }
+.fin-discover-text { fill: #231F20; font: 800 6px var(--font-sans); }
+.fin-discover-dot { fill: #FF6000; }
+.fin-diners-bg { fill: #0079BE; }
+.fin-diners-ring { fill: #FFFFFF; }
+.fin-jcb-bg { fill: #FFFFFF; stroke: #D0D0D0; stroke-width: 1; }
+.fin-jcb-blue { fill: #0E4C96; }
+.fin-jcb-red { fill: #E21836; }
+.fin-jcb-green { fill: #007B40; }
+.fin-jcb-text { fill: #FFFFFF; font: 800 6px var(--font-sans); }
+.fin-unionpay-bg { fill: #FFFFFF; stroke: #D0D0D0; stroke-width: 1; }
+.fin-unionpay-red { fill: #E21836; }
+.fin-unionpay-blue { fill: #00447C; }
+.fin-unionpay-teal { fill: #007B84; }
 /* In the side panel: under the card's name and balance, across the row. */
 .fin-account--limit { flex-wrap: wrap; row-gap: 0; }
 .fin-usage-side { flex: 1 0 100%; height: 4px; margin: 4px 0 2px; border: 0; background: color-mix(in srgb, var(--f-text) 10%, transparent); }
@@ -1664,7 +1703,7 @@ a.fin-break-link:focus-visible { outline: none; box-shadow: var(--f-ring); borde
   .tool-logo-text { font-size: 19px; }
   .fin-sync { margin: 0; }
   .tool-header .fin-nav, .tool-header .fin-cmd-open, .tool-header .fin-hide-toggle { display: none; }
-  .fin-me-phone { display: block; }
+  .fin-me-phone { display: flex; }
 
   /* The page never scrolls sideways: anything wider than the screen (a table) scrolls inside its
      own card. Otherwise iOS widens the page to fit it and the tab bar slides down off the screen. */
@@ -2046,8 +2085,6 @@ label > .fin-flag { margin-right: 6px; }
 .fin-chip-link:focus-visible { outline: none; box-shadow: var(--f-ring); }
 
 /* Coming up (Overview): a card payment without a network mark gets a card icon in its place. */
-.fin-coming-card { display: inline-flex; margin-right: 8px; color: var(--f-muted); vertical-align: -3px; }
-.fin-coming-card .fin-icon { width: 18px; height: 18px; }
 
 /* Assets page: a card per asset (its kind's icon and name, figures, value over time, valuations). */
 .fin-asset-head { display: flex; flex-wrap: nowrap; align-items: flex-start; gap: 12px; }

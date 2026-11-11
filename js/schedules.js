@@ -15,7 +15,7 @@ import {
 import { ask, inEur } from './insights.js';
 import { pageLink } from './overview.js';
 import {
-  accountBadge, accountLabel, accountName, catChips, categoryCell, categoryPicker,
+  accountBadge, accountLabel, accountName, catChips, categoryCell, categoryPicker, kindMark,
   pickableAccounts, pickerField, transactionForm,
 } from './transactions.js';
 import {
@@ -27,8 +27,8 @@ import {
 
 export const FORECAST_DAYS = 30;
 export const daysFromToday = (n) => new Date(Date.now() + n * 864e5).toISOString().slice(0, 10);
-// A credit card's mark (its network's, or a card icon) before a payment to or from it, as in Coming up.
-export const cardIcon = (card) => cardMark(card) ?? h('span', { class: 'fin-coming-card' }, icon('type-credit'));
+// A credit card's mark (its network's, or a plain card) before a payment to or from it, as in Coming up.
+export const cardIcon = (card) => cardMark(card);
 // A scheduled transfer to (or from) a credit card: that card's mark, or nothing.
 export function scheduleCardIcon(s) {
   if (s.kind !== 'transfer') return null;
@@ -175,8 +175,8 @@ export function upcomingRows(account, { cols, inEur, balance }) {
   for (const it of items) it.balance = (running += it.amount);
   const cur = account.currency;
   const dateCell = (date, chip) => h('td', { class: 'fin-nowrap c-date' }, h('time', { datetime: date }, shortDate(date)), chip);
-  const amountCell = (amount, refund) => h('td', { class: `fin-r fin-num c-amt ${tone(amount)}` },
-    refund && h('span', { class: 'fin-refund', title: 'Refund' }, icon('refund'), h('span', { class: 'fin-sr' }, 'Refund: ')),
+  const amountCell = (amount, t = null) => h('td', { class: `fin-r fin-num c-amt ${tone(amount)}` },
+    t && kindMark(t),
     signed(amount, cur));
   const balanceCell = (b) => h('td', { class: 'fin-r fin-num fin-muted c-bal' }, money(b, cur));
 
@@ -185,7 +185,7 @@ export function upcomingRows(account, { cols, inEur, balance }) {
     return h('tr', { class: `fin-upcoming${due ? ' fin-due' : ''}` },
       h('td', { class: 'fin-tick-col c-tick' }),
       dateCell(date, h('span', { class: `fin-chip fin-chip-inline${due ? ' fin-chip-due' : ''}` }, due ?? 'Scheduled')),
-      amountCell(amount),
+      amountCell(amount, s),
       balanceCell(b),
       h('td', { class: 'c-desc' }, scheduleCardIcon(s), s.description, subscriptionChip(null, s), h('span', { class: 'fin-sub' },
         `${frequencyLabel(s)}${s.kind === 'transfer' ? ` · ${scheduleAccounts(s)}` : ''}`)),
@@ -215,7 +215,7 @@ export function upcomingRows(account, { cols, inEur, balance }) {
     return h('tr', { class: `fin-upcoming${due ? ' fin-due' : ''}` },
       h('td', { class: 'fin-tick-col c-tick' }),
       dateCell(date, h('span', { class: `fin-chip fin-chip-inline${due ? ' fin-chip-due' : ''}` }, due ?? 'Payment due')),
-      amountCell(amount),
+      amountCell(amount, { kind: 'transfer' }),
       balanceCell(b),
       h('td', { class: 'c-desc' }, cardIcon(pay.card), `${pay.card.name} payment`, h('span', { class: 'fin-sub' },
         `Statement of ${shortDate(pay.st.close)}${toCard ? (pay.from ? ` · from ${pay.from.name}` : ' · paid from: not set') : ''}`)),
@@ -232,7 +232,7 @@ export function upcomingRows(account, { cols, inEur, balance }) {
     return h('tr', { class: 'fin-upcoming' },
       h('td', { class: 'fin-tick-col c-tick' }),
       dateCell(t.date),
-      amountCell(t.amount, t.kind === 'refund'),
+      amountCell(t.amount, t),
       balanceCell(b),
       h('td', { class: 'c-desc' }, t.description, subscriptionChip(t), t.memo && h('span', { class: 'fin-sub' }, t.memo)),
       h('td', { class: 'c-cat' }, categoryCell(t)),
@@ -452,9 +452,9 @@ export function renderSchedules() {
   const subs = view.tab === 'subscriptions';
   const pick = (t) => { setView({ name: 'scheduled', ...(t === 'subscriptions' && { tab: t }) }); render(`sched-tab-${t}`); };
   const tabs = h('div', { class: 'fin-tabs', role: 'group', 'aria-label': 'Scheduled view' },
-    [['schedules', 'Schedules'], ['subscriptions', 'Subscriptions']].map(([t, label]) => h('button', {
+    [['schedules', 'Schedules', 'clock'], ['subscriptions', 'Subscriptions', 'subscription']].map(([t, label, ic]) => h('button', {
       type: 'button', class: 'fin-tab', 'aria-pressed': String(subs === (t === 'subscriptions')), 'data-key': `sched-tab-${t}`, onclick: () => pick(t),
-    }, label)));
+    }, icon(ic), label)));
   if (subs) {
     return h('div', {},
       h('div', { class: 'fin-account-head' },

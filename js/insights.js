@@ -532,9 +532,10 @@ export function renderInsights() {
             : tab === 'budgets' ? 'Give every euro in your everyday accounts a job: assign it to envelopes, month by month, in EUR.'
             : 'Income and spending across all your accounts, archived ones included.'))),
     h('div', { class: 'fin-tabs', role: 'group', 'aria-label': 'Insights view' },
-      [['spending', 'Income and spending'], ['budgets', 'Budgets'], ['networth', 'Net worth'], ['investments', 'Investments'], ['goals', 'Goals']].map(([t, label]) => h('button', {
+      [['spending', 'Income and spending', 'in-out'], ['budgets', 'Budgets', 'envelope'], ['networth', 'Net worth', 'layers'],
+        ['investments', 'Investments', 'type-investment'], ['goals', 'Goals', 'goal']].map(([t, label, ic]) => h('button', {
         type: 'button', class: 'fin-tab', 'aria-pressed': String(tab === t), 'data-key': `ins-tab-${t}`, onclick: () => pick(t),
-      }, label))),
+      }, icon(ic), label))),
     worth ? renderNetWorth() : tab === 'goals' ? renderGoals() : tab === 'budgets' ? renderBudgets() : tab === 'investments' ? renderInvestments() : insightsPanel(null));
 }
 
