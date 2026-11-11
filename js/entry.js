@@ -13,7 +13,7 @@ import {
   pickerField, splitEditor,
 } from './transactions.js';
 import {
-  button, catLabel, field, flag, h, input, money, say, select, shortDate, txDialog, typeSwitch,
+  button, byCatLabel, catLabel, field, flag, h, input, money, say, select, shortDate, txDialog, typeSwitch,
 } from './ui.js';
 
 // ── add transactions dialog ──────────────────────────────────────────────────
@@ -94,7 +94,7 @@ export function descriptionCombo(index, { label, accountOf, onAccept }) {
       h('span', { class: 'fin-option-main' }, e.description),
       h('span', { class: 'fin-sub' }, [
         e.kind === 'transfer' ? `⇄ ${accountName(e.accountId)} → ${accountName(e.toAccountId)}`
-          : `${e.kind === 'refund' ? '↩ Refund · ' : ''}${e.categoryIds.map(catLabel).filter(Boolean).join(', ') || 'No category'}`,
+          : `${e.kind === 'refund' ? '↩ Refund · ' : ''}${byCatLabel(e.categoryIds).map(catLabel).filter(Boolean).join(', ') || 'No category'}`,
         `used ${e.count}×`].join(' · ')))));
     open(results.length > 0);
     // Pre-select the first suggestion only when it starts with what's typed, so Tab or Enter never

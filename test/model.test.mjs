@@ -10,7 +10,7 @@ import {
   parseCsv, toCsv, parseAmount, parseDate, guessDateFormat, guessDecimal, guessMapping, findHeaderRow, importRows,
   parseStatement, statementAccount, spentIn, unbudgeted, monthsBetween, budgetProgress, addMonths, assignedIn, assignedThrough, freezePast, toBudget,
   findTransferPairs, findDuplicates, detectBuxferFile, buxferImport, isFundMovements, fundMovementsToFt,
-  categoryPath, categoryResolver, categoriesOf, sortedCategories, searchCategories, assetValue, assetValuations,
+  categoryPath, categoryResolver, categoriesOf, mergeCategory, sortedCategories, searchCategories, assetValue, assetValuations,
   parseBuxferIou, iouSign, iouType, personBalances, personHistory,
   periodRange, granularity, insights, completeMonths, holdingHistory, accountRuns, historyPoints, incomeCategories, REFUNDS_UNMATCHED, netWorthHistory, isFtExport, ftImport, lotSummary, lotGains, investedHistory,
   descriptionIndex, suggestDescriptions, filterTransactions, ruleSuggestion,
@@ -225,6 +225,10 @@ test('filters: text and amounts, categories with children, types, ranges, accoun
   assert.deepEqual(ids({ text: '12,99' }), ['2']); // amount
   assert.deepEqual(ids({ categoryIds: ['casa'] }), ['3', '1']); // the parent includes its children
   assert.deepEqual(ids({ categoryIds: [''] }), ['4', '6']); // uncategorized, transfers excluded
+  // An IOU transaction shows its type, not categories: out of uncategorized, unless it's a shared bill.
+  const withIous = (ious) => filterTransactions(tx, { categoryIds: [''] }, { categories, ious }).map((t) => t.id);
+  assert.deepEqual(withIous([{ transactionId: '6', kind: 'loan', amount: 100 }]), ['4']);
+  assert.deepEqual(withIous([{ transactionId: '6', kind: 'shared_bill', amount: 50 }]), ['4', '6']);
   assert.deepEqual(ids({ types: ['expense'] }), ['2', '1', '6']);
   assert.deepEqual(ids({ types: ['income'] }), ['4']);
   assert.deepEqual(ids({ types: ['refund'] }), ['3']);
@@ -1415,4 +1419,39 @@ test('xls: the first sheet of an Excel 97–2003 workbook, strings across CONTIN
   const rows = readXls(makeXls(sheet, [format, xf(0), xf(0), xf(164), sst, more]));
   assert.deepEqual(rows, [['Data', 'Descrição'], ['2026-11-05', 'Café', '', '-12.5']]);
   assert.equal(readXls(new TextEncoder().encode('Date\tAmount')), null);
+});
+
+test('mergeCategory moves everything to the other category and deletes it', () => {
+  const data = {
+    categories: [
+      { id: 'food', name: 'Food', parentId: null }, { id: 'groc', name: 'Groceries', parentId: 'food' },
+      { id: 'super', name: 'Supermarket', parentId: null }, { id: 'lidl', name: 'Lidl', parentId: 'super' },
+      { id: 'fun', name: 'Fun', parentId: null },
+    ],
+    transactions: [
+      { id: '1', categoryIds: ['super'] },
+      { id: '2', categoryIds: ['super', 'food'] },
+      { id: '3', categoryIds: ['fun', 'super'], splits: [{ categoryId: 'fun', amount: -5 }, { categoryId: 'super', amount: -5 }] },
+      { id: '4', categoryId: 'super' }, // an older row
+      { id: '5', categoryIds: ['fun'] },
+    ],
+    schedules: [{ id: 's', categoryIds: ['super'] }],
+    rules: [{ id: 'r', categoryId: 'super' }],
+    budgets: [{ id: 'b1', categoryId: 'super' }, { id: 'b2', categoryId: 'food' }],
+  };
+  assert.equal(mergeCategory(data, 'super', 'groc'), null); // has children: only into a top-level one
+  assert.equal(mergeCategory(data, 'super', 'super'), null);
+  assert.equal(mergeCategory(data, 'super', 'food'), 4);
+  assert.deepEqual(data.transactions.map((t) => t.categoryIds), [['food'], ['food'], ['fun', 'food'], ['food'], ['fun']]);
+  assert.deepEqual(data.transactions[2].splits.map((p) => p.categoryId), ['fun', 'food']);
+  assert.equal('categoryId' in data.transactions[3], false);
+  assert.deepEqual(data.schedules[0].categoryIds, ['food']);
+  assert.equal(data.rules[0].categoryId, 'food');
+  assert.deepEqual(data.budgets.map((b) => b.id), ['b2']); // Food's envelope is kept
+  assert.equal(data.categories.find((c) => c.id === 'lidl').parentId, 'food');
+  assert.equal(data.categories.some((c) => c.id === 'super'), false);
+  // An envelope moves when the other category has none.
+  const d2 = { categories: [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }], transactions: [], schedules: [], rules: [], budgets: [{ id: 'x', categoryId: 'a' }] };
+  assert.equal(mergeCategory(d2, 'a', 'b'), 0);
+  assert.equal(d2.budgets[0].categoryId, 'b');
 });

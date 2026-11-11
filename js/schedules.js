@@ -19,7 +19,7 @@ import {
   pickableAccounts, pickerField, transactionForm,
 } from './transactions.js';
 import {
-  button, catLabel, dialog, field, h, icon, iconButton, input, latestRate, loader, money, readPref,
+  button, byCatLabel, catLabel, dialog, field, h, icon, iconButton, input, latestRate, loader, money, readPref,
   say, select, shortDate, signed, tone, writePref,
 } from './ui.js';
 
@@ -379,7 +379,7 @@ export function subscriptionsPanel() {
   // Stacked on a phone (fin-stack), the columns lose their headers, so these few say what they are.
   const label = (text) => h('span', { class: 'fin-stack-label' }, `${text} `);
   const name = (x) => h('td', { class: 's-desc' }, x.description,
-    h('span', { class: 'fin-sub' }, [...categoriesOf(x).map(catLabel), accountName(x.accountId)].filter(Boolean).join(' · ')));
+    h('span', { class: 'fin-sub' }, [...byCatLabel(categoriesOf(x)).map(catLabel), accountName(x.accountId)].filter(Boolean).join(' · ')));
   const find = (x) => pageLink('Find', { name: 'search', q: x.description }, 'fin-link fin-link-sm');
   return h('div', {},
     h('dl', { class: 'fin-stats' },

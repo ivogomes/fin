@@ -4,7 +4,7 @@
 import { rpc } from './cloud.js';
 import { today } from './market.js';
 import {
-  CURRENCIES, IOU_TYPES, categoriesOf, convert, crossConvert, filterTransactions, newId, normalize, occurrences,
+  CURRENCIES, IOU_TYPES, categoriesOf, categoryResolver, convert, crossConvert, filterTransactions, newId, normalize, occurrences,
   plannedTransactions, ruleSuggestion, scaleSplits, scheduledEffect, searchCategories,
   sortedCategories, splitsOf, toMinor,
 } from './model.js';
@@ -25,7 +25,7 @@ import { personName } from './ious.js';
 import { pageLink } from './overview.js';
 import { FORECAST_DAYS, daysFromToday, openScheduleDialog, subscriptionChip, upcomingRows } from './schedules.js';
 import {
-  button, catLabel, catOptions, category, field, h, hueOf, icon, iconButton, input, latestRate,
+  button, byCatLabel, catLabel, catOptions, category, field, h, hueOf, icon, iconButton, input, latestRate, setHueOrder,
   flag, isPhone, loader, money, monthLabel, num, say, select, shortDate, signed, status, tone,
   TX_TYPES, typeSwitch,
 } from './ui.js';
@@ -628,7 +628,7 @@ export function transactionsSection(account) {
   // Within a day, the newest added comes first: the ones added since (latest first), then the page
   // in the database's order (newest added first too). The sort is stable, so it only moves days.
   const rows = [
-    ...(filtered ? filterTransactions(fresh, f, { categories: state.categories }) : fresh).reverse(),
+    ...(filtered ? filterTransactions(fresh, f, { categories: state.categories, ious: state.ious }) : fresh).reverse(),
     ...(ready ? txView.ids.map((id) => byId.get(id)).filter((t) => t && t.accountId === account.id && t.date <= now) : []),
   ].sort((a, b) => b.date.localeCompare(a.date));
   // Running balances: on the first page, counted down from the balance right now, so they follow
@@ -949,7 +949,7 @@ export function categoryCell(t) {
   if (parts) {
     const cur = state.accounts.find((a) => a.id === t.accountId)?.currency ?? 'EUR';
     return h('div', { class: 'fin-cats fin-cats-compact', role: 'group', 'aria-label': `Split of ${t.description}` },
-      parts.map((p) => h('span', { class: 'fin-cat-chip fin-cat-chip--part', 'data-hue': p.categoryId ? hueOf(p.categoryId) : '0' },
+      [...parts].sort((a, b) => catLabel(a.categoryId).localeCompare(catLabel(b.categoryId))).map((p) => h('span', { class: 'fin-cat-chip fin-cat-chip--part', 'data-hue': p.categoryId ? hueOf(p.categoryId) : '0' },
         p.categoryId && category(p.categoryId) ? catLink(p.categoryId) : h('span', {}, catLabel(p.categoryId) || 'No category'),
         h('span', { class: 'fin-num fin-cat-amt' }, money(Math.abs(p.amount), cur)))),
       h('button', {
@@ -980,6 +980,8 @@ export function categoryCell(t) {
 // clears and keeps focus, so several can be added in a row. `exclude()` gives the ids to leave out
 // (those already picked); `onPick(id)` takes the choice; `onBackspace()` runs on Backspace in an empty
 // box. The box is drawn as a small dashed pill (.fin-cat-add) until it's used.
+// Text that names no category offers to create it, last in the list ("Parent / Child" makes a
+// subcategory, and the parent too if it's new); it's saved straight away and then picked.
 export function categoryCombo({ label, placeholder = '+ Category', exclude = () => [], onPick, onBackspace }) {
   const listId = `cat-${newId().slice(0, 8)}`;
   const box = h('input', {
@@ -990,7 +992,9 @@ export function categoryCombo({ label, placeholder = '+ Category', exclude = () 
   const listbox = h('ul', { id: listId, role: 'listbox', class: 'fin-options fin-options--float', hidden: true, 'aria-label': 'Categories' });
   const { open, isOpen } = floatingList(box, listbox, 224);
   let results = [];
+  let createText = ''; // typed text that isn't a category yet, offered as "Create …"
   let active = -1;
+  const count = () => results.length + (createText ? 1 : 0);
   const highlight = (i) => {
     active = i;
     [...listbox.children].forEach((li, j) => li.setAttribute('aria-selected', String(j === i)));
@@ -1002,19 +1006,39 @@ export function categoryCombo({ label, placeholder = '+ Category', exclude = () 
     // Children sit indented under their parent; only a search result names its parent.
     const searching = Boolean(box.value.trim());
     const parent = (c) => c.parentId && category(c.parentId)?.name;
-    listbox.replaceChildren(...(results.length ? results.map((c, i) => h('li', {
+    const typed = box.value.trim();
+    const known = (c) => [c.name, catLabel(c.id)].some((s) => normalize(s) === normalize(typed));
+    createText = typed && !/^\/|\/$/.test(typed) && !state.categories.some(known) ? typed : '';
+    const createOption = createText && h('li', {
+      id: `${listId}-${results.length}`, role: 'option', class: 'fin-option fin-option-cat fin-option-create', 'aria-selected': 'false',
+      onmousedown: (ev) => ev.preventDefault(),
+      onclick: () => pick(results.length),
+    }, h('span', { class: 'fin-option-main' }, `Create “${createText}”`));
+    listbox.replaceChildren(...(results.length || createText ? [...results.map((c, i) => h('li', {
       id: `${listId}-${i}`, role: 'option', class: `fin-option fin-option-cat${parent(c) && !searching ? ' fin-option-child' : ''}`, 'aria-selected': 'false',
       onmousedown: (ev) => ev.preventDefault(), // keep focus in the box
-      onclick: () => pick(c.id),
+      onclick: () => pick(i),
     },
       h('span', { class: 'fin-cat-dot', 'data-hue': hueOf(c.id), 'aria-hidden': 'true' }),
       h('span', { class: 'fin-option-main' }, c.name),
-      searching && parent(c) && h('span', { class: 'fin-sub' }, parent(c))))
-      : [h('li', { class: 'fin-option-none', role: 'presentation' }, box.value.trim() ? 'No category matches' : 'No more categories')]));
+      searching && parent(c) && h('span', { class: 'fin-sub' }, parent(c)))), createOption].filter(Boolean)
+      : [h('li', { class: 'fin-option-none', role: 'presentation' }, typed ? 'No category matches' : 'No more categories')]));
     open(true);
-    if (results.length && box.value.trim()) highlight(0); else active = -1;
+    if (count() && typed) highlight(0); else active = -1;
   };
-  const pick = (id) => {
+  // `i`: a result's place in the list; the one after the results is "Create …".
+  const pick = (i) => {
+    let id = results[i]?.id;
+    if (!id && i === results.length && createText) {
+      const { resolve, created } = categoryResolver(state.categories, newId);
+      id = resolve(createText)?.id;
+      if (!id) return;
+      state.categories.push(...created);
+      setHueOrder(null); // a new top-level category takes its place in the colours
+      persist();
+      say(`Created ${catLabel(id)}.`);
+    }
+    if (!id) return;
     box.value = '';
     onPick(id);
     // The picker may have moved the box (a chip was added before it); keep the list where it is.
@@ -1026,19 +1050,19 @@ export function categoryCombo({ label, placeholder = '+ Category', exclude = () 
     if (ev.key === 'ArrowDown') {
       ev.preventDefault();
       if (!isOpen()) update();
-      else if (results.length) highlight(Math.min(active + 1, results.length - 1));
+      else if (count()) highlight(Math.min(active + 1, count() - 1));
     } else if (ev.key === 'ArrowUp' && isOpen()) {
       ev.preventDefault();
       highlight(Math.max(active - 1, 0));
     } else if (ev.key === 'Enter' && isOpen() && active >= 0) {
       ev.preventDefault();
       ev.stopPropagation(); // not the form's Enter (submit, or next row)
-      pick(results[active].id);
+      pick(active);
     } else if (ev.key === 'Enter' && box.value.trim()) {
       ev.preventDefault(); // text that matches nothing: don't submit the form with it
       ev.stopPropagation();
     } else if (ev.key === 'Tab' && !ev.shiftKey && isOpen() && active >= 0 && box.value.trim()) {
-      pick(results[active].id); // and move on, as in the description box
+      pick(active); // and move on, as in the description box
     } else if (ev.key === 'Escape' && isOpen()) {
       ev.preventDefault();
       ev.stopPropagation(); // close the list, not the dialog
@@ -1070,19 +1094,21 @@ export function categoryPicker(selected, { label, compact = false, onChange, pla
     // Backspace in the empty box removes the last chip, as in an email "To" field.
     onBackspace: () => {
       if (!ids.length) return;
-      const id = ids.pop();
+      const id = byCatLabel(ids).at(-1); // the chip just before the box
+      ids.splice(ids.indexOf(id), 1);
       onChange?.([...ids], `Removed ${catLabel(id)}.`);
       paint();
     },
   });
   const paint = (focus) => {
     combo.box.placeholder = ids.length ? '+' : placeholder?.() ?? '+ Category';
-    const chips = ids.map((id, i) => h('span', { class: 'fin-cat-chip', 'data-hue': hueOf(id) },
+    // Shown alphabetically; `ids` keeps the order they were picked in (the first one counts in Insights).
+    const chips = byCatLabel(ids).map((id, i) => h('span', { class: 'fin-cat-chip', 'data-hue': hueOf(id) },
       linked && category(id) ? catLink(id) : h('span', {}, catLabel(id) || 'Deleted category'),
       h('button', {
         type: 'button', class: 'fin-cat-x', 'aria-label': `Remove ${catLabel(id) || 'category'}`,
         onclick: () => {
-          ids.splice(i, 1);
+          ids.splice(ids.indexOf(id), 1);
           onChange?.([...ids], `Removed ${catLabel(id)}.`);
           paint(i);
         },
@@ -1115,7 +1141,7 @@ export function kindMark(t) {
 const catLink = (id) => pageLink(catLabel(id), { name: 'search', cats: [id] }, 'fin-cat-link');
 
 export const catChips = (ids) => ids.length > 0 && h('div', { class: 'fin-cats' },
-  ids.map((id) => h('span', { class: 'fin-cat-chip', 'data-hue': hueOf(id) }, h('span', {}, catLabel(id) || 'Deleted category'))));
+  byCatLabel(ids).map((id) => h('span', { class: 'fin-cat-chip', 'data-hue': hueOf(id) }, h('span', {}, catLabel(id) || 'Deleted category'))));
 
 // A labelled form row for a category picker (a group, so the label is its accessible name).
 export function pickerField(label, picker) {

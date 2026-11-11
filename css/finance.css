@@ -1454,6 +1454,8 @@ a.fin-break-link:focus-visible { outline: none; box-shadow: var(--f-ring); borde
 .fin-option-cat .fin-sub { margin-left: auto; white-space: nowrap; }
 .fin-option-child { padding-left: 22px; }
 .fin-option-none { padding: 8px 10px; color: var(--f-muted); }
+/* "Create …": typed text that isn't a category yet, last in the list. */
+.fin-option-create { color: var(--f-accent-strong); font-weight: 500; }
 .fin-cat-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--chip-ink); align-self: center; }
 
 /* ── Holdings ─────────────────────────────────────────── */

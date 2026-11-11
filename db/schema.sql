@@ -286,7 +286,8 @@ language sql immutable as $$ select floor(x + 0.5)::bigint $$;
 
 -- Whether a transaction matches the filters of a list (the app's filter bar): p_text (normalised)
 -- in the description or memo, or p_amount (cents) as its size; p_wanted, categories any of which it
--- has (the chosen ones and their subcategories), or, with p_uncategorized, none (transfers aside);
+-- has (the chosen ones and their subcategories), or, with p_uncategorized, none (transfers and IOU
+-- transactions aside, as they show their type instead; a shared bill keeps its categories);
 -- p_types, any of expense/income/refund/dividend/transfer; dates; sizes in cents. Empty or null
 -- means no filter. `cats` is fin_cats of the row.
 -- (Before several categories and types could be picked, p_wanted came with one p_type.)
@@ -306,7 +307,9 @@ language sql stable as $$
       or ('income' = any(p_types) and t.transfer_id is null and t.kind is distinct from 'refund' and t.amount > 0))
     and ((coalesce(cardinality(p_wanted), 0) = 0 and not coalesce(p_uncategorized, false))
       or cats && p_wanted
-      or (coalesce(p_uncategorized, false) and cardinality(cats) = 0 and t.transfer_id is null))
+      or (coalesce(p_uncategorized, false) and cardinality(cats) = 0 and t.transfer_id is null
+        and not exists (select 1 from ious i where i.user_id = t.user_id and i.transaction_id = t.id
+          and i.kind is distinct from 'shared_bill')))
     and (p_text is null or p_text = ''
       or strpos(fin_norm(t.description), p_text) > 0 or strpos(fin_norm(t.memo), p_text) > 0
       or abs(t.amount) = p_amount)

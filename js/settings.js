@@ -1,7 +1,7 @@
 // Settings: its pages and navigation, category management, and the smaller settings sections.
 
 import {
-  categoriesOf, categorize, defaultState, findDuplicates, findTransferPairs, newId, normalize,
+  categoriesOf, categorize, defaultState, findDuplicates, findTransferPairs, mergeCategory, newId, normalize,
   sortedCategories, splitsOf,
 } from './model.js';
 import { clearTables, persist, transactionsComplete } from './store.js';
@@ -372,6 +372,7 @@ export function duplicatesSection() {
 // ── category management ──────────────────────────────────────────────────────
 
 export let editingCatId = null;
+let mergingCatId = null;
 
 // Two levels, like Buxfer: a category is top-level or the child of a top-level one.
 export function categoriesSection() {
@@ -405,6 +406,33 @@ export function categoriesSection() {
 
   const row = (c) => {
     const n = uses.get(c.id) ?? 0;
+    if (mergingCatId === c.id) {
+      // Into any other category, except that one with children only goes into a top-level one.
+      const hasKids = childrenOf(c.id).length > 0;
+      const targets = sortedCategories(state.categories).filter((x) => x.id !== c.id && x.parentId !== c.id && !(hasKids && x.parentId));
+      const into = select(targets.map((x) => [x.id, catLabel(x.id)]), '', { 'data-key': 'cat-merge-into' });
+      const cancel = () => { mergingCatId = null; render(`cat-merge-${c.id}`); };
+      const note = [
+        `Its ${n} transaction${n === 1 ? '' : 's'}, schedules and rules move to the one you pick, and ${c.name} is deleted.`,
+        hasKids && 'Its subcategories move under it too.',
+        state.budgets.some((b) => b.categoryId === c.id) && 'Its budget envelope moves too, unless that category has one already.',
+      ].filter(Boolean).join(' ');
+      return h('li', { class: 'fin-cat-row fin-cat-editing' }, h('form', {
+        class: 'fin-cat-form',
+        onkeydown: (e) => { if (e.key === 'Escape') { e.preventDefault(); cancel(); } },
+        onsubmit: (e) => {
+          e.preventDefault();
+          const from = catLabel(c.id);
+          const to = catLabel(into.value);
+          mergingCatId = null;
+          undoable(`Merged ${from} into ${to}.`, ['transactions', 'categories', 'rules', 'schedules', 'budgets'], () => mergeCategory(state, c.id, into.value));
+        },
+      },
+        targets.length ? field(`Merge ${catLabel(c.id)} into`, into, note) : h('p', { class: 'fin-hint' }, 'There’s no other category to merge it into.'),
+        h('div', { class: 'fin-actions' },
+          targets.length > 0 && h('button', { type: 'submit', class: 'fin-btn btn-primary fin-btn-sm' }, 'Merge'),
+          button('Cancel', cancel, 'secondary fin-btn-sm'))));
+    }
     if (editingCatId === c.id) {
       const name = input({ type: 'text', required: true, value: c.name, 'data-key': 'cat-edit-name' });
       const hasKids = childrenOf(c.id).length > 0;
@@ -429,10 +457,13 @@ export function categoriesSection() {
           button('Cancel', cancel, 'secondary fin-btn-sm'))));
     }
     return h('li', { class: `fin-cat-row${c.parentId ? ' fin-cat-child' : ''}` },
-      h('span', { class: 'fin-cat-name' }, c.name, h('span', { class: 'fin-muted fin-num' }, ` ${n}`)),
+      // The name opens its transactions in Search (a parent's include its children's).
+      h('span', { class: 'fin-cat-name' }, pageLink(c.name, { name: 'search', cats: [c.id] }, 'fin-cat-link'), h('span', { class: 'fin-muted fin-num' }, ` ${n}`)),
       h('span', { class: 'fin-actions fin-row-actions' },
-        button('Edit', () => { editingCatId = c.id; render('cat-edit-name'); }, 'secondary fin-btn-sm',
+        button('Edit', () => { editingCatId = c.id; mergingCatId = null; render('cat-edit-name'); }, 'secondary fin-btn-sm',
           { 'aria-label': `Edit ${catLabel(c.id)}`, 'data-key': `cat-edit-${c.id}` }),
+        button('Merge', () => { mergingCatId = c.id; editingCatId = null; render('cat-merge-into'); }, 'secondary fin-btn-sm',
+          { 'aria-label': `Merge ${catLabel(c.id)} into another category`, 'data-key': `cat-merge-${c.id}` }),
         button('Delete', () => remove(c), 'danger fin-btn-sm', { 'aria-label': `Delete ${catLabel(c.id)}` })));
   };
 
@@ -455,7 +486,7 @@ export function categoriesSection() {
       h('button', { type: 'submit', class: 'fin-btn btn-primary' }, 'Add category')));
   return manageLayout(addForm, h('section', { class: 'fin-card fin-pad', 'aria-labelledby': 'cats-h' },
     h('h3', { id: 'cats-h', class: 'fin-label' }, `Categories (${state.categories.length})`),
-    h('p', { class: 'fin-hint' }, 'A category can sit under another, one level deep, and is shown as “Parent / Child”. A transaction can have several. The number is how many transactions use it.'),
+    h('p', { class: 'fin-hint' }, 'A category can sit under another, one level deep, and is shown as “Parent / Child”. A transaction can have several. The number is how many transactions use it; click a name to see them.'),
     h('ul', { class: 'fin-cat-tree' }, tops.map((p) => h('li', {},
       h('ul', { class: 'fin-cat-family' }, row(p), childrenOf(p.id).sort((a, b) => a.name.localeCompare(b.name)).map(row)))))));
 }

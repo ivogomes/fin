@@ -38,6 +38,9 @@ export const say = (msg) => { status.textContent = ''; setTimeout(() => { status
 export const category = (id) => state.categories.find((c) => c.id === id);
 // A category as shown everywhere: "Parent / Child" for children.
 export const catLabel = (id) => { const c = category(id); return c ? categoryPath(c, state.categories) : ''; };
+// Category ids in alphabetical order of their labels, for showing. Only for showing: the stored order
+// counts (Insights put a transaction under its first category).
+export const byCatLabel = (ids) => [...ids].sort((a, b) => catLabel(a).localeCompare(catLabel(b)));
 // Options for a category <select>: parents followed by their children.
 // A colour group (0–7) per top-level category, so a family's chips share a colour. Colours go round
 // in alphabetical order of the top-level categories, so neighbours in the list never share one.

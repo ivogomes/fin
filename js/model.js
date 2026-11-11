@@ -78,6 +78,35 @@ export function categoryResolver(categories, id) {
   return { resolve, created };
 }
 
+// Merges category `fromId` into `toId`, changing `data` ({ categories, transactions, schedules,
+// rules, budgets }) in place: everything that had `fromId` gets `toId` instead (once), its children
+// move under `toId`, and `fromId` is deleted. A budget envelope moves across unless `toId` has one
+// already (then `toId`'s is kept). A category with children can only go into a top-level one (still
+// two levels). Returns how many transactions changed, or null when the merge isn't possible.
+export function mergeCategory(data, fromId, toId) {
+  const from = data.categories.find((c) => c.id === fromId);
+  const to = data.categories.find((c) => c.id === toId);
+  const kids = data.categories.filter((c) => c.parentId === fromId);
+  if (!from || !to || from === to || (kids.length && to.parentId) || to.parentId === fromId) return null;
+  const swap = (ids) => [...new Set(ids.map((id) => (id === fromId ? toId : id)))];
+  let moved = 0;
+  for (const x of [...data.transactions, ...data.schedules]) {
+    const cats = categoriesOf(x);
+    const parts = splitsOf(x);
+    if (!cats.includes(fromId) && !parts?.some((p) => p.categoryId === fromId)) continue;
+    x.categoryIds = swap(cats);
+    delete x.categoryId;
+    if (parts) x.splits = parts.map((p) => (p.categoryId === fromId ? { ...p, categoryId: toId } : p));
+    if (data.transactions.includes(x)) moved += 1;
+  }
+  for (const r of data.rules) if (r.categoryId === fromId) r.categoryId = toId;
+  if (data.budgets.some((b) => b.categoryId === toId)) data.budgets = data.budgets.filter((b) => b.categoryId !== fromId);
+  else for (const b of data.budgets) if (b.categoryId === fromId) b.categoryId = toId;
+  for (const k of kids) k.parentId = toId;
+  data.categories = data.categories.filter((c) => c.id !== fromId);
+  return moved;
+}
+
 // The categories of a transaction, reading older rows that had a single categoryId.
 export const categoriesOf = (t) => t.categoryIds ?? (t.categoryId ? [t.categoryId] : []);
 
@@ -419,7 +448,8 @@ export function batchRow(row, rules) {
 // - text: in the description or memo (case and accents ignored); a number like "12.99" or "12,99"
 //   also matches that amount, in or out
 // - categoryIds: any of these categories (a parent includes its children); '' among them also
-//   takes uncategorized ones (transfers aside)
+//   takes uncategorized ones (transfers and IOU transactions aside: they show their type instead of
+//   categories; a shared bill is a real expense and keeps its categories)
 // - types: any of 'expense' | 'income' | 'refund' | 'dividend' | 'transfer'
 // - min / max: the amount's size (ignoring its sign), in the account's currency
 // - from / to: dates; accountIds: any of these accounts
@@ -431,13 +461,14 @@ const TYPE_TEST = {
   expense: (t) => !t.transferId && t.kind !== 'refund' && t.amount < 0,
   income: (t) => !t.transferId && t.kind !== 'refund' && t.amount > 0,
 };
-export function filterTransactions(transactions, filter, { categories = [] } = {}) {
+export function filterTransactions(transactions, filter, { categories = [], ious = [] } = {}) {
   const { text = '', categoryIds = [], types = [], min = null, max = null, from = null, to = null, accountIds = [] } = filter;
   const q = normalize(text);
   const asAmount = /^[\d.,]+$/.test(String(text).trim()) ? Math.abs(parseAmount(text, /,\d{1,2}$/.test(text.trim()) ? ',' : '.')) : NaN;
   const chosen = categoryIds.filter(Boolean);
   const uncategorized = categoryIds.includes('');
   const wanted = new Set([...chosen, ...categories.filter((c) => chosen.includes(c.parentId)).map((c) => c.id)]);
+  const iouTx = new Set(ious.filter((e) => e.transactionId && e.kind !== 'shared_bill').map((e) => e.transactionId));
   const accounts = new Set(accountIds);
   const minMinor = min == null || min === '' ? null : toMinor(min);
   const maxMinor = max == null || max === '' ? null : toMinor(max);
@@ -450,7 +481,7 @@ export function filterTransactions(transactions, filter, { categories = [] } = {
     if (maxMinor != null && size > maxMinor) return false;
     if (types.length && !types.some((k) => TYPE_TEST[k]?.(t))) return false;
     const cats = categoriesOf(t);
-    if (categoryIds.length && !cats.some((id) => wanted.has(id)) && !(uncategorized && !cats.length && !t.transferId)) return false;
+    if (categoryIds.length && !cats.some((id) => wanted.has(id)) && !(uncategorized && !cats.length && !t.transferId && !iouTx.has(t.id))) return false;
     if (q && !normalize(t.description).includes(q) && !normalize(t.memo ?? '').includes(q) && size !== asAmount) return false;
     return true;
   }).sort((a, b) => b.date.localeCompare(a.date));
