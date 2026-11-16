@@ -3,7 +3,7 @@ import {
   signInWithGoogle, signOut,
 } from './cloud.js';
 import { renderAssets } from './assets.js';
-import { driveConfigured, evaluateInSheet, renderGoogleButton } from './drive.js';
+import { driveConfigured, evaluateInSheet, forgetToken, renderGoogleButton } from './drive.js';
 import {
   CRYPTO_MIC, FUND_MIC, alphaVantageCovers, cryptoHistory, cryptoQuotes, fetchHistory, fetchQuote, fetchQuoteAV, fetchQuoteGoogle, fetchRate, fetchRateRange,
   fundHistory, fundQuote, today,
@@ -1044,6 +1044,7 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
 export async function signOutNow() {
   if (hasPendingChanges() && !confirm('Some changes are still being saved. Sign out anyway?')) return;
   await signOut();
+  forgetToken();
   state = null;
   renderSignIn();
 }

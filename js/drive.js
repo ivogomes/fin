@@ -14,7 +14,22 @@ export const KEEP = 10; // backups kept in the folder; older ones go to the bin
 
 export const driveConfigured = () => Boolean(GOOGLE_CLIENT_ID);
 
-let token = null; // { value, expires }
+// { value, expires, user }. Kept in localStorage until it expires, so reloading or reopening Fin
+// doesn't open Google's window again: asking Google always opens one, even when it needn't show
+// anything. Only used for the Fin user it was given to.
+const TOKEN_KEY = 'finance:driveToken';
+let token = (() => {
+  try { return JSON.parse(localStorage.getItem(TOKEN_KEY)); } catch { return null; }
+})();
+function saveToken(t) {
+  token = t;
+  try {
+    if (t) localStorage.setItem(TOKEN_KEY, JSON.stringify(t));
+    else localStorage.removeItem(TOKEN_KEY);
+  } catch { /* then it only lasts until the page is closed */ }
+}
+// For signing out: the permission stays with Google, but this browser no longer holds it.
+export const forgetToken = () => saveToken(null);
 let library = null;
 // Google's sign-in library (also used to sign in to Fin, below), loaded once when first needed.
 export function loadLibrary() {
@@ -36,7 +51,7 @@ export function loadLibrary() {
 // other's way, and one fails). A click (interactive) still gets its own try when a quiet one fails.
 let pending = null;
 async function getToken(interactive) {
-  if (token && token.expires > Date.now() + 60_000) return token.value;
+  if (token && token.expires > Date.now() + 60_000 && token.user === (currentUser()?.id ?? null)) return token.value;
   if (pending) {
     try { return await pending; } catch (err) { if (!interactive) throw err; }
   }
@@ -56,7 +71,7 @@ async function askToken(interactive) {
       ...(currentUser()?.email && { login_hint: currentUser().email }),
       callback: (r) => {
         if (r.error) { reject(new Error(r.error_description || r.error)); return; }
-        token = { value: r.access_token, expires: Date.now() + Number(r.expires_in) * 1000 };
+        saveToken({ value: r.access_token, expires: Date.now() + Number(r.expires_in) * 1000, user: currentUser()?.id ?? null });
         resolve(token.value);
       },
       error_callback: (e) => reject(new Error(e.type === 'popup_closed' ? 'The Google window was closed.' : e.message || e.type)),
@@ -67,7 +82,7 @@ async function askToken(interactive) {
 
 async function call(url, opts = {}, interactive = false) {
   const res = await fetch(url, { ...opts, headers: { Authorization: `Bearer ${await getToken(interactive)}`, ...opts.headers } });
-  if (res.status === 401) { token = null; throw new Error('Google asked to sign in again.'); }
+  if (res.status === 401) { saveToken(null); throw new Error('Google asked to sign in again.'); }
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.error?.message || `Google answered ${res.status}`);
@@ -179,7 +194,7 @@ export async function disconnect() {
     const google = await loadLibrary().catch(() => null);
     google?.accounts.oauth2.revoke(token.value, () => {});
   }
-  token = null;
+  saveToken(null);
   quotesSheet = null;
 }
 
