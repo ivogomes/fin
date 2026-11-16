@@ -35,7 +35,8 @@ import {
 // Set once the signed-in user's data has loaded (see boot() at the bottom).
 export let state = null;
 // view: { name: 'account', id } | { name: 'settings' }
-// Each main section is its own page, with its own address: …/finance/ (the overview), ?page=search
+// Each main section is its own page, with its own address: …/finance/ (the overview, ?tab=transactions
+// for its All transactions), ?page=search
 // (&q=… to search for something), ?page=settings&section=backup, ?account=<id>&tab=insights, and
 // ?account= for the last account opened. Going to another section loads that page, so its data is
 // fresh; within a page (accounts, settings pages) it's instant.
@@ -51,7 +52,9 @@ export function urlOf(v) {
     if (v.tab === 'insights' || v.tab === 'ahead') q.set('tab', v.tab);
     // A transaction to show (the other side of a transfer, opened from another page).
     if (v.tx) { q.set('tx', v.tx); q.set('on', v.on ?? ''); }
-  } else if (v.name !== 'overview') {
+  } else if (v.name === 'overview') {
+    if (v.tab === 'transactions') q.set('tab', 'transactions');
+  } else {
     q.set('page', v.name);
     if (v.name === 'settings' && v.section) q.set('section', v.section);
     if (v.name === 'settings' && v.section === 'import' && v.kind) q.set('kind', v.kind);
@@ -100,7 +103,7 @@ export function viewFromUrl() {
       ...(q.get('tx') && { tx: q.get('tx'), on: q.get('on') }),
     };
   }
-  return { name: 'overview' };
+  return { name: 'overview', ...(q.get('tab') === 'transactions' && { tab: 'transactions' }) };
 }
 export let view = viewFromUrl();
 export let shownView = view; // what's on screen, to fall back on if leaving the page is cancelled

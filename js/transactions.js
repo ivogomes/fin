@@ -4,15 +4,14 @@
 import { rpc } from './cloud.js';
 import { today } from './market.js';
 import {
-  CURRENCIES, IOU_TYPES, categoriesOf, categoryResolver, convert, crossConvert, filterTransactions, newId, normalize, occurrences,
-  plannedTransactions, ruleSuggestion, scaleSplits, scheduledEffect, searchCategories,
+  CURRENCIES, IOU_TYPES, categoriesOf, categoryResolver, convert, crossConvert, filterTransactions, newId, normalize,
+  ruleSuggestion, scaleSplits, searchCategories,
   sortedCategories, splitsOf, toMinor,
 } from './model.js';
 import {
   addTransactions, editToken, isFromDatabase, loadAllTransactions, markSchemaOutdated, persist,
   settle, transactionsComplete,
 } from './store.js';
-import { cardPayments } from './accounts.js';
 import {
   CARD_NETWORKS, TX_PAGE_SIZE, byName, cardMark, deleteTransactions, editingTxId, ensureRate,
   hasUnsavedInput, render, selectAccount, setEditingTxId, setTxPage, setView, showToast, state,
@@ -20,10 +19,10 @@ import {
 } from './app.js';
 import { comboField, descriptionCombo, floatingList, openTxDialog } from './entry.js';
 import { IMPORT_ACCEPT, readImportFile } from './imports.js';
-import { inEur } from './insights.js';
+import { inEur, transactionsLoaded } from './insights.js';
 import { personName } from './ious.js';
 import { pageLink } from './overview.js';
-import { FORECAST_DAYS, daysFromToday, openScheduleDialog, subscriptionChip, upcomingRows } from './schedules.js';
+import { openScheduleDialog, subscriptionChip, upcomingItems, upcomingRows } from './schedules.js';
 import {
   button, byCatLabel, catLabel, catOptions, category, field, h, hueOf, icon, iconButton, input, latestRate, setHueOrder,
   flag, isPhone, loader, money, monthLabel, num, say, select, shortDate, signed, status, tone,
@@ -65,7 +64,7 @@ export async function offerRule(t, categoryId) {
 // ── transaction lists: filters, selection, the table ─────────────────────────
 
 export const selected = new Set(); // ids of selected transactions, in the list on screen
-export const txFilters = new Map(); // scope ('acc:<id>' or 'search') → filter
+export const txFilters = new Map(); // scope ('acc:<id>', 'search' or 'all', the Overview's) → filter
 // Lists pick several (any of them matches); an empty one means all. '' among the categories is
 // "Uncategorized".
 export const EMPTY_FILTER = { text: '', categoryIds: [], types: [], from: '', to: '', min: '', max: '', accountIds: [] };
@@ -232,7 +231,7 @@ export function filterBar(scope, { showAccount = false } = {}) {
     picked: f.accountIds, onChange: (ids, focus) => set({ accountIds: ids }, focus),
     options: [...state.accounts].sort(byName).map((a) => ({ value: a.id, label: accountLabel(a), sub: a.archived ? 'archived' : undefined })),
   });
-  const fold = scope.startsWith('acc:');
+  const fold = scope !== 'search'; // where filtering is the point, they stay out
   const open = filtersOpen.has(scope);
   const on = filtersOn(f);
   const toggle = fold && h('button', {
@@ -480,9 +479,7 @@ export function txTable(rows, { caption, showBalance = false, showAccount = fals
           subscriptionChip(t),
           t.kind === 'dividend' && h('span', { class: 'fin-sub' }, holdingOf(t.holdingId) ? `Dividend from ${holdingOf(t.holdingId).symbol}` : 'Dividend'),
           t.memo && h('span', { class: 'fin-sub' }, t.memo)),
-        showAccount && h('td', { class: 'c-acc' }, h('button', {
-          type: 'button', class: 'fin-link fin-link-sm', onclick: () => selectAccount(t.accountId),
-        }, ...(account ? accountBadge(account.id) : ['Deleted account']))),
+        showAccount && accountColumn(t.accountId),
         h('td', { class: 'c-cat' }, categoryCell(t)),
         inEur && h('td', { class: 'fin-r fin-num fin-muted c-eur' }, cur === 'EUR' ? '' : t.rate == null ? 'pending' : signed(convert(t.amount, t.rate), 'EUR')),
         h('td', { class: 'fin-r c-act' }, h('div', { class: 'fin-row-actions' },
@@ -647,9 +644,7 @@ export function transactionsSection(account) {
   const upcoming = !filtered && txPage === 0
     ? (cols) => upcomingRows(account, { cols, inEur: account.currency !== 'EUR', balance: totals.balance })
     : null;
-  const hasUpcoming = Boolean(upcoming) && (plannedTransactions(account.id, state.transactions, now).length > 0
-    || state.schedules.some((s) => scheduledEffect(s, account.id) !== 0 && occurrences(s, daysFromToday(FORECAST_DAYS)).length > 0)
-    || cardPayments().some((p) => p.card.id === account.id || p.from?.id === account.id));
+  const hasUpcoming = Boolean(upcoming) && upcomingItems(account).length > 0;
   return h('section', { class: 'fin-card', 'aria-labelledby': 'tx-h' },
     h('div', { class: 'fin-card-head' },
       h('h3', { id: 'tx-h', class: 'fin-label' }, 'Transactions ', h('span', { class: 'fin-count' }, filtered ? (ready ? `${total} of ${totals.past}` : '…') : String(totals.past))),
@@ -669,6 +664,64 @@ export function transactionsSection(account) {
         : txTable(rows, {
           caption: `Transactions for ${account.name}, newest first, page ${txPage + 1} of ${pages}${hasUpcoming ? '. Upcoming ones come first and don’t count in the balance yet' : ''}`,
           showBalance: true, inEur: account.currency !== 'EUR', upcoming: hasUpcoming ? upcoming : null,
+        }),
+    pages > 1 && pager(txPage, pages, total, 'bottom'));
+}
+
+// Every account's transactions in one list (archived ones too), laid out as an account's: what's
+// coming on top of the first page, then the past, newest first, with an Account column. No running
+// balance, as the accounts' don't add up in one currency. The Overview's All transactions.
+export function allAccountsSection() {
+  const scope = 'all';
+  const f = filterOf(scope);
+  const filtered = filterActive(f);
+  const now = today();
+  const key = JSON.stringify([txPage, f, now]);
+  const txView = listViews.get(scope);
+  const ready = txView?.key === key;
+  if (!ready || txView.stale) {
+    // Up to today: later ones are among what's coming.
+    requestList(scope, key, 'search_transactions', {
+      p_accounts: f.accountIds.length ? f.accountIds : null, p_limit: TX_PAGE_SIZE, p_offset: txPage * TX_PAGE_SIZE,
+      ...filterArgs(f), p_to: f.to && f.to < now ? f.to : now, p_rates: ratesArg(),
+    });
+  }
+  // Those added ahead of time, for what's coming.
+  const plannedReady = transactionsLoaded('planned', `&date=gt.${now}`);
+  const byId = new Map(state.transactions.map((t) => [t.id, t]));
+  // The page's rows (minus any deleted since), plus transactions added since it was fetched; newest
+  // added first within a day, as on an account.
+  const fresh = ready ? state.transactions.filter((t) => t.date <= now
+    && !txView.known.has(t.id) && !isFromDatabase(t.id) && !txView.ids.includes(t.id)) : [];
+  const rows = [
+    ...(filtered ? filterTransactions(fresh, f, { categories: state.categories, ious: state.ious }) : fresh).reverse(),
+    ...(ready ? txView.ids.map((id) => byId.get(id)).filter((t) => t && t.date <= now) : []),
+  ].sort((a, b) => b.date.localeCompare(a.date));
+  const total = ready ? txView.total + fresh.length : 0;
+  const pages = Math.max(1, Math.ceil(total / TX_PAGE_SIZE));
+  if (ready && txPage > pages - 1) { setTxPage(pages - 1); return allAccountsSection(); }
+  for (const id of selected) if (!rows.some((t) => t.id === id)) selected.delete(id);
+  const upcoming = !filtered && txPage === 0
+    ? (cols) => upcomingRows(null, { cols, inEur: false, showAccount: true })
+    : null;
+  const hasUpcoming = Boolean(upcoming) && upcomingItems(null).length > 0;
+  return h('section', { class: 'fin-card', 'aria-labelledby': 'tx-h' },
+    h('div', { class: 'fin-card-head' },
+      h('h3', { id: 'tx-h', class: 'fin-label' }, 'Transactions ', h('span', { class: 'fin-count' }, ready ? String(total) : '…')),
+      h('div', { class: 'fin-actions' },
+        button('Schedule…', () => openScheduleDialog(), 'secondary', { 'data-key': 'up-add', 'aria-haspopup': 'dialog' }))),
+    filterBar(scope, { showAccount: true }),
+    selected.size > 0 && bulkBar(rows),
+    pages > 1 && pager(txPage, pages, total, 'top'),
+    !ready && rows.length === 0 && listError(scope, key)
+      ? h('p', { class: 'fin-error fin-pad', role: 'alert' }, listError(scope, key))
+      : (!ready || (!plannedReady && !filtered)) && rows.length === 0
+      ? loader('Loading transactions…')
+      : rows.length === 0 && !hasUpcoming
+        ? h('p', { class: 'fin-empty fin-pad' }, filtered ? 'No transactions match these filters.' : 'No transactions yet.')
+        : txTable(rows, {
+          caption: `Transactions in all accounts, newest first, page ${txPage + 1} of ${pages}${hasUpcoming ? '. Upcoming ones come first' : ''}`,
+          showAccount: true, upcoming: hasUpcoming ? upcoming : null,
         }),
     pages > 1 && pager(txPage, pages, total, 'bottom'));
 }
@@ -778,6 +831,10 @@ export function accountBadge(id) {
   if (a.type !== 'credit') return [a.name];
   return [cardMark(a, 'fin-card-mark--tag'), a.name];
 }
+// A list's Account cell: the account's badge, opening it.
+export const accountColumn = (id) => h('td', { class: 'c-acc' }, h('button', {
+  type: 'button', class: 'fin-link fin-link-sm', onclick: () => selectAccount(id),
+}, ...(state.accounts.some((a) => a.id === id) ? accountBadge(id) : ['Deleted account'])));
 // Accounts you can pick in a form: the active ones, plus `keep` even if it is archived.
 export const pickableAccounts = (keep) => state.accounts.filter((a) => !a.archived || a.id === keep).sort(byName);
 
@@ -806,6 +863,12 @@ export function transactionForm(account, tx) {
   desc.dataset.key = 'tx-desc-edit';
   const amount = input({ type: 'number', step: '0.01', min: '0.01', required: true, inputmode: 'decimal', value: String(Math.abs(tx.amount) / 100) });
   const date = input({ type: 'date', required: true, value: tx.date });
+  // The account it's in, to move one added to the wrong one. Not a transfer's: its two sides go
+  // together, so a wrong one is deleted and added again.
+  const accountPick = !tx.transferId && select(pickableAccounts(account.id).map((a) => [a.id, accountLabel(a, { currency: true })]), account.id);
+  const target = () => (accountPick && state.accounts.find((a) => a.id === accountPick.value)) || account;
+  const amountLabel = h('span', {}, `Amount (${account.currency})`);
+  if (accountPick) accountPick.addEventListener('change', () => { amountLabel.textContent = `Amount (${target().currency})`; });
   // Between currencies: what the other side's amount is, following this one at the day's rate.
   const other = crossCurrency && input({ type: 'number', step: '0.01', min: '0.01', required: true, inputmode: 'decimal', value: String(Math.abs(partner.amount) / 100) });
   const rateNote = h('p', { class: 'fin-hint', 'aria-live': 'polite' });
@@ -858,6 +921,8 @@ export function transactionForm(account, tx) {
       const parts = tx.transferId ? null : split.value();
       if (parts?.error) { error.textContent = parts.error; parts.focus(); return; }
       const dateMoved = tx.date !== date.value;
+      const moveTo = target();
+      const moved = moveTo.id !== tx.accountId;
       const shared = { date: date.value, description: desc.value.trim(), memo: memo.value.trim() };
       if (partner) {
         const partnerCurrency = partnerAccount?.currency ?? 'EUR';
@@ -875,12 +940,14 @@ export function transactionForm(account, tx) {
         // Split: each part with the transaction's sign; its categories are the parts' (for filters).
         splits: parts ? parts.parts.map((p) => ({ categoryId: p.categoryId || null, amount: p.amount * sign })) : undefined,
         categoryIds: tx.transferId ? [] : parts ? [...new Set(parts.parts.map((p) => p.categoryId).filter(Boolean))] : cats.value(),
-        // Keep the stored rate unless the date moved.
-        rate: !dateMoved && tx.rate != null ? tx.rate : await ensureRate(account.currency, date.value),
+        accountId: moveTo.id,
+        // Keep the stored rate unless the date or the account (its currency) changed.
+        rate: !dateMoved && !moved && tx.rate != null ? tx.rate : await ensureRate(moveTo.currency, date.value),
       });
       setEditingTxId(null);
       persist(); render(`tx-edit-${tx.id}`);
-      say(partner ? `Transfer updated in both ${account.name} and ${accountName(partner.accountId)}.` : 'Transaction updated.');
+      say(partner ? `Transfer updated in both ${account.name} and ${accountName(partner.accountId)}.`
+        : moved ? `Transaction moved to ${moveTo.name}.` : 'Transaction updated.');
       const added = categoriesOf(tx).find((id) => !catsBefore.includes(id));
       if (added) offerRule(tx, added);
     },
@@ -890,9 +957,9 @@ export function transactionForm(account, tx) {
       : kinds.el,
     h('div', { class: 'fin-grid' },
       // Between currencies, each amount with its currency's flag.
-      comboField('Description', descCombo), field(crossCurrency ? [flag(account.currency), `Amount (${account.currency})`] : `Amount (${account.currency})`, amount),
+      comboField('Description', descCombo), field(crossCurrency ? [flag(account.currency), `Amount (${account.currency})`] : amountLabel, amount),
       crossCurrency && field([flag(partnerAccount.currency), `Amount in ${partnerAccount.name} (${partnerAccount.currency})`], other),
-      field('Date', date), !tx.transferId && holdingField),
+      field('Date', date), accountPick && field('Account', accountPick), !tx.transferId && holdingField),
     crossCurrency && rateNote,
     !tx.transferId && catField,
     !tx.transferId && split.el,

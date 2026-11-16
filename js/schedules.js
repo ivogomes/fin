@@ -15,7 +15,7 @@ import {
 import { ask, inEur } from './insights.js';
 import { pageLink } from './overview.js';
 import {
-  accountBadge, accountLabel, accountName, catChips, categoryCell, categoryPicker, kindMark,
+  accountBadge, accountColumn, accountLabel, accountName, catChips, categoryCell, categoryPicker, kindMark,
   pickableAccounts, pickerField, transactionForm,
 } from './transactions.js';
 import {
@@ -154,41 +154,56 @@ export function openScheduleDialog(existing = null, preset = {}) {
   desc.focus();
 }
 
-// What's coming for one account, as greyed rows above its transactions: the schedules falling within
+// What's coming for an account, as greyed rows above its transactions: the schedules falling within
 // the forecast window, and transactions already added with a later date (they count once it comes).
-// Newest first like the list, each with the balance it would leave; `cols` matches the table's.
-export function upcomingRows(account, { cols, inEur, balance }) {
+// Soonest first. Without an account, every open account's (the Overview's All transactions), each
+// row on the account it touches, so a transfer shows on both sides, as entered ones do.
+export function upcomingItems(account) {
   const until = daysFromToday(FORECAST_DAYS);
-  const items = [
+  return (account ? [account] : state.accounts.filter((a) => !a.archived)).flatMap((acc) => [
     ...state.schedules
-      .filter((s) => scheduledEffect(s, account.id) !== 0)
-      .flatMap((s) => occurrences(s, until).map((date, i) => ({ s, date, first: i === 0, amount: scheduledEffect(s, account.id) }))),
-    ...plannedTransactions(account.id, state.transactions, today()).map((t) => ({ t, date: t.date, amount: t.amount })),
+      .filter((s) => scheduledEffect(s, acc.id) !== 0)
+      .flatMap((s) => occurrences(s, until).map((date, i) => ({ acc, s, date, first: i === 0, amount: scheduledEffect(s, acc.id) }))),
+    ...plannedTransactions(acc.id, state.transactions, today()).map((t) => ({ acc, t, date: t.date, amount: t.amount })),
     // A card's statement payment: into the card, out of the account it's paid from.
     ...cardPayments().flatMap((p) => [
-      p.card.id === account.id && { pay: p, date: p.date, amount: p.amount },
-      p.from?.id === account.id && { pay: p, date: p.date, amount: -inCurrency(p.amount, p.card.currency, account.currency) },
+      p.card.id === acc.id && { acc, pay: p, date: p.date, amount: p.amount },
+      p.from?.id === acc.id && { acc, pay: p, date: p.date, amount: -inCurrency(p.amount, p.card.currency, acc.currency) },
     ]).filter(Boolean),
-  ].sort((a, b) => a.date.localeCompare(b.date));
+  ]).sort((a, b) => a.date.localeCompare(b.date));
+}
+// upcomingItems as rows, newest first like the list; `cols` matches the table's. With `balance` (one
+// account), each shows the balance it would leave; with `showAccount`, the account it's on. Only the
+// forecast window's at first: transactions added for later wait behind a "more" row.
+export function upcomingRows(account, { cols, inEur, balance = null, showAccount = false }) {
+  const items = upcomingItems(account);
   if (!items.length) return [];
+  const until = daysFromToday(FORECAST_DAYS);
+  const soon = items.filter((it) => it.date <= until);
+  const later = items.length - soon.length;
   let running = balance;
-  for (const it of items) it.balance = (running += it.amount);
-  const cur = account.currency;
+  if (balance != null) for (const it of items) it.balance = (running += it.amount);
   const dateCell = (date, chip) => h('td', { class: 'fin-nowrap c-date' }, h('time', { datetime: date }, shortDate(date)), chip);
-  const amountCell = (amount, t = null) => h('td', { class: `fin-r fin-num c-amt ${tone(amount)}` },
+  const amountCell = (amount, cur, t = null) => h('td', { class: `fin-r fin-num c-amt ${tone(amount)}` },
     t && kindMark(t),
     signed(amount, cur));
-  const balanceCell = (b) => h('td', { class: 'fin-r fin-num fin-muted c-bal' }, money(b, cur));
+  const balanceCell = (b, cur) => balance != null && h('td', { class: 'fin-r fin-num fin-muted c-bal' }, money(b, cur));
+  const accountCell = (acc) => showAccount && accountColumn(acc.id);
+  // Across accounts, a transfer's buttons go on one side only: where the money leaves (a card's
+  // payment: the card).
+  const acts = (onThisSide) => Boolean(account) || onThisSide;
 
-  const scheduleRow = ({ s, date, first, amount, balance: b }) => {
+  const scheduleRow = ({ acc, s, date, first, amount, balance: b }) => {
     const due = dueLabel(date);
+    const act = first && acts(s.kind !== 'transfer' || acc.id === s.accountId);
     return h('tr', { class: `fin-upcoming${due ? ' fin-due' : ''}` },
       h('td', { class: 'fin-tick-col c-tick' }),
       dateCell(date, h('span', { class: `fin-chip fin-chip-inline${due ? ' fin-chip-due' : ''}` }, due ?? 'Scheduled')),
-      amountCell(amount, s),
-      balanceCell(b),
+      amountCell(amount, acc.currency, s),
+      balanceCell(b, acc.currency),
       h('td', { class: 'c-desc' }, scheduleCardIcon(s), s.description, subscriptionChip(null, s), h('span', { class: 'fin-sub' },
         `${frequencyLabel(s)}${s.kind === 'transfer' ? ` · ${scheduleAccounts(s)}` : ''}`)),
+      accountCell(acc),
       // A transfer shows where it goes (or comes from), like an entered one; anything else its
       // categories as chips (changed in the schedule, not here).
       h('td', { class: 'c-cat' }, s.kind === 'transfer'
@@ -198,43 +213,45 @@ export function upcomingRows(account, { cols, inEur, balance }) {
       // Only the next date of a schedule can be entered or skipped; later ones follow from it.
       // The schedule itself can be changed from any of its dates (every one after follows).
       h('td', { class: 'fin-r c-act' }, h('div', { class: 'fin-actions fin-row-actions fin-upcoming-actions' },
-        first && button('Enter', () => enterScheduled(s, `up-enter-${s.id}`), 'secondary fin-btn-sm',
+        act && button('Enter', () => enterScheduled(s, `up-enter-${s.id}`), 'secondary fin-btn-sm',
           { 'aria-label': `Enter ${s.description} for ${shortDate(date)}`, 'data-key': `up-enter-${s.id}` }),
-        first && button('Skip', () => skipScheduled(s, `up-skip-${s.id}`), 'secondary fin-btn-sm',
+        act && button('Skip', () => skipScheduled(s, `up-skip-${s.id}`), 'secondary fin-btn-sm',
           { 'aria-label': `Skip ${s.description} on ${shortDate(date)}`, 'data-key': `up-skip-${s.id}` }),
         // Just this date different (this month's rent, say): entered now, open to change.
-        first && button('Change this one', () => enterScheduled(s, `up-enter-${s.id}`, { edit: account.id }), 'secondary fin-btn-sm',
+        act && button('Change this one', () => enterScheduled(s, `up-enter-${s.id}`, { edit: acc.id }), 'secondary fin-btn-sm',
           { 'aria-label': `Change just ${s.description} of ${shortDate(date)}`, 'data-key': `up-change-${s.id}` }),
         iconButton('edit', `Edit the schedule of ${s.description} (all its dates)`, () => openScheduleDialog(s),
           { 'data-key': `up-sched-${s.id}`, 'aria-haspopup': 'dialog' }))));
   };
   // A card's statement payment, with Pay (a transfer from the account it's paid from, today).
-  const payRow = ({ pay, date, amount, balance: b }) => {
+  const payRow = ({ acc, pay, date, amount, balance: b }) => {
     const due = dueLabel(date);
-    const toCard = pay.card.id === account.id;
+    const toCard = pay.card.id === acc.id;
     return h('tr', { class: `fin-upcoming${due ? ' fin-due' : ''}` },
       h('td', { class: 'fin-tick-col c-tick' }),
       dateCell(date, h('span', { class: `fin-chip fin-chip-inline${due ? ' fin-chip-due' : ''}` }, due ?? 'Payment due')),
-      amountCell(amount, { kind: 'transfer' }),
-      balanceCell(b),
+      amountCell(amount, acc.currency, { kind: 'transfer' }),
+      balanceCell(b, acc.currency),
       h('td', { class: 'c-desc' }, cardIcon(pay.card), `${pay.card.name} payment`, h('span', { class: 'fin-sub' },
         `Statement of ${shortDate(pay.st.close)}${toCard ? (pay.from ? ` · from ${pay.from.name}` : ' · paid from: not set') : ''}`)),
+      accountCell(acc),
       h('td', { class: 'c-cat' }, h('span', { class: 'fin-tag fin-tag--transfer' }, ...(toCard ? ['From ', ...(pay.from ? accountBadge(pay.from.id) : ['…'])] : ['To ', ...accountBadge(pay.card.id)]))),
       inEur && h('td', { class: 'c-eur' }),
       h('td', { class: 'fin-r c-act' }, h('div', { class: 'fin-actions fin-row-actions fin-upcoming-actions' },
-        button(pay.from ? 'Pay…' : 'Set up', () => payCard(pay), 'secondary fin-btn-sm',
+        acts(toCard) && button(pay.from ? 'Pay…' : 'Set up', () => payCard(pay), 'secondary fin-btn-sm',
           { 'aria-label': pay.from ? `Pay ${pay.card.name}, ${money(pay.amount, pay.card.currency)} left to pay` : `Set the account ${pay.card.name} is paid from`, 'aria-haspopup': 'dialog' }))));
   };
   // A transaction added ahead of time: already saved, so it's edited or deleted like any other.
-  const plannedRow = ({ t, balance: b }) => {
-    if (t.id === editingTxId) return h('tr', { class: 'fin-edit-row' }, h('td', { colspan: cols }, transactionForm(account, t)));
+  const plannedRow = ({ acc, t, balance: b }) => {
+    if (t.id === editingTxId) return h('tr', { class: 'fin-edit-row' }, h('td', { colspan: cols }, transactionForm(acc, t)));
     const label = `${t.description}, ${shortDate(t.date)}`;
     return h('tr', { class: 'fin-upcoming' },
       h('td', { class: 'fin-tick-col c-tick' }),
       dateCell(t.date),
-      amountCell(t.amount, t),
-      balanceCell(b),
+      amountCell(t.amount, acc.currency, t),
+      balanceCell(b, acc.currency),
       h('td', { class: 'c-desc' }, t.description, subscriptionChip(t), t.memo && h('span', { class: 'fin-sub' }, t.memo)),
+      accountCell(acc),
       h('td', { class: 'c-cat' }, categoryCell(t)),
       inEur && h('td', { class: 'c-eur' }),
       h('td', { class: 'fin-r c-act' }, h('div', { class: 'fin-row-actions' },
@@ -242,8 +259,9 @@ export function upcomingRows(account, { cols, inEur, balance }) {
         iconButton('trash', `Delete ${label}`, () => deleteTransactions(new Set([t.id])), { danger: true }))));
   };
   // The heading folds the rows away (remembered in this browser, for every account); folded, it
-  // still says how many there are and what they add up to.
-  const net = items.reduce((sum, it) => sum + it.amount, 0);
+  // still says how many there are and what they add up to (across accounts, in EUR).
+  const cur = account?.currency ?? 'EUR';
+  const net = soon.reduce((sum, it) => sum + inCurrency(it.amount, it.acc.currency, cur), 0);
   const toggle = () => {
     upcomingOpen = !upcomingOpen;
     writePref('finance:upcoming-open', upcomingOpen);
@@ -256,14 +274,23 @@ export function upcomingRows(account, { cols, inEur, balance }) {
         type: 'button', class: 'fin-upcoming-toggle', 'aria-expanded': String(upcomingOpen), 'data-key': 'upcoming-toggle', onclick: toggle,
       },
         h('span', { class: 'fin-upcoming-chevron', 'aria-hidden': 'true' }),
-        'Upcoming ', h('span', { class: 'fin-count' }, String(items.length)),
+        'Upcoming ', h('span', { class: 'fin-count' }, String(soon.length)),
         h('span', { class: 'fin-upcoming-note' }, upcomingOpen
           ? ` · scheduled for the next ${FORECAST_DAYS} days`
           : [` · next ${FORECAST_DAYS} days, `, h('span', { class: `fin-num ${tone(net)}` }, signed(net, cur)), ' in all'])))),
-    ...(upcomingOpen ? items.reverse().map((it) => (it.t ? plannedRow(it) : it.pay ? payRow(it) : scheduleRow(it))) : []),
-  ];
+    // Newest first, so the later ones (and their row) come on top.
+    upcomingOpen && later > 0 && h('tr', { class: 'fin-month fin-upcoming-head' }, h('th', { colspan: cols, scope: 'colgroup' },
+      h('button', {
+        type: 'button', class: 'fin-upcoming-toggle fin-upcoming-more', 'aria-expanded': String(upcomingLater), 'data-key': 'upcoming-more',
+        onclick: () => { upcomingLater = !upcomingLater; render('upcoming-more'); },
+      },
+        h('span', { class: 'fin-upcoming-chevron', 'aria-hidden': 'true' }),
+        upcomingLater ? `Hide the ${later} after ${shortDate(until)}` : `${later} more, after ${shortDate(until)}`))),
+    ...(upcomingOpen ? (upcomingLater ? items : soon).reverse().map((it) => (it.t ? plannedRow(it) : it.pay ? payRow(it) : scheduleRow(it))) : []),
+  ].filter(Boolean);
 }
 export let upcomingOpen = readPref('finance:upcoming-open', true);
+let upcomingLater = false; // the ones after the forecast window shown, for this visit
 
 // Payments that look recurring but have no schedule yet (model.js suggestSchedules), from the
 // database's groups of repeated descriptions over the last 13 months. undefined while it's asked.

@@ -561,6 +561,8 @@ nav .fin-account { padding-left: 12px; }
 }
 .fin-link:hover { text-decoration: underline; }
 .fin-link-sm { font-size: 12px; }
+/* A list's Account cell: a button, which would centre a name that wraps. */
+.c-acc .fin-link { text-align: left; }
 
 /* ── Form controls ────────────────────────────────────── */
 .fin-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
@@ -820,11 +822,24 @@ textarea.fin-input { resize: vertical; }
 }
 .fin-upcoming-toggle:hover { color: var(--f-text); }
 .fin-upcoming-toggle:focus-visible { outline-offset: -2px; }
-.fin-upcoming-chevron::before { content: '▾'; display: inline-block; width: 12px; transition: transform 0.15s ease; }
-.fin-upcoming-toggle[aria-expanded="false"] .fin-upcoming-chevron::before { transform: rotate(-90deg); }
+/* Drawn, not a ▾ character: a glyph follows the 12px text's baseline, so it sat small and low. */
+.fin-upcoming-chevron { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 16px; height: 16px; }
+.fin-upcoming-chevron::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: translateY(-2px) rotate(45deg); /* pointing down, nudged to its visual centre */
+  transition: transform 0.15s ease;
+}
+.fin-upcoming-toggle[aria-expanded="false"] .fin-upcoming-chevron::before { transform: translateX(-2px) rotate(-45deg); }
 .fin-upcoming-toggle .fin-count { margin-left: 2px; }
 @media (prefers-reduced-motion: reduce) { .fin-upcoming-chevron::before { transition: none; } }
 .fin-upcoming-note { font-weight: 400; letter-spacing: 0; text-transform: none; }
+/* The row that shows (or hides) what's added for after the forecast window. */
+.fin-upcoming-toggle.fin-upcoming-more { padding: 8px 16px; color: var(--f-accent-strong); font-weight: 500; letter-spacing: 0; text-transform: none; }
+.fin-upcoming-toggle.fin-upcoming-more:hover { text-decoration: underline; }
 .fin-upcoming-actions .fin-btn-sm { padding: 3px 10px; }
 .fin-due > td { background: color-mix(in srgb, var(--f-accent) 6%, var(--f-surface-2)); }
 

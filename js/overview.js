@@ -4,8 +4,8 @@ import { today } from './market.js';
 import { REFUNDS_UNMATCHED, assetValuations, frequencyLabel, occurrences } from './model.js';
 import { accountAlerts, alertsBox, cardPayments, payCard, renderWelcome, statementOf } from './accounts.js';
 import {
-  accountValue, byName, cardMark, limitUse, netWorthNow, quickAdd, render, selectAccount, setView,
-  state, urlOf, usageBar,
+  accountValue, byName, cardMark, limitUse, netWorthNow, quickAdd, render, selectAccount, setTxPage, setView,
+  state, urlOf, usageBar, view,
 } from './app.js';
 import { backupToDrive, driveBackupDue, driveFailed, driveOn } from './backups.js';
 import { insightsFor, sinceYesterday, transactionsLoaded } from './insights.js';
@@ -13,7 +13,7 @@ import {
   cardIcon, daysFromToday, deleteScheduled, dueLabel, enterScheduled, scheduleAccounts, scheduleCardIcon, scheduleSuggestions,
   skipScheduled, subEur, subscriptionChip, subscriptionsFound,
 } from './schedules.js';
-import { accountName, transferPartner } from './transactions.js';
+import { accountName, allAccountsSection, selected, transferPartner } from './transactions.js';
 import { button, catLabel, h, icon, loader, money, shortDate, signed, tone } from './ui.js';
 
 // ── overview ─────────────────────────────────────────────────────────────────
@@ -51,12 +51,30 @@ export function renderOverview() {
     return pct === 0 ? `same as ${sameDays}` : `${pct > 0 ? '+' : ''}${pct}% vs ${sameDays}`;
   })());
 
+  const head = h('div', { class: 'fin-account-head' },
+    h('div', {}, h('h2', { class: 'fin-title', id: 'overview-h', tabindex: '-1' }, 'Overview'),
+      h('p', { class: 'fin-meta' }, new Date(`${now}T00:00:00`).toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }))),
+    button('Add transactions', quickAdd, 'primary', { 'data-key': 'ov-add', 'aria-haspopup': 'dialog' }));
+  if (state.accounts.length === 0) return h('div', { class: 'fin-overview' }, head, renderWelcome());
+  // Summary, or every account's transactions in one list.
+  const all = view.tab === 'transactions';
+  const pick = (t) => {
+    setView({ name: 'overview', ...(t === 'transactions' && { tab: t }) });
+    setTxPage(0);
+    selected.clear();
+    render(`ov-tab-${t}`);
+  };
+  const tabs = h('div', { class: 'fin-tabs', role: 'group', 'aria-label': 'Overview view' },
+    [['summary', 'Summary', 'layers'], ['transactions', 'All transactions', 'list']].map(([t, label, ic]) => h('button', {
+      type: 'button', class: 'fin-tab', 'aria-pressed': String(all === (t === 'transactions')), 'data-key': `ov-tab-${t}`, onclick: () => pick(t),
+    }, icon(ic), label)));
+  if (all) {
+    return h('div', { class: 'fin-overview' }, head, tabs,
+      allAccountsSection());
+  }
+
   return h('div', { class: 'fin-overview' },
-    h('div', { class: 'fin-account-head' },
-      h('div', {}, h('h2', { class: 'fin-title', id: 'overview-h', tabindex: '-1' }, 'Overview'),
-        h('p', { class: 'fin-meta' }, new Date(`${now}T00:00:00`).toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }))),
-      button('Add transactions', quickAdd, 'primary', { 'data-key': 'ov-add', 'aria-haspopup': 'dialog' })),
-    state.accounts.length === 0 ? renderWelcome() : [
+    head, tabs, [
       alertsBox(overviewAlerts()),
       h('dl', { class: 'fin-stats' },
         h('div', { class: `fin-stat-key${nw.total < 0 ? ' is-neg' : ''}` }, h('dt', {}, 'Net worth'), h('dd', { class: tone(nw.total) }, money(nw.total, 'EUR')),
